@@ -59,6 +59,8 @@ pub enum TokenKind {
     Limits,
     Denies,
     Import,
+    Checked,
+    Wrapping,
 
     LBrace,
     RBrace,
@@ -129,6 +131,8 @@ impl TokenKind {
             TokenKind::Limits => "limits",
             TokenKind::Denies => "denies",
             TokenKind::Import => "import",
+            TokenKind::Checked => "checked",
+            TokenKind::Wrapping => "wrapping",
             TokenKind::LBrace => "{",
             TokenKind::RBrace => "}",
             TokenKind::LParen => "(",
@@ -218,6 +222,8 @@ pub fn keyword_kind(word: &str) -> Option<TokenKind> {
         "limits" => TokenKind::Limits,
         "denies" => TokenKind::Denies,
         "import" => TokenKind::Import,
+        "checked" => TokenKind::Checked,
+        "wrapping" => TokenKind::Wrapping,
         _ => return None,
     };
     Some(kind)
@@ -231,6 +237,8 @@ mod tests {
     fn keywords_map_and_others_do_not() {
         assert_eq!(keyword_kind("contract"), Some(TokenKind::Contract));
         assert_eq!(keyword_kind("Quorum"), Some(TokenKind::Quorum));
+        assert_eq!(keyword_kind("checked"), Some(TokenKind::Checked));
+        assert_eq!(keyword_kind("wrapping"), Some(TokenKind::Wrapping));
         assert_eq!(keyword_kind("owner"), None);
         assert_eq!(keyword_kind("mint"), None);
     }
