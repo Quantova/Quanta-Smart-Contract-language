@@ -1,7 +1,7 @@
 //! The token cursor and the shared expectation helpers used by every grammar
 
 use crate::error::ParseError;
-use quanta_ast::{Ident, IntLit};
+use quanta_ast::{Ident, IntLit, StrLit};
 use quanta_lexer::{tokenize, Span, Token, TokenKind};
 
 pub(crate) struct Parser {
@@ -84,6 +84,43 @@ impl Parser {
         } else {
             Err(self.err(format!(
                 "expected integer, found {}",
+                self.peek().describe()
+            )))
+        }
+    }
+
+    /// Accepts an identifier or the `Quorum` keyword, which also names an
+    pub(crate) fn expect_import_name(&mut self) -> Result<Ident, ParseError> {
+        let span = self.peek_span();
+        match self.peek() {
+            TokenKind::Ident(text) => {
+                let text = text.clone();
+                self.bump();
+                Ok(Ident { text, span })
+            }
+            TokenKind::Quorum => {
+                self.bump();
+                Ok(Ident {
+                    text: "Quorum".to_string(),
+                    span,
+                })
+            }
+            _ => Err(self.err(format!(
+                "expected import name, found {}",
+                self.peek().describe()
+            ))),
+        }
+    }
+
+    pub(crate) fn expect_str(&mut self) -> Result<StrLit, ParseError> {
+        let span = self.peek_span();
+        if let TokenKind::Str(value) = self.peek() {
+            let value = value.clone();
+            self.bump();
+            Ok(StrLit { value, span })
+        } else {
+            Err(self.err(format!(
+                "expected string literal, found {}",
                 self.peek().describe()
             )))
         }

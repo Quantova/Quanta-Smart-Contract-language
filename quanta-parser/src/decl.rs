@@ -268,7 +268,7 @@ impl Parser {
         }
     }
 
-    fn ident_list(&mut self) -> Result<Vec<Ident>, ParseError> {
+    pub(crate) fn ident_list(&mut self) -> Result<Vec<Ident>, ParseError> {
         let mut names = vec![self.expect_ident()?];
         while self.eat(&TokenKind::Comma) {
             names.push(self.expect_ident()?);
