@@ -295,6 +295,23 @@ fn store_slot(ctx: &mut Ctx, slot: u64, value: Reg) {
     });
 }
 
+/// Refuses to lower an entry that takes a sealed parameter. A sealed value is confidential in the
+fn refuse_sealed(entry: &EntryDecl) -> Result<(), CodegenError> {
+    for param in &entry.params {
+        if param.sealed {
+            return Err(CodegenError::Unsupported {
+                what: format!(
+                    "opening the sealed parameter `{}`, which needs a decapsulation opcode absent \
+                     from qtv-vm v0.1.0",
+                    param.name.text
+                ),
+                span: param.span,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Lowers the body of one entry into the builder and appends the clean halt. A fresh register stack
 pub fn lower_entry(
     layout: &Layout,
@@ -303,6 +320,7 @@ pub fn lower_entry(
     b: &mut Builder,
     trap: Label,
 ) -> Result<Args, CodegenError> {
+    refuse_sealed(entry)?;
     let params: HashSet<String> = entry.params.iter().map(|p| p.name.text.clone()).collect();
     let writes_state = !layout.access(entry).writes.is_empty();
     let mut regs = Regs::new();
