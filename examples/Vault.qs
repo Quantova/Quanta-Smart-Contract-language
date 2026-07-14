@@ -1,0 +1,25 @@
+import { Q_Asset, Q_Sig } from "quantova/primitives";
+contract Vault {
+  state {
+    owner: Q_Address;
+    reserve: Q_Asset<QTOV>;
+    daily_cap: u64 = 50_000;
+    spent_today: u64;
+  }
+  genesis {
+    owner = deployer;
+  }
+  invariant spent_today <= daily_cap;
+  entry withdraw(req: WithdrawReq signed by owner)
+    writes(reserve, spent_today)
+    conserves QTOV
+    limits req.amount <= daily_cap - spent_today
+  {
+    guard reserve.amount >= req.amount;
+    let payout = reserve.split(req.amount);
+    spent_today += req.amount;
+    send(req.to, payout);
+    emit Withdrawn(req.to, req.amount);
+  }
+  event Withdrawn(to: Q_Address, amount: u128);
+}
