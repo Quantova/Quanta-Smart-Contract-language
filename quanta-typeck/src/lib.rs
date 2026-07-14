@@ -4,6 +4,7 @@ pub mod error;
 mod linear;
 mod model;
 mod resolve;
+mod signature;
 mod types;
 
 pub use error::TypeError;
@@ -18,6 +19,7 @@ pub fn check(program: &Program) -> Result<(), TypeError> {
         resolve::check(&model)?;
         types::check(&model)?;
         linear::check(&model)?;
+        signature::check(&model)?;
     }
     Ok(())
 }
