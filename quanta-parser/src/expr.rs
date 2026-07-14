@@ -191,6 +191,26 @@ impl Parser {
                 self.expect(&TokenKind::RParen)?;
                 Ok(inner)
             }
+            TokenKind::Checked => {
+                self.bump();
+                self.expect(&TokenKind::LParen)?;
+                let inner = self.expr()?;
+                let rp = self.expect(&TokenKind::RParen)?;
+                Ok(Expr::Checked {
+                    expr: Box::new(inner),
+                    span: span.join(rp.span),
+                })
+            }
+            TokenKind::Wrapping => {
+                self.bump();
+                self.expect(&TokenKind::LParen)?;
+                let inner = self.expr()?;
+                let rp = self.expect(&TokenKind::RParen)?;
+                Ok(Expr::Wrapping {
+                    expr: Box::new(inner),
+                    span: span.join(rp.span),
+                })
+            }
             _ => Err(self.err(format!(
                 "expected an expression, found {}",
                 self.peek().describe()
@@ -253,5 +273,21 @@ mod tests {
     #[test]
     fn caller_is_an_expression() {
         assert!(matches!(parse_expr("caller").unwrap(), Expr::Caller { .. }));
+    }
+
+    #[test]
+    fn checked_and_wrapping_wrap_an_arithmetic_expression() {
+        match parse_expr("checked(a + b)").unwrap() {
+            Expr::Checked { expr, .. } => {
+                assert!(matches!(*expr, Expr::Binary { op: BinOp::Add, .. }));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match parse_expr("wrapping(a + b)").unwrap() {
+            Expr::Wrapping { expr, .. } => {
+                assert!(matches!(*expr, Expr::Binary { op: BinOp::Add, .. }));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 }
