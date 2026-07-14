@@ -1,5 +1,6 @@
 //! Static checker for the Quanta language. It runs a fixed sequence of passes
 
+mod access;
 mod conserve;
 pub mod error;
 mod linear;
@@ -22,6 +23,7 @@ pub fn check(program: &Program) -> Result<(), TypeError> {
         linear::check(&model)?;
         signature::check(&model)?;
         conserve::check(&model)?;
+        access::check(&model)?;
     }
     Ok(())
 }
