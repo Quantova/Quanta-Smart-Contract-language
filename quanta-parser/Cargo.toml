@@ -1,0 +1,9 @@
+[package]
+name = "quanta-parser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+quanta-lexer = { path = "../quanta-lexer" }
+quanta-ast = { path = "../quanta-ast" }

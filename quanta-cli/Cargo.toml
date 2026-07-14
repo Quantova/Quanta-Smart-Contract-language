@@ -1,0 +1,14 @@
+[package]
+name = "quanta-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "quanta-cli"
+path = "src/main.rs"
+
+[dependencies]
+quanta-lexer = { path = "../quanta-lexer" }
+quanta-ast = { path = "../quanta-ast" }
+quanta-parser = { path = "../quanta-parser" }
