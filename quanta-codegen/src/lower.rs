@@ -1,10 +1,10 @@
 //! Expression lowering. A value computes into a stack of temporary registers. A state field reads
 
-use crate::emit::Builder;
+use crate::emit::{Builder, Label};
 use crate::error::CodegenError;
 use crate::layout::Layout;
 use qtv_vm::isa::{Instr, Reg, NUM_REGS};
-use quanta_ast::{BinOp, Expr, UnaryOp};
+use quanta_ast::{AssignOp, BinOp, EntryDecl, Expr, Stmt, UnaryOp};
 use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
 
@@ -145,13 +145,7 @@ pub fn lower_expr(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<Reg, Cod
 
 fn lower_ident(ctx: &mut Ctx, name: &str, span: Span) -> Result<Reg, CodegenError> {
     if let Some(slot) = ctx.layout.slot(name) {
-        let d = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: SCRATCH,
-            imm: slot,
-        });
-        ctx.b.op(Instr::SLoad { d, a: SCRATCH });
-        Ok(d)
+        load_slot(ctx, slot, span)
     } else if ctx.params.contains(name) {
         let off = ctx.args.offset_of(name);
         load_arg(ctx, off, span)
@@ -265,6 +259,129 @@ fn parse_int(text: &str, span: Span) -> Result<u64, CodegenError> {
             text: text.to_string(),
             span,
         })
+}
+
+/// Reads a state slot into a fresh temporary register.
+fn load_slot(ctx: &mut Ctx, slot: u64, span: Span) -> Result<Reg, CodegenError> {
+    let d = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: SCRATCH,
+        imm: slot,
+    });
+    ctx.b.op(Instr::SLoad { d, a: SCRATCH });
+    Ok(d)
+}
+
+/// Writes a register value to a state slot.
+fn store_slot(ctx: &mut Ctx, slot: u64, value: Reg) {
+    ctx.b.op(Instr::Ldi {
+        d: SCRATCH,
+        imm: slot,
+    });
+    ctx.b.op(Instr::SStore {
+        a: SCRATCH,
+        b: value,
+    });
+}
+
+/// Lowers the body of one entry into the builder and appends the clean halt. A fresh register stack
+pub fn lower_entry(
+    layout: &Layout,
+    entry: &EntryDecl,
+    b: &mut Builder,
+    trap: Label,
+) -> Result<Args, CodegenError> {
+    let params: HashSet<String> = entry.params.iter().map(|p| p.name.text.clone()).collect();
+    let mut regs = Regs::new();
+    let mut args = Args::new();
+    {
+        let mut ctx = Ctx::new(layout, &params, b, &mut regs, &mut args);
+        for stmt in &entry.body {
+            lower_stmt(&mut ctx, stmt, trap)?;
+        }
+    }
+    b.op(Instr::Halt);
+    Ok(args)
+}
+
+fn lower_stmt(ctx: &mut Ctx, stmt: &Stmt, trap: Label) -> Result<(), CodegenError> {
+    match stmt {
+        // A guard evaluates its condition and reverts by jumping to the trap when it is false.
+        Stmt::Guard { expr, .. } => {
+            let r = lower_expr(ctx, expr, false)?;
+            ctx.b.jz(r, trap);
+            ctx.regs.free(r);
+            Ok(())
+        }
+        Stmt::Assign {
+            target,
+            op,
+            value,
+            span,
+        } => lower_assign(ctx, target, *op, value, *span),
+        // An emit computes the event operands. Appending the typed event to the event trie has no
+        // machine opcode yet, so only the operand evaluation lowers here.
+        Stmt::Emit { args, .. } => {
+            for arg in args {
+                let r = lower_expr(ctx, arg, false)?;
+                ctx.regs.free(r);
+            }
+            Ok(())
+        }
+        Stmt::Let { span, .. } => Err(CodegenError::Unsupported {
+            what: "a let binding".into(),
+            span: *span,
+        }),
+        Stmt::Expr { span, .. } => Err(CodegenError::Unsupported {
+            what: "an expression statement".into(),
+            span: *span,
+        }),
+    }
+}
+
+fn lower_assign(
+    ctx: &mut Ctx,
+    target: &Expr,
+    op: AssignOp,
+    value: &Expr,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let slot = match target {
+        Expr::Ident(id) => ctx.layout.slot(&id.text),
+        _ => None,
+    };
+    let slot = slot.ok_or_else(|| CodegenError::Unsupported {
+        what: "an assignment target that is not a state field".into(),
+        span,
+    })?;
+
+    match op {
+        AssignOp::Set => {
+            let rv = lower_expr(ctx, value, false)?;
+            store_slot(ctx, slot, rv);
+            ctx.regs.free(rv);
+        }
+        AssignOp::Add | AssignOp::Sub => {
+            let rv = lower_expr(ctx, value, false)?;
+            let rf = load_slot(ctx, slot, span)?;
+            match op {
+                AssignOp::Add => ctx.b.op(Instr::Add {
+                    d: rf,
+                    a: rf,
+                    b: rv,
+                }),
+                _ => ctx.b.op(Instr::Sub {
+                    d: rf,
+                    a: rf,
+                    b: rv,
+                }),
+            }
+            store_slot(ctx, slot, rf);
+            ctx.regs.free(rf);
+            ctx.regs.free(rv);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

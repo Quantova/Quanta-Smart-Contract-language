@@ -1,5 +1,6 @@
 //! Code generation errors. Each carries the source span of the offending construct so the front end
 
+use crate::emit::LinkError;
 use quanta_lexer::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,6 +11,8 @@ pub enum CodegenError {
     RegisterExhausted { span: Span },
     /// An integer literal does not fit a 64 bit machine word.
     IntegerTooWide { text: String, span: Span },
+    /// A branch target failed to resolve while linking the code image.
+    Link(LinkError),
 }
 
 impl CodegenError {
@@ -18,6 +21,7 @@ impl CodegenError {
             CodegenError::Unsupported { span, .. }
             | CodegenError::RegisterExhausted { span }
             | CodegenError::IntegerTooWide { span, .. } => *span,
+            CodegenError::Link(_) => Span::default(),
         }
     }
 }
@@ -40,6 +44,7 @@ impl std::fmt::Display for CodegenError {
                     "integer literal {text} does not fit a 64 bit machine word"
                 )
             }
+            CodegenError::Link(e) => write!(f, "internal link error: {e:?}"),
         }
     }
 }

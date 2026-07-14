@@ -1,9 +1,13 @@
 //! Code generation. Lowers a type checked Quanta contract to the register machine bytecode
 
+pub mod compile;
 pub mod emit;
 pub mod error;
 pub mod layout;
 pub mod lower;
 pub mod selector;
 
+pub use compile::{
+    compile, compile_contract, ArgSlot, CompiledContract, EntryArtifact, EventArtifact,
+};
 pub use error::CodegenError;
