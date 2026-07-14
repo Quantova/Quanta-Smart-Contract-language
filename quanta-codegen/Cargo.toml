@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+quanta-lexer = { path = "../quanta-lexer" }
 quanta-ast = { path = "../quanta-ast" }
 qtv-vm = { git = "https://github.com/Quantova/QVM.git", tag = "v0.1.0" }
 
