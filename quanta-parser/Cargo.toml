@@ -7,3 +7,6 @@ license.workspace = true
 [dependencies]
 quanta-lexer = { path = "../quanta-lexer" }
 quanta-ast = { path = "../quanta-ast" }
+
+[dev-dependencies]
+quanta-typeck = { path = "../quanta-typeck" }
