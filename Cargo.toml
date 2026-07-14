@@ -4,6 +4,7 @@ members = [
     "quanta-lexer",
     "quanta-ast",
     "quanta-parser",
+    "quanta-typeck",
     "quanta-cli",
 ]
 

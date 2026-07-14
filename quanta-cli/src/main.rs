@@ -7,7 +7,7 @@ use std::process::exit;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 {
-        eprintln!("usage: quanta-cli <parse|fmt|tokens> <file>");
+        eprintln!("usage: quanta-cli <parse|fmt|tokens|check> <file>");
         exit(2);
     }
     let command = args[1].as_str();
@@ -36,6 +36,19 @@ fn main() {
                 exit(1);
             }
         },
+        "check" => match quanta_parser::parse(&src) {
+            Ok(program) => match quanta_typeck::check(&program) {
+                Ok(()) => println!("ok"),
+                Err(e) => {
+                    report(path, &src, &e.message, e.span.start);
+                    exit(1);
+                }
+            },
+            Err(e) => {
+                report(path, &src, &e.message, e.span.start);
+                exit(1);
+            }
+        },
         "tokens" => match quanta_lexer::tokenize(&src) {
             Ok(tokens) => {
                 for t in tokens {
@@ -49,7 +62,7 @@ fn main() {
         },
         other => {
             eprintln!("error: unknown command `{other}`");
-            eprintln!("usage: quanta-cli <parse|fmt|tokens> <file>");
+            eprintln!("usage: quanta-cli <parse|fmt|tokens|check> <file>");
             exit(2);
         }
     }
