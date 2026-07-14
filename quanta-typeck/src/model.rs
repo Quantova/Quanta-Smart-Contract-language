@@ -1,6 +1,6 @@
 //! Shared view of one contract, indexed for the passes. Built once per contract
 
-use quanta_ast::{Contract, EntryDecl, FieldDecl, GenericArg, Item, Type};
+use quanta_ast::{Contract, EntryDecl, FieldDecl, GenericArg, Item, Param, Type};
 use std::collections::{HashMap, HashSet};
 
 /// Native assets that exist without a local `asset` declaration.
@@ -66,6 +66,24 @@ impl<'a> Model<'a> {
     pub fn is_known_asset(&self, name: &str) -> bool {
         self.asset_universe.contains(name)
     }
+}
+
+/// True when `ty` is `Q_Asset<..>`, the type of a linear asset value.
+pub fn is_asset_type(ty: &Type) -> bool {
+    ty.name.text == "Q_Asset"
+}
+
+/// True when the parameter carries a linear asset value.
+pub fn is_asset_param(param: &Param) -> bool {
+    is_asset_type(&param.ty)
+}
+
+/// The base numeric types the checker reasons over.
+pub fn is_integer_type(name: &str) -> bool {
+    matches!(
+        name,
+        "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128"
+    )
 }
 
 fn collect_asset_names(ty: &Type, out: &mut HashSet<String>) {

@@ -3,6 +3,7 @@
 pub mod error;
 mod model;
 mod resolve;
+mod types;
 
 pub use error::TypeError;
 
@@ -14,6 +15,7 @@ pub fn check(program: &Program) -> Result<(), TypeError> {
     for contract in &program.contracts {
         let model = Model::build(contract);
         resolve::check(&model)?;
+        types::check(&model)?;
     }
     Ok(())
 }
