@@ -18,6 +18,11 @@ pub const ARG_BASE: u64 = 0;
 /// Width of one argument word.
 const WORD: u64 = 8;
 
+/// Argument key suffix for the pointer to a signed parameter's verify region.
+const SIG_PTR_SUFFIX: &str = "#ptr";
+/// Argument key suffix for the length of a signed parameter's verify region.
+const SIG_LEN_SUFFIX: &str = "#len";
+
 /// A stack of temporary registers. They allocate and free in stack order.
 pub struct Regs {
     next: Reg,
@@ -296,12 +301,62 @@ pub fn lower_entry(
     let mut args = Args::new();
     {
         let mut ctx = Ctx::new(layout, &params, b, &mut regs, &mut args);
+        lower_signed_prologue(&mut ctx, entry, trap)?;
         for stmt in &entry.body {
             lower_stmt(&mut ctx, stmt, trap)?;
         }
     }
     b.op(Instr::Halt);
     Ok(args)
+}
+
+/// Verifies each `signed by` parameter before the body runs. A `p: T signed by owner` desugars to a
+fn lower_signed_prologue(
+    ctx: &mut Ctx,
+    entry: &EntryDecl,
+    trap: Label,
+) -> Result<(), CodegenError> {
+    for param in &entry.params {
+        if param.signed_by.is_none() {
+            continue;
+        }
+        let name = &param.name.text;
+        let ptr_off = ctx.args.offset_of(&format!("{name}{SIG_PTR_SUFFIX}"));
+        let len_off = ctx.args.offset_of(&format!("{name}{SIG_LEN_SUFFIX}"));
+
+        let rptr = ctx.regs.alloc(param.span)?;
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: ptr_off,
+        });
+        ctx.b.op(Instr::MLoad {
+            d: rptr,
+            a: SCRATCH,
+        });
+
+        let rlen = ctx.regs.alloc(param.span)?;
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: len_off,
+        });
+        ctx.b.op(Instr::MLoad {
+            d: rlen,
+            a: SCRATCH,
+        });
+
+        let rok = ctx.regs.alloc(param.span)?;
+        ctx.b.op(Instr::VerifyMl {
+            a: rptr,
+            b: rlen,
+            c: rok,
+        });
+        ctx.b.jz(rok, trap);
+
+        ctx.regs.free(rok);
+        ctx.regs.free(rlen);
+        ctx.regs.free(rptr);
+    }
+    Ok(())
 }
 
 fn lower_stmt(ctx: &mut Ctx, stmt: &Stmt, trap: Label) -> Result<(), CodegenError> {

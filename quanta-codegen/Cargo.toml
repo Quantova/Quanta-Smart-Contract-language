@@ -12,3 +12,4 @@ qtv-vm = { git = "https://github.com/Quantova/QVM.git", tag = "v0.1.0" }
 [dev-dependencies]
 quanta-parser = { path = "../quanta-parser" }
 quanta-typeck = { path = "../quanta-typeck" }
+qtv-crypto = { git = "https://github.com/Quantova/Q-Crypto.git", tag = "v0.1.0" }
