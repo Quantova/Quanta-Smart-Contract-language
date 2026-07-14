@@ -78,6 +78,11 @@ pub fn is_asset_param(param: &Param) -> bool {
     is_asset_type(&param.ty)
 }
 
+/// True when the parameter heads a quorum authority.
+pub fn is_quorum_param(param: &Param) -> bool {
+    param.ty.name.text == "Quorum"
+}
+
 /// The asset an `Q_Asset<A>` type names, if any.
 pub fn asset_inner(ty: &Type) -> Option<&str> {
     if !is_asset_type(ty) {
