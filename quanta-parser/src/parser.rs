@@ -19,6 +19,11 @@ impl Parser {
         &self.tokens[self.pos].kind
     }
 
+    pub(crate) fn peek2(&self) -> &TokenKind {
+        let i = (self.pos + 1).min(self.tokens.len() - 1);
+        &self.tokens[i].kind
+    }
+
     pub(crate) fn peek_span(&self) -> Span {
         self.tokens[self.pos].span
     }
