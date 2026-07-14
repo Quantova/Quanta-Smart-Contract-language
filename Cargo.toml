@@ -13,3 +13,9 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
+
+# The post quantum primitives are expensive unoptimized, so a hash based signature verify in a test
+# runs for minutes in a plain debug build. Optimize only the crypto dependency, which keeps the
+# compiler crates fast to build and debug while the cryptographic tests stay tractable.
+[profile.dev.package.qtv-crypto]
+opt-level = 3
