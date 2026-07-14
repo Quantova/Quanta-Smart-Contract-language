@@ -149,7 +149,7 @@ impl Parser {
         Ok(e)
     }
 
-    fn call_args(&mut self) -> Result<Vec<Expr>, ParseError> {
+    pub(crate) fn call_args(&mut self) -> Result<Vec<Expr>, ParseError> {
         let mut args = Vec::new();
         if self.check(&TokenKind::RParen) {
             return Ok(args);
