@@ -5,6 +5,7 @@ members = [
     "quanta-ast",
     "quanta-parser",
     "quanta-typeck",
+    "quanta-codegen",
     "quanta-cli",
 ]
 

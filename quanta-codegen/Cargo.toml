@@ -1,0 +1,13 @@
+[package]
+name = "quanta-codegen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+quanta-ast = { path = "../quanta-ast" }
+qtv-vm = { git = "https://github.com/Quantova/QVM.git", tag = "v0.1.0" }
+
+[dev-dependencies]
+quanta-parser = { path = "../quanta-parser" }
+quanta-typeck = { path = "../quanta-typeck" }
