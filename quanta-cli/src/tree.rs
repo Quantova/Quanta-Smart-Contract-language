@@ -215,6 +215,14 @@ impl Tree {
                     self.expr(a, ind + 1);
                 }
             }
+            Expr::Checked { expr, span } => {
+                self.line(ind, &format!("Checked {}", at(*span)));
+                self.expr(expr, ind + 1);
+            }
+            Expr::Wrapping { expr, span } => {
+                self.line(ind, &format!("Wrapping {}", at(*span)));
+                self.expr(expr, ind + 1);
+            }
         }
     }
 }

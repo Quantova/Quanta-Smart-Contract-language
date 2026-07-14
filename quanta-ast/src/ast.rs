@@ -240,6 +240,16 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
+    /// `checked(expr)`, an arithmetic that keeps the revert on overflow.
+    Checked {
+        expr: Box<Expr>,
+        span: Span,
+    },
+    /// `wrapping(expr)`, an arithmetic that takes the modular result.
+    Wrapping {
+        expr: Box<Expr>,
+        span: Span,
+    },
 }
 
 impl Expr {
@@ -254,6 +264,8 @@ impl Expr {
             Expr::Binary { span, .. } => *span,
             Expr::Field { span, .. } => *span,
             Expr::Call { span, .. } => *span,
+            Expr::Checked { span, .. } => *span,
+            Expr::Wrapping { span, .. } => *span,
         }
     }
 }

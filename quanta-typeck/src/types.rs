@@ -105,6 +105,7 @@ impl<'a> Env<'a> {
                 }
                 Ok(self.ty_of_call(callee))
             }
+            Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => self.ty_of(expr),
         }
     }
 

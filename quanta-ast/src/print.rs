@@ -274,6 +274,8 @@ fn expr_str(e: &Expr, min_prec: u8) -> String {
                 PREC_POSTFIX,
             )
         }
+        Expr::Checked { expr, .. } => (format!("checked({})", expr_str(expr, 0)), PREC_POSTFIX),
+        Expr::Wrapping { expr, .. } => (format!("wrapping({})", expr_str(expr, 0)), PREC_POSTFIX),
     };
     if prec < min_prec {
         format!("({text})")
