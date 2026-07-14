@@ -1,6 +1,7 @@
 //! Static checker for the Quanta language. It runs a fixed sequence of passes
 
 pub mod error;
+mod linear;
 mod model;
 mod resolve;
 mod types;
@@ -16,6 +17,7 @@ pub fn check(program: &Program) -> Result<(), TypeError> {
         let model = Model::build(contract);
         resolve::check(&model)?;
         types::check(&model)?;
+        linear::check(&model)?;
     }
     Ok(())
 }

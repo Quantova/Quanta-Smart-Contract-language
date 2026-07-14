@@ -78,6 +78,17 @@ pub fn is_asset_param(param: &Param) -> bool {
     is_asset_type(&param.ty)
 }
 
+/// The asset an `Q_Asset<A>` type names, if any.
+pub fn asset_inner(ty: &Type) -> Option<&str> {
+    if !is_asset_type(ty) {
+        return None;
+    }
+    match ty.args.first() {
+        Some(GenericArg::Type(inner)) => Some(inner.name.text.as_str()),
+        _ => None,
+    }
+}
+
 /// The base numeric types the checker reasons over.
 pub fn is_integer_type(name: &str) -> bool {
     matches!(
