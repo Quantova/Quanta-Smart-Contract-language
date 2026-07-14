@@ -6,6 +6,7 @@ pub mod error;
 mod linear;
 mod model;
 mod resolve;
+mod sealed;
 mod signature;
 mod types;
 
@@ -24,6 +25,7 @@ pub fn check(program: &Program) -> Result<(), TypeError> {
         signature::check(&model)?;
         conserve::check(&model)?;
         access::check(&model)?;
+        sealed::check(&model)?;
     }
     Ok(())
 }
