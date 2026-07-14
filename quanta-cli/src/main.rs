@@ -7,7 +7,7 @@ use std::process::exit;
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 3 {
-        eprintln!("usage: quanta-cli <parse|fmt|tokens|check> <file>");
+        eprintln!("usage: quanta-cli <parse|fmt|tokens|check|build> <file>");
         exit(2);
     }
     let command = args[1].as_str();
@@ -49,6 +49,25 @@ fn main() {
                 exit(1);
             }
         },
+        "build" => match quanta_parser::parse(&src) {
+            Ok(program) => {
+                if let Err(e) = quanta_typeck::check(&program) {
+                    report(path, &src, &e.message, e.span.start);
+                    exit(1);
+                }
+                match quanta_codegen::compile(&program) {
+                    Ok(contracts) => build(path, &contracts),
+                    Err(e) => {
+                        report(path, &src, &e.to_string(), e.span().start);
+                        exit(1);
+                    }
+                }
+            }
+            Err(e) => {
+                report(path, &src, &e.message, e.span.start);
+                exit(1);
+            }
+        },
         "tokens" => match quanta_lexer::tokenize(&src) {
             Ok(tokens) => {
                 for t in tokens {
@@ -62,8 +81,30 @@ fn main() {
         },
         other => {
             eprintln!("error: unknown command `{other}`");
-            eprintln!("usage: quanta-cli <parse|fmt|tokens|check> <file>");
+            eprintln!("usage: quanta-cli <parse|fmt|tokens|check|build> <file>");
             exit(2);
+        }
+    }
+}
+
+/// Writes each compiled contract to a container file beside the source and prints its interface.
+fn build(path: &str, contracts: &[quanta_codegen::CompiledContract]) {
+    let dir = std::path::Path::new(path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    for cc in contracts {
+        let out = dir.join(format!("{}.qbc", cc.name));
+        let bytes = cc.container.canonical_bytes();
+        if let Err(e) = std::fs::write(&out, &bytes) {
+            eprintln!("error: cannot write {}: {e}", out.display());
+            exit(2);
+        }
+        println!("wrote {} ({} bytes)", out.display(), bytes.len());
+        for entry in &cc.entries {
+            println!("  entry {}", entry.signature);
+        }
+        for event in &cc.events {
+            println!("  event {}", event.signature);
         }
     }
 }

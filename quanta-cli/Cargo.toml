@@ -13,3 +13,4 @@ quanta-lexer = { path = "../quanta-lexer" }
 quanta-ast = { path = "../quanta-ast" }
 quanta-parser = { path = "../quanta-parser" }
 quanta-typeck = { path = "../quanta-typeck" }
+quanta-codegen = { path = "../quanta-codegen" }
