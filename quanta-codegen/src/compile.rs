@@ -50,6 +50,15 @@ pub fn compile(program: &Program) -> Result<Vec<CompiledContract>, CodegenError>
 /// Compiles one contract to its container and interface.
 pub fn compile_contract(contract: &Contract) -> Result<CompiledContract, CodegenError> {
     let layout = Layout::build(contract);
+    let invariants: Vec<&quanta_ast::Expr> = contract
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Invariant(inv) => Some(&inv.expr),
+            _ => None,
+        })
+        .collect();
+
     let mut b = Builder::new();
     let trap = b.label();
 
@@ -57,7 +66,7 @@ pub fn compile_contract(contract: &Contract) -> Result<CompiledContract, Codegen
     let mut container_entries = Vec::new();
     for item in &contract.items {
         if let Item::Entry(entry) = item {
-            let args = lower_entry(&layout, entry, &mut b, trap)?;
+            let args = lower_entry(&layout, entry, &invariants, &mut b, trap)?;
             let selector = entry_selector(entry);
             container_entries.push(Entry {
                 selector,

@@ -293,10 +293,12 @@ fn store_slot(ctx: &mut Ctx, slot: u64, value: Reg) {
 pub fn lower_entry(
     layout: &Layout,
     entry: &EntryDecl,
+    invariants: &[&Expr],
     b: &mut Builder,
     trap: Label,
 ) -> Result<Args, CodegenError> {
     let params: HashSet<String> = entry.params.iter().map(|p| p.name.text.clone()).collect();
+    let writes_state = !layout.access(entry).writes.is_empty();
     let mut regs = Regs::new();
     let mut args = Args::new();
     {
@@ -304,6 +306,13 @@ pub fn lower_entry(
         lower_signed_prologue(&mut ctx, entry, trap)?;
         for stmt in &entry.body {
             lower_stmt(&mut ctx, stmt, trap)?;
+        }
+        if writes_state {
+            for inv in invariants {
+                let r = lower_expr(&mut ctx, inv, false)?;
+                ctx.b.jz(r, trap);
+                ctx.regs.free(r);
+            }
         }
     }
     b.op(Instr::Halt);
