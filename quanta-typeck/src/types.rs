@@ -208,6 +208,11 @@ fn check_arithmetic(entry: &EntryDecl, params: &HashMap<&str, Ty>) -> Result<(),
         .collect();
 
     for stmt in &entry.body {
+        if let Stmt::Assign { value, .. } = stmt {
+            if acknowledged(value) {
+                continue;
+            }
+        }
         let (target, addend, span) = match stmt {
             Stmt::Assign {
                 target,
@@ -251,6 +256,11 @@ fn check_arithmetic(entry: &EntryDecl, params: &HashMap<&str, Ty>) -> Result<(),
         ));
     }
     Ok(())
+}
+
+/// True when the assigned value wraps its arithmetic in `checked` or `wrapping`,
+fn acknowledged(value: &Expr) -> bool {
+    matches!(value, Expr::Checked { .. } | Expr::Wrapping { .. })
 }
 
 fn bounded_addend(value: &Expr, asset_params: &[&str]) -> bool {
@@ -328,6 +338,22 @@ mod tests {
     fn an_asset_amount_addend_is_bounded_by_the_asset() {
         let src = "contract C { state { pool: u128; } \
                    entry stake(funds: Q_Asset<QTOV>) writes(pool) { pool += funds.amount; } }";
+        ok(src);
+    }
+
+    #[test]
+    fn an_explicit_checked_addition_is_accepted() {
+        let src = "contract C { state { counter: u8; } \
+                   entry bump(order: BumpOrder) writes(counter) \
+                   { counter = checked(counter + order.step); } }";
+        ok(src);
+    }
+
+    #[test]
+    fn an_explicit_wrapping_addition_is_accepted() {
+        let src = "contract C { state { counter: u8; } \
+                   entry bump(order: BumpOrder) writes(counter) \
+                   { counter = wrapping(counter + order.step); } }";
         ok(src);
     }
 }
