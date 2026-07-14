@@ -1,4 +1,5 @@
-contract Reentrancy {
+import { Q_Asset } from "quantova/primitives";
+contract Bank {
   state {
     owner: Q_Address;
     vault: Q_Asset<QTOV>;
@@ -13,7 +14,7 @@ contract Reentrancy {
   {
     guard balance >= order.amount;
     let out = vault.split(order.amount);
-    let ack = caller.receive(out);
+    send(order.to, out);
     balance -= order.amount;
     emit Withdrawn(order.to, order.amount);
   }

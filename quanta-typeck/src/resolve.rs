@@ -3,6 +3,7 @@
 use crate::error::TypeError;
 use crate::model::Model;
 use quanta_ast::{Clause, EntryDecl, Expr, Item, Stmt};
+use std::collections::HashSet;
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
     for item in &model.contract.items {
@@ -85,7 +86,95 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
             Clause::Limits { .. } | Clause::Denies { .. } | Clause::After { .. } => {}
         }
     }
+    check_no_external_call(model, entry)?;
     Ok(())
+}
+
+/// A synchronous external call would hand control to an external account inside
+fn check_no_external_call(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
+    let addresses = address_names(model, entry);
+    let mut offending = None;
+    for stmt in &entry.body {
+        for_each_expr(stmt, &mut |e| {
+            if offending.is_none() {
+                if let Expr::Call { callee, span, .. } = e {
+                    if is_external_address(callee, &addresses) {
+                        offending = Some(*span);
+                    }
+                }
+            }
+        });
+    }
+    if let Some(span) = offending {
+        return Err(TypeError::new(
+            "no synchronous external call: control cannot leave and reenter an entry; \
+             the only outward transfer is `send`, which returns nothing",
+            span,
+        ));
+    }
+    Ok(())
+}
+
+/// The parameters and state fields that hold an external address.
+fn address_names<'a>(model: &'a Model, entry: &'a EntryDecl) -> HashSet<&'a str> {
+    let mut set = HashSet::new();
+    for (name, field) in &model.state {
+        if field.ty.name.text == "Q_Address" {
+            set.insert(*name);
+        }
+    }
+    for param in &entry.params {
+        if param.ty.name.text == "Q_Address" {
+            set.insert(param.name.text.as_str());
+        }
+    }
+    set
+}
+
+/// True when the expression denotes an external address: the caller, a named
+fn is_external_address(expr: &Expr, addresses: &HashSet<&str>) -> bool {
+    match expr {
+        Expr::Caller { .. } => true,
+        Expr::Ident(id) => addresses.contains(id.text.as_str()),
+        Expr::Field { base, .. } => is_external_address(base, addresses),
+        _ => false,
+    }
+}
+
+fn for_each_expr(stmt: &Stmt, f: &mut impl FnMut(&Expr)) {
+    match stmt {
+        Stmt::Guard { expr, .. } | Stmt::Expr { expr, .. } => walk(expr, f),
+        Stmt::Let { value, .. } => walk(value, f),
+        Stmt::Assign { target, value, .. } => {
+            walk(target, f);
+            walk(value, f);
+        }
+        Stmt::Emit { args, .. } => {
+            for a in args {
+                walk(a, f);
+            }
+        }
+    }
+}
+
+fn walk(expr: &Expr, f: &mut impl FnMut(&Expr)) {
+    f(expr);
+    match expr {
+        Expr::Unary { expr, .. } => walk(expr, f),
+        Expr::Binary { left, right, .. } => {
+            walk(left, f);
+            walk(right, f);
+        }
+        Expr::Field { base, .. } => walk(base, f),
+        Expr::Call { callee, args, .. } => {
+            walk(callee, f);
+            for a in args {
+                walk(a, f);
+            }
+        }
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => walk(expr, f),
+        Expr::Int(_) | Expr::Date { .. } | Expr::Str(_) | Expr::Ident(_) | Expr::Caller { .. } => {}
+    }
 }
 
 /// The leftmost identifier of an lvalue, if any.
@@ -126,5 +215,13 @@ mod tests {
     fn signed_by_must_name_a_state_field() {
         let src = "contract C { state { a: u64; } entry f(o: Order signed by ghost) { } }";
         assert!(error_for(src).contains("not a state field"));
+    }
+
+    #[test]
+    fn a_synchronous_external_call_to_the_caller_is_rejected() {
+        let src = "contract C { state { owner: Q_Address; vault: Q_Asset<QTOV>; } \
+                   entry withdraw(order: WithdrawOrder signed by owner) conserves QTOV writes(vault) \
+                   { let out = vault.split(order.amount); let ack = caller.receive(out); } }";
+        assert!(error_for(src).contains("external call"));
     }
 }
