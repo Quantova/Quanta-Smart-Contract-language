@@ -18,10 +18,16 @@ pub const ARG_BASE: u64 = 0;
 /// Width of one argument word.
 const WORD: u64 = 8;
 
+/// Argument key suffix for the scheme identifier of a signed parameter.
+const SIG_SCHEME_SUFFIX: &str = "#scheme";
 /// Argument key suffix for the pointer to a signed parameter's verify region.
 const SIG_PTR_SUFFIX: &str = "#ptr";
 /// Argument key suffix for the length of a signed parameter's verify region.
 const SIG_LEN_SUFFIX: &str = "#len";
+
+/// Signature scheme identifiers carried in the envelope. ML DSA is the module lattice scheme and the
+const SCHEME_ML: u64 = 0x01;
+const SCHEME_SLH: u64 = 0x02;
 
 /// A stack of temporary registers. They allocate and free in stack order.
 pub struct Regs {
@@ -319,7 +325,13 @@ pub fn lower_entry(
     Ok(args)
 }
 
-/// Verifies each `signed by` parameter before the body runs. A `p: T signed by owner` desugars to a
+/// The verify opcode a scheme identifier dispatches to.
+enum VerifyOp {
+    Ml,
+    Slh,
+}
+
+/// Verifies each `signed by` parameter before the body runs, dispatching on the one byte scheme
 fn lower_signed_prologue(
     ctx: &mut Ctx,
     entry: &EntryDecl,
@@ -330,41 +342,110 @@ fn lower_signed_prologue(
             continue;
         }
         let name = &param.name.text;
+        let span = param.span;
+        let scheme_off = ctx.args.offset_of(&format!("{name}{SIG_SCHEME_SUFFIX}"));
         let ptr_off = ctx.args.offset_of(&format!("{name}{SIG_PTR_SUFFIX}"));
         let len_off = ctx.args.offset_of(&format!("{name}{SIG_LEN_SUFFIX}"));
 
-        let rptr = ctx.regs.alloc(param.span)?;
+        let ml_label = ctx.b.label();
+        let slh_label = ctx.b.label();
+        let done_label = ctx.b.label();
+
+        // Read the scheme identifier and branch to the matching verify, reverting on an unknown one.
+        let scheme = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
             d: SCRATCH,
-            imm: ptr_off,
+            imm: scheme_off,
         });
         ctx.b.op(Instr::MLoad {
-            d: rptr,
+            d: scheme,
             a: SCRATCH,
         });
-
-        let rlen = ctx.regs.alloc(param.span)?;
+        let test = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
             d: SCRATCH,
-            imm: len_off,
+            imm: SCHEME_ML,
         });
-        ctx.b.op(Instr::MLoad {
-            d: rlen,
-            a: SCRATCH,
+        ctx.b.op(Instr::Eq {
+            d: test,
+            a: scheme,
+            b: SCRATCH,
         });
+        ctx.b.jnz(test, ml_label);
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: SCHEME_SLH,
+        });
+        ctx.b.op(Instr::Eq {
+            d: test,
+            a: scheme,
+            b: SCRATCH,
+        });
+        ctx.b.jnz(test, slh_label);
+        ctx.b.jmp(trap);
+        ctx.regs.free(test);
+        ctx.regs.free(scheme);
 
-        let rok = ctx.regs.alloc(param.span)?;
-        ctx.b.op(Instr::VerifyMl {
+        ctx.b.mark(ml_label);
+        emit_verify(ctx, VerifyOp::Ml, ptr_off, len_off, trap, span)?;
+        ctx.b.jmp(done_label);
+
+        ctx.b.mark(slh_label);
+        emit_verify(ctx, VerifyOp::Slh, ptr_off, len_off, trap, span)?;
+
+        ctx.b.mark(done_label);
+    }
+    Ok(())
+}
+
+/// Emits one verify over the parameter region and reverts to the trap when it does not verify.
+fn emit_verify(
+    ctx: &mut Ctx,
+    op: VerifyOp,
+    ptr_off: u64,
+    len_off: u64,
+    trap: Label,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let rptr = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: SCRATCH,
+        imm: ptr_off,
+    });
+    ctx.b.op(Instr::MLoad {
+        d: rptr,
+        a: SCRATCH,
+    });
+
+    let rlen = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: SCRATCH,
+        imm: len_off,
+    });
+    ctx.b.op(Instr::MLoad {
+        d: rlen,
+        a: SCRATCH,
+    });
+
+    let rok = ctx.regs.alloc(span)?;
+    let instr = match op {
+        VerifyOp::Ml => Instr::VerifyMl {
             a: rptr,
             b: rlen,
             c: rok,
-        });
-        ctx.b.jz(rok, trap);
+        },
+        VerifyOp::Slh => Instr::VerifySlh {
+            a: rptr,
+            b: rlen,
+            c: rok,
+        },
+    };
+    ctx.b.op(instr);
+    ctx.b.jz(rok, trap);
 
-        ctx.regs.free(rok);
-        ctx.regs.free(rlen);
-        ctx.regs.free(rptr);
-    }
+    ctx.regs.free(rok);
+    ctx.regs.free(rlen);
+    ctx.regs.free(rptr);
     Ok(())
 }
 

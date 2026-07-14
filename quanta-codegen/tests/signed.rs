@@ -35,11 +35,12 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
     mem[off..off + 8].copy_from_slice(&value.to_be_bytes());
 }
 
-// Build the scratch memory: the verify region for the order and the plain argument words. Returns
-// the memory and a mutable copy of the region so a caller can tamper with it.
+// Build the scratch memory: the scheme identifier, the verify region for the order, and the plain
+// argument words. Scheme one is ML DSA.
 fn scratch(cc: &CompiledContract, region: &[u8], step: u64) -> Vec<u8> {
     let region_off = 8192usize;
     let mut mem = vec![0u8; region_off + region.len()];
+    put_word(&mut mem, arg_offset(cc, "order#scheme"), 1);
     put_word(&mut mem, arg_offset(cc, "order#ptr"), region_off as u64);
     put_word(&mut mem, arg_offset(cc, "order#len"), region.len() as u64);
     put_word(&mut mem, arg_offset(cc, "order.step"), step);
