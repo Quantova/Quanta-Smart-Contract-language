@@ -7,7 +7,7 @@ use crate::lower::lower_entry;
 use crate::selector::{entry_selector, entry_signature, event_selector, event_signature};
 use qtv_vm::container::{Container, Entry, SELECTOR_BYTES};
 use qtv_vm::isa::Instr;
-use quanta_ast::{Contract, Item, Program};
+use quanta_ast::{Contract, EntryDecl, Item, Program};
 
 /// A compiled contract: the loadable container plus the interface facts a caller needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,8 +47,40 @@ pub fn compile(program: &Program) -> Result<Vec<CompiledContract>, CodegenError>
     program.contracts.iter().map(compile_contract).collect()
 }
 
-/// Compiles one contract to its container and interface.
+/// Compiles one contract to its container and interface. Every entry lowers into one code image
 pub fn compile_contract(contract: &Contract) -> Result<CompiledContract, CodegenError> {
+    let entries: Vec<&EntryDecl> = contract
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Entry(entry) => Some(entry),
+            _ => None,
+        })
+        .collect();
+    compile_entries(contract, &entries)
+}
+
+/// Compiles one named entry of a contract into its own container entered at offset zero. The
+pub fn compile_entry(contract: &Contract, name: &str) -> Result<CompiledContract, CodegenError> {
+    let entry = contract
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Entry(entry) if entry.name.text == name => Some(entry),
+            _ => None,
+        })
+        .ok_or_else(|| CodegenError::Unsupported {
+            what: format!("a build of the unknown entry `{name}`"),
+            span: contract.name.span,
+        })?;
+    compile_entries(contract, &[entry])
+}
+
+/// Lowers a chosen set of entries into one image entered at the first of them, sharing the revert
+fn compile_entries(
+    contract: &Contract,
+    entries: &[&EntryDecl],
+) -> Result<CompiledContract, CodegenError> {
     let layout = Layout::build(contract);
     let invariants: Vec<&quanta_ast::Expr> = contract
         .items
@@ -62,27 +94,25 @@ pub fn compile_contract(contract: &Contract) -> Result<CompiledContract, Codegen
     let mut b = Builder::new();
     let trap = b.label();
 
-    let mut entries = Vec::new();
+    let mut artifacts = Vec::new();
     let mut container_entries = Vec::new();
-    for item in &contract.items {
-        if let Item::Entry(entry) = item {
-            let args = lower_entry(&layout, entry, &invariants, &mut b, trap)?;
-            let selector = entry_selector(entry);
-            container_entries.push(Entry {
-                selector,
-                access: layout.access(entry),
-            });
-            entries.push(EntryArtifact {
-                name: entry.name.text.clone(),
-                signature: entry_signature(entry),
-                selector,
-                args: args
-                    .layout()
-                    .into_iter()
-                    .map(|(key, offset)| ArgSlot { key, offset })
-                    .collect(),
-            });
-        }
+    for entry in entries {
+        let args = lower_entry(&layout, entry, &invariants, &mut b, trap)?;
+        let selector = entry_selector(entry);
+        container_entries.push(Entry {
+            selector,
+            access: layout.access(entry),
+        });
+        artifacts.push(EntryArtifact {
+            name: entry.name.text.clone(),
+            signature: entry_signature(entry),
+            selector,
+            args: args
+                .layout()
+                .into_iter()
+                .map(|(key, offset)| ArgSlot { key, offset })
+                .collect(),
+        });
     }
 
     // Shared revert trap. A guard or invariant that fails jumps here and the divide by zero faults,
@@ -109,7 +139,7 @@ pub fn compile_contract(contract: &Contract) -> Result<CompiledContract, Codegen
     Ok(CompiledContract {
         name: contract.name.text.clone(),
         container: Container::new(code, Vec::new(), container_entries),
-        entries,
+        entries: artifacts,
         events,
     })
 }
@@ -169,6 +199,27 @@ mod tests {
         assert_eq!(cc.events.len(), 1);
         assert_eq!(cc.events[0].signature, "Advanced(u64)");
         assert_eq!(cc.events[0].selector, vm_selector("Advanced(u64)"));
+    }
+
+    const TWO: &str = "contract Two { state { a: u64; b: u64; } \
+        entry one(x: u64) writes(a) { a = x; } \
+        entry two(y: u64) writes(b) { b = y; } }";
+
+    #[test]
+    fn compile_entry_builds_just_the_named_entry_at_offset_zero() {
+        let program = quanta_parser::parse(TWO).expect("parse");
+        quanta_typeck::check(&program).expect("typecheck");
+        let cc = compile_entry(&program.contracts[0], "two").expect("compile entry");
+        assert_eq!(cc.container.entries.len(), 1, "only the chosen entry");
+        assert_eq!(cc.container.entries[0].selector, vm_selector("two(u64)"));
+        assert_eq!(cc.entries[0].name, "two");
+    }
+
+    #[test]
+    fn compile_entry_rejects_an_unknown_entry() {
+        let program = quanta_parser::parse(TWO).expect("parse");
+        let err = compile_entry(&program.contracts[0], "missing").expect_err("unknown entry");
+        assert!(err.to_string().contains("missing"));
     }
 
     #[test]
