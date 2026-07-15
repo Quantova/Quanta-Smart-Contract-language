@@ -21,8 +21,8 @@ fn qs_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn there_are_seventeen_examples() {
-    assert_eq!(qs_files(&examples_dir()).len(), 17);
+fn there_are_eighteen_examples() {
+    assert_eq!(qs_files(&examples_dir()).len(), 18);
 }
 
 #[test]
