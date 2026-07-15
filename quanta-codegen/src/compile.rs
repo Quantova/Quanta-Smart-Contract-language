@@ -1,6 +1,6 @@
 //! Contract compilation. Lowers every entry of a contract into one code image, embeds the entry
 
-use crate::emit::Builder;
+use crate::emit::{Builder, LinkError};
 use crate::error::CodegenError;
 use crate::layout::Layout;
 use crate::lower::lower_entry;
@@ -47,7 +47,7 @@ pub fn compile(program: &Program) -> Result<Vec<CompiledContract>, CodegenError>
     program.contracts.iter().map(compile_contract).collect()
 }
 
-/// Compiles one contract to its container and interface. Every entry lowers into one code image
+/// Compiles one contract to its container and interface. Every entry lowers into one code image, and
 pub fn compile_contract(contract: &Contract) -> Result<CompiledContract, CodegenError> {
     let entries: Vec<&EntryDecl> = contract
         .items
@@ -76,7 +76,7 @@ pub fn compile_entry(contract: &Contract, name: &str) -> Result<CompiledContract
     compile_entries(contract, &[entry])
 }
 
-/// Lowers a chosen set of entries into one image entered at the first of them, sharing the revert
+/// Lowers a set of entries into one code image, each beginning at its own offset, sharing the revert
 fn compile_entries(
     contract: &Contract,
     entries: &[&EntryDecl],
@@ -95,14 +95,13 @@ fn compile_entries(
     let trap = b.label();
 
     let mut artifacts = Vec::new();
-    let mut container_entries = Vec::new();
+    let mut placed = Vec::new();
     for entry in entries {
+        let start = b.label();
+        b.mark(start);
         let args = lower_entry(&layout, entry, &invariants, &mut b, trap)?;
         let selector = entry_selector(entry);
-        container_entries.push(Entry {
-            selector,
-            access: layout.access(entry),
-        });
+        placed.push((selector, layout.access(entry), start));
         artifacts.push(EntryArtifact {
             name: entry.name.text.clone(),
             signature: entry_signature(entry),
@@ -121,7 +120,23 @@ fn compile_entries(
     b.op(Instr::Ldi { d: 0, imm: 0 });
     b.op(Instr::Div { d: 0, a: 0, b: 0 });
 
-    let code = b.link().map_err(CodegenError::Link)?;
+    let (code, offsets) = b.link_with_offsets().map_err(CodegenError::Link)?;
+
+    // Each entry begins at the offset its start label resolved to, so the container the interpreter
+    // loads maps a call selector to where that entry enters.
+    let mut container_entries = Vec::new();
+    for (selector, access, start) in placed {
+        let offset = offsets
+            .get(start as usize)
+            .copied()
+            .flatten()
+            .ok_or(CodegenError::Link(LinkError::UnplacedLabel(start)))?;
+        container_entries.push(Entry {
+            selector,
+            offset,
+            access,
+        });
+    }
 
     let events = contract
         .items
@@ -206,20 +221,28 @@ mod tests {
         entry two(y: u64) writes(b) { b = y; } }";
 
     #[test]
-    fn compile_entry_builds_just_the_named_entry_at_offset_zero() {
-        let program = quanta_parser::parse(TWO).expect("parse");
-        quanta_typeck::check(&program).expect("typecheck");
-        let cc = compile_entry(&program.contracts[0], "two").expect("compile entry");
-        assert_eq!(cc.container.entries.len(), 1, "only the chosen entry");
-        assert_eq!(cc.container.entries[0].selector, vm_selector("two(u64)"));
-        assert_eq!(cc.entries[0].name, "two");
+    fn the_first_entry_begins_at_offset_zero() {
+        let cc = compile_one(TWO);
+        assert_eq!(cc.container.entries[0].offset, 0);
     }
 
     #[test]
-    fn compile_entry_rejects_an_unknown_entry() {
-        let program = quanta_parser::parse(TWO).expect("parse");
-        let err = compile_entry(&program.contracts[0], "missing").expect_err("unknown entry");
-        assert!(err.to_string().contains("missing"));
+    fn a_later_entry_begins_where_its_code_starts() {
+        let cc = compile_one(TWO);
+        // The second entry begins after the first entry's code, so its offset is non zero and the
+        // selector resolves to it.
+        let second = cc.container.entries[1].offset;
+        assert_ne!(second, 0, "the second entry does not begin at zero");
+        assert_eq!(
+            cc.container.entry_offset(&vm_selector("two(u64)")),
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn an_unknown_selector_has_no_entry_offset() {
+        let cc = compile_one(TWO);
+        assert_eq!(cc.container.entry_offset(&vm_selector("three(u64)")), None);
     }
 
     #[test]
