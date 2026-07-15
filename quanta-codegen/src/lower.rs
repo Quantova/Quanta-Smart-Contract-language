@@ -95,6 +95,10 @@ impl Args {
 pub struct Ctx<'a> {
     layout: &'a Layout,
     params: &'a HashSet<String>,
+    /// The subset of the parameters that carry a linear asset value.
+    asset_params: &'a HashSet<String>,
+    /// Asset values bound by a `let`, each mapped to the scratch memory word that holds its amount.
+    asset_locals: HashMap<String, u64>,
     b: &'a mut Builder,
     regs: &'a mut Regs,
     args: &'a mut Args,
@@ -104,6 +108,7 @@ impl<'a> Ctx<'a> {
     pub fn new(
         layout: &'a Layout,
         params: &'a HashSet<String>,
+        asset_params: &'a HashSet<String>,
         b: &'a mut Builder,
         regs: &'a mut Regs,
         args: &'a mut Args,
@@ -111,6 +116,8 @@ impl<'a> Ctx<'a> {
         Ctx {
             layout,
             params,
+            asset_params,
+            asset_locals: HashMap::new(),
             b,
             regs,
             args,
@@ -170,6 +177,17 @@ fn lower_ident(ctx: &mut Ctx, name: &str, span: Span) -> Result<Reg, CodegenErro
 
 fn lower_field(ctx: &mut Ctx, base: &Expr, field: &str, span: Span) -> Result<Reg, CodegenError> {
     if let Expr::Ident(id) = base {
+        // The amount of an asset value is its one canonical word, so `funds.amount` reads the same
+        // word as the bare `funds`, and the two spellings never diverge.
+        if field == "amount" && ctx.asset_params.contains(&id.text) {
+            let off = ctx.args.offset_of(&id.text);
+            return load_arg(ctx, off, span);
+        }
+        if field == "amount" {
+            if let Some(off) = ctx.asset_locals.get(&id.text).copied() {
+                return load_arg(ctx, off, span);
+            }
+        }
         if ctx.params.contains(&id.text) {
             let key = format!("{}.{}", id.text, field);
             let off = ctx.args.offset_of(&key);
@@ -180,6 +198,24 @@ fn lower_field(ctx: &mut Ctx, base: &Expr, field: &str, span: Span) -> Result<Re
         what: "a field access outside a parameter".into(),
         span,
     })
+}
+
+/// Lowers an asset value to a fresh register holding its amount. An asset parameter reads its
+fn asset_amount(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<Reg, CodegenError> {
+    match value {
+        Expr::Ident(id) if ctx.asset_params.contains(&id.text) => {
+            let off = ctx.args.offset_of(&id.text);
+            load_arg(ctx, off, id.span)
+        }
+        Expr::Ident(id) if ctx.asset_locals.contains_key(&id.text) => {
+            let off = ctx.asset_locals[&id.text];
+            load_arg(ctx, off, id.span)
+        }
+        _ => Err(CodegenError::Unsupported {
+            what: "an asset value here".into(),
+            span,
+        }),
+    }
 }
 
 fn load_arg(ctx: &mut Ctx, off: u64, span: Span) -> Result<Reg, CodegenError> {
@@ -322,11 +358,17 @@ pub fn lower_entry(
 ) -> Result<Args, CodegenError> {
     refuse_sealed(entry)?;
     let params: HashSet<String> = entry.params.iter().map(|p| p.name.text.clone()).collect();
+    let asset_params: HashSet<String> = entry
+        .params
+        .iter()
+        .filter(|p| p.ty.name.text == "Q_Asset")
+        .map(|p| p.name.text.clone())
+        .collect();
     let writes_state = !layout.access(entry).writes.is_empty();
     let mut regs = Regs::new();
     let mut args = Args::new();
     {
-        let mut ctx = Ctx::new(layout, &params, b, &mut regs, &mut args);
+        let mut ctx = Ctx::new(layout, &params, &asset_params, b, &mut regs, &mut args);
         lower_signed_prologue(&mut ctx, entry, trap)?;
         for stmt in &entry.body {
             lower_stmt(&mut ctx, stmt, trap)?;
@@ -507,11 +549,76 @@ fn lower_stmt(ctx: &mut Ctx, stmt: &Stmt, trap: Label) -> Result<(), CodegenErro
             what: "a let binding".into(),
             span: *span,
         }),
+        // A bare call is a state mutating asset or ledger operation.
+        Stmt::Expr {
+            expr: Expr::Call { callee, args, span },
+            ..
+        } => lower_call_effect(ctx, callee, args, *span, trap),
         Stmt::Expr { span, .. } => Err(CodegenError::Unsupported {
             what: "an expression statement".into(),
             span: *span,
         }),
     }
+}
+
+/// Lowers a call used as a statement for its side effect. A method on an asset state field or a
+fn lower_call_effect(
+    ctx: &mut Ctx,
+    callee: &Expr,
+    args: &[Expr],
+    span: Span,
+    _trap: Label,
+) -> Result<(), CodegenError> {
+    if let Expr::Field { base, name, .. } = callee {
+        if name.text == "merge" {
+            return lower_merge(ctx, base, args, span);
+        }
+    }
+    Err(CodegenError::Unsupported {
+        what: "this call statement".into(),
+        span,
+    })
+}
+
+/// The storage slot of an asset state field named as the receiver of an asset operation.
+fn asset_field_slot(ctx: &Ctx, base: &Expr, span: Span) -> Result<u64, CodegenError> {
+    if let Expr::Ident(id) = base {
+        if let Some(slot) = ctx.layout.slot(&id.text) {
+            return Ok(slot);
+        }
+    }
+    Err(CodegenError::Unsupported {
+        what: "an asset operation on a value that is not a state field".into(),
+        span,
+    })
+}
+
+/// The single argument of a call, or an error when the arity is wrong.
+fn one_arg(args: &[Expr], span: Span) -> Result<&Expr, CodegenError> {
+    match args {
+        [only] => Ok(only),
+        _ => Err(CodegenError::Unsupported {
+            what: "an asset operation with an unexpected argument count".into(),
+            span,
+        }),
+    }
+}
+
+/// Merges an asset value into an asset state field, a checked balance add that conserves supply and
+fn lower_merge(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Result<(), CodegenError> {
+    let slot = asset_field_slot(ctx, base, span)?;
+    let value = one_arg(args, span)?;
+    let amt = asset_amount(ctx, value, span)?;
+    let rf = load_slot(ctx, slot, span)?;
+    ctx.b.op(Instr::Add {
+        d: rf,
+        a: rf,
+        b: amt,
+    });
+    store_slot(ctx, slot, rf);
+    ctx.regs.free(rf);
+    ctx.regs.free(amt);
+    Ok(())
 }
 
 fn lower_assign(
@@ -597,8 +704,16 @@ mod tests {
         let mut b = Builder::new();
         let mut regs = Regs::new();
         let mut args = Args::new();
+        let asset_params = HashSet::new();
         let dest = {
-            let mut ctx = Ctx::new(&layout, &params, &mut b, &mut regs, &mut args);
+            let mut ctx = Ctx::new(
+                &layout,
+                &params,
+                &asset_params,
+                &mut b,
+                &mut regs,
+                &mut args,
+            );
             lower_expr(&mut ctx, &expr, false).expect("lower")
         };
         b.op(Instr::Halt);
