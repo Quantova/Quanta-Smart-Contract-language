@@ -4,7 +4,7 @@ use crate::emit::{Builder, Label};
 use crate::error::CodegenError;
 use crate::layout::Layout;
 use qtv_vm::isa::{Instr, Reg, NUM_REGS};
-use quanta_ast::{AssignOp, BinOp, EntryDecl, Expr, Stmt, UnaryOp};
+use quanta_ast::{AssignOp, BinOp, EntryDecl, Expr, GenericArg, Param, Stmt, UnaryOp};
 use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
 
@@ -499,6 +499,7 @@ pub fn lower_entry(
         let mut ctx = Ctx::new(layout, &params, &asset_params, b, &mut regs, &mut args);
         ctx.entry_mints = entry_mints;
         lower_signed_prologue(&mut ctx, entry, trap)?;
+        lower_quorum_prologue(&mut ctx, entry, trap)?;
         for stmt in &entry.body {
             lower_stmt(&mut ctx, stmt, trap)?;
         }
@@ -597,6 +598,41 @@ fn dispatch_verify(
 
     ctx.b.mark(done_label);
     Ok(())
+}
+
+/// Verifies each quorum parameter before the body runs. A `Quorum<M of N, set>` is constructed only
+fn lower_quorum_prologue(
+    ctx: &mut Ctx,
+    entry: &EntryDecl,
+    trap: Label,
+) -> Result<(), CodegenError> {
+    for param in &entry.params {
+        let Some(threshold) = quorum_threshold(param) else {
+            continue;
+        };
+        let name = &param.name.text;
+        let span = param.span;
+        for i in 0..threshold {
+            let scheme_off = ctx
+                .args
+                .offset_of(&format!("{name}#{i}{SIG_SCHEME_SUFFIX}"));
+            let ptr_off = ctx.args.offset_of(&format!("{name}#{i}{SIG_PTR_SUFFIX}"));
+            let len_off = ctx.args.offset_of(&format!("{name}#{i}{SIG_LEN_SUFFIX}"));
+            dispatch_verify(ctx, scheme_off, ptr_off, len_off, trap, span)?;
+        }
+    }
+    Ok(())
+}
+
+/// The threshold M of a `Quorum<M of N, set>` parameter, if the parameter is a quorum.
+fn quorum_threshold(param: &Param) -> Option<u64> {
+    if param.ty.name.text != "Quorum" {
+        return None;
+    }
+    param.ty.args.iter().find_map(|arg| match arg {
+        GenericArg::MofN { m, .. } => m.text.parse::<u64>().ok(),
+        _ => None,
+    })
 }
 
 /// Emits one verify over the parameter region and reverts to the trap when it does not verify.
