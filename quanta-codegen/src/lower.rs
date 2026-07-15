@@ -741,25 +741,58 @@ fn lower_call_effect(
             _ => {}
         }
     }
-    // A send of an asset to an external account is the one asset operation that has no lowering: it
-    // needs the native cross account transfer instruction, which qtv-vm v0.1.0 decodes as the SEND
-    // opcode but leaves pending in the interpreter. Rather than emit a path that faults as pending at
-    // run time, the operation is stopped here and flagged. A within contract transfer that credits a
-    // recipient's ledger balance does lower; only the cross account move is blocked (SPEC-lowering).
+    // A send of an asset to an account lowers to the native transfer the SEND opcode records.
     if matches!(callee, Expr::Ident(id) if id.text == "send") {
-        return Err(CodegenError::Unsupported {
-            what:
-                "a send of an asset to an account, which needs the native cross account transfer \
-                   instruction the SEND opcode names; qtv-vm v0.1.0 decodes SEND but leaves it \
-                   pending, so the transfer cannot be lowered"
-                    .into(),
-            span,
-        });
+        return lower_send(ctx, args, span);
     }
     Err(CodegenError::Unsupported {
         what: "this call statement".into(),
         span,
     })
+}
+
+/// Lowers a `send` of an asset to an account to the native transfer the SEND opcode records. The
+fn lower_send(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), CodegenError> {
+    let (to, value) = two_args(args, span)?;
+    let amount = asset_amount(ctx, value, span)?;
+    let addr_off = addr_word_offset(ctx, to, span)?;
+    let raddr = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: raddr,
+        imm: addr_off,
+    });
+    let rlen = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: rlen, imm: WORD });
+    ctx.b.op(Instr::Send {
+        a: raddr,
+        b: rlen,
+        c: amount,
+    });
+    ctx.regs.free(rlen);
+    ctx.regs.free(raddr);
+    ctx.regs.free(amount);
+    Ok(())
+}
+
+/// The scratch memory offset of the recipient address word of a `send`. The recipient is a plain
+fn addr_word_offset(ctx: &mut Ctx, to: &Expr, span: Span) -> Result<u64, CodegenError> {
+    match to {
+        Expr::Caller { .. } => Ok(ctx.args.offset_of(CALLER_KEY)),
+        Expr::Ident(id) if ctx.params.contains(&id.text) => Ok(ctx.args.offset_of(&id.text)),
+        Expr::Field { base, name, .. } => match base.as_ref() {
+            Expr::Ident(id) if ctx.params.contains(&id.text) => {
+                Ok(ctx.args.offset_of(&format!("{}.{}", id.text, name.text)))
+            }
+            _ => Err(CodegenError::Unsupported {
+                what: "a send to an address that is not a parameter".into(),
+                span,
+            }),
+        },
+        _ => Err(CodegenError::Unsupported {
+            what: "a send to an address that is not a parameter".into(),
+            span,
+        }),
+    }
 }
 
 /// The keyed base of a `Map` or `Registry` field named as the receiver of a ledger operation.

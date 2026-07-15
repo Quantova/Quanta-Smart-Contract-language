@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use qtv_crypto::ml_dsa;
-use qtv_vm::interp::{Fault, Interpreter};
+use qtv_vm::interp::{Effect, Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
 
 fn compile(src: &str) -> CompiledContract {
@@ -243,26 +243,29 @@ fn a_membership_guard_admits_a_listed_key_and_reverts_an_absent_one() {
     );
 }
 
-// A send moves an asset to an external account and needs the native cross account transfer
-// instruction. qtv-vm v0.1.0 leaves the SEND opcode pending, so the operation is refused with a flag
-// rather than lowered to a path that faults at run time.
+// A send moves an asset to an account and lowers to the native transfer the SEND opcode records. The
+// machine returns the move as a transfer effect for the host to apply against the native ledger, and
+// the contract's own state is untouched.
 const SENDER: &str = "contract Sender {\n\
   state { pool: Q_Asset<QTOV>; }\n\
   entry payout(to: Q_Address, funds: Q_Asset<QTOV>) conserves QTOV { send(to, funds); }\n\
 }\n";
 
 #[test]
-fn a_send_to_an_account_is_refused_naming_the_missing_instruction() {
-    let program = quanta_parser::parse(SENDER).expect("parse");
-    quanta_typeck::check(&program).expect("typecheck");
-    let err = compile_contract(&program.contracts[0]).expect_err("a send must not lower");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("SEND"),
-        "the flag names the missing opcode: {msg}"
-    );
-    assert!(
-        msg.contains("cross account"),
-        "the flag explains the gap: {msg}"
+fn a_send_lowers_and_the_machine_records_the_transfer_effect() {
+    let cc = compile(SENDER);
+    let mem = memory_with(&cc, 0, &[("to", 0xA11CE), ("funds", 750)]);
+    let out = Interpreter::for_entry(&cc.container, cc.entries[0].selector, 300_000)
+        .expect("the payout selector resolves")
+        .with_memory(&mem)
+        .run()
+        .expect("the send halts");
+    assert_eq!(
+        out.effects,
+        vec![Effect::Transfer {
+            to: 0xA11CE_u64.to_be_bytes().to_vec(),
+            amount: 750,
+        }],
+        "the machine records the transfer the send names"
     );
 }
