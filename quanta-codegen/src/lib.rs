@@ -8,7 +8,6 @@ pub mod lower;
 pub mod selector;
 
 pub use compile::{
-    compile, compile_contract, compile_entry, ArgSlot, CompiledContract, EntryArtifact,
-    EventArtifact,
+    compile, compile_contract, ArgSlot, CompiledContract, EntryArtifact, EventArtifact,
 };
 pub use error::CodegenError;

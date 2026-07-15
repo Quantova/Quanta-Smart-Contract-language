@@ -4,9 +4,10 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use qtv_crypto::ml_dsa;
+use qtv_vm::container::{selector, SELECTOR_BYTES};
 use qtv_vm::interp::{Fault, Interpreter};
 use quanta_ast::Contract;
-use quanta_codegen::{compile_contract, compile_entry, CompiledContract};
+use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 
 // State slots follow declaration order: guardians, total_supply, max_supply, paused, then the keyed
 // balances and frozen fields.
@@ -30,6 +31,13 @@ fn token_standard() -> Contract {
     program.contracts.into_iter().next().expect("one contract")
 }
 
+fn find_entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
+    cc.entries
+        .iter()
+        .find(|e| e.name == name)
+        .unwrap_or_else(|| panic!("the container carries the {name} entry"))
+}
+
 fn ml_region(seed: u8) -> Vec<u8> {
     let (pk, sk) = ml_dsa::keygen(&[seed; 32]);
     let payload = b"issuer guardian approval";
@@ -41,32 +49,33 @@ fn ml_region(seed: u8) -> Vec<u8> {
     region
 }
 
-fn put_arg(mem: &mut [u8], cc: &CompiledContract, key: &str, value: u64) {
-    if let Some(slot) = cc.entries[0].args.iter().find(|s| s.key == key) {
+fn put_arg(mem: &mut [u8], entry: &EntryArtifact, key: &str, value: u64) {
+    if let Some(slot) = entry.args.iter().find(|s| s.key == key) {
         let at = slot.offset as usize;
         mem[at..at + 8].copy_from_slice(&value.to_be_bytes());
     }
 }
 
 // Place each quorum member's signature region and its scheme, pointer, and length words.
-fn put_quorum(mem: &mut [u8], cc: &CompiledContract, name: &str, members: &[(u64, Vec<u8>)]) {
+fn put_quorum(mem: &mut [u8], entry: &EntryArtifact, name: &str, members: &[(u64, Vec<u8>)]) {
     let mut cursor = 20000usize;
     for (i, (scheme, region)) in members.iter().enumerate() {
         let off = cursor;
         cursor += region.len();
         mem[off..off + region.len()].copy_from_slice(region);
-        put_arg(mem, cc, &format!("{name}#{i}#scheme"), *scheme);
-        put_arg(mem, cc, &format!("{name}#{i}#ptr"), off as u64);
-        put_arg(mem, cc, &format!("{name}#{i}#len"), region.len() as u64);
+        put_arg(mem, entry, &format!("{name}#{i}#scheme"), *scheme);
+        put_arg(mem, entry, &format!("{name}#{i}#ptr"), off as u64);
+        put_arg(mem, entry, &format!("{name}#{i}#len"), region.len() as u64);
     }
 }
 
 fn run(
     cc: &CompiledContract,
+    entry: [u8; SELECTOR_BYTES],
     storage: BTreeMap<u64, u64>,
     mem: &[u8],
 ) -> Result<BTreeMap<u64, u64>, Fault> {
-    Interpreter::new(&cc.container.code, &cc.container.consts, GAS)
+    Interpreter::for_entry(&cc.container, entry, GAS)?
         .with_storage(storage)
         .with_memory(mem)
         .run()
@@ -75,27 +84,26 @@ fn run(
 
 #[test]
 fn the_whole_token_standard_compiles_to_a_container() {
-    let contract = token_standard();
-    let cc = compile_contract(&contract).expect("the token standard compiles");
+    let cc = compile_contract(&token_standard()).expect("the token standard compiles");
     assert_eq!(cc.container.entries.len(), 8, "every issuer power lowers");
     assert!(!cc.container.code.is_empty());
 }
 
 #[test]
 fn a_quorum_gated_mint_creates_supply_and_credits_the_recipient() {
-    let contract = token_standard();
-    let cc = compile_entry(&contract, "mint").expect("mint compiles");
+    let cc = compile_contract(&token_standard()).expect("the token standard compiles");
+    let mint = find_entry(&cc, "mint");
 
     let members = vec![(1, ml_region(1)), (1, ml_region(2)), (1, ml_region(3))];
     let mut mem = vec![0u8; 65536];
-    put_arg(&mut mem, &cc, "order.amount", 500);
-    put_arg(&mut mem, &cc, "order.to", ACCOUNT_A);
-    put_quorum(&mut mem, &cc, "approvals", &members);
+    put_arg(&mut mem, mint, "order.amount", 500);
+    put_arg(&mut mem, mint, "order.to", ACCOUNT_A);
+    put_quorum(&mut mem, mint, "approvals", &members);
 
     let mut storage = BTreeMap::new();
     storage.insert(SLOT_MAX, CEILING);
 
-    let out = run(&cc, storage, &mem).expect("the mint halts under a met quorum");
+    let out = run(&cc, mint.selector, storage, &mem).expect("the mint halts under a met quorum");
     assert_eq!(
         out.get(&SLOT_SUPPLY),
         Some(&500),
@@ -110,20 +118,20 @@ fn a_quorum_gated_mint_creates_supply_and_credits_the_recipient() {
 
 #[test]
 fn a_transfer_moves_ledger_balance_between_accounts() {
-    let contract = token_standard();
-    let cc = compile_entry(&contract, "transfer").expect("transfer compiles");
+    let cc = compile_contract(&token_standard()).expect("the token standard compiles");
+    let transfer = find_entry(&cc, "transfer");
 
     let mut mem = vec![0u8; 65536];
-    put_arg(&mut mem, &cc, "funds", 200);
-    put_arg(&mut mem, &cc, "to", ACCOUNT_B);
-    put_arg(&mut mem, &cc, "@caller", ACCOUNT_A);
+    put_arg(&mut mem, transfer, "funds", 200);
+    put_arg(&mut mem, transfer, "to", ACCOUNT_B);
+    put_arg(&mut mem, transfer, "@caller", ACCOUNT_A);
 
     let mut storage = BTreeMap::new();
     storage.insert(BAL_BASE + ACCOUNT_A, 500);
     storage.insert(SLOT_SUPPLY, 500);
     storage.insert(SLOT_MAX, CEILING);
 
-    let out = run(&cc, storage, &mem).expect("the transfer halts");
+    let out = run(&cc, transfer.selector, storage, &mem).expect("the transfer halts");
     assert_eq!(
         out.get(&(BAL_BASE + ACCOUNT_A)),
         Some(&300),
@@ -138,8 +146,8 @@ fn a_transfer_moves_ledger_balance_between_accounts() {
 
 #[test]
 fn a_mint_with_an_unmet_quorum_is_refused() {
-    let contract = token_standard();
-    let cc = compile_entry(&contract, "mint").expect("mint compiles");
+    let cc = compile_contract(&token_standard()).expect("the token standard compiles");
+    let mint = find_entry(&cc, "mint");
 
     // The third guardian region is correctly sized but its signature is corrupted, so its verify
     // returns false and the quorum is not met.
@@ -149,16 +157,23 @@ fn a_mint_with_an_unmet_quorum_is_refused() {
     let members = vec![(1, ml_region(1)), (1, ml_region(2)), (1, bad)];
 
     let mut mem = vec![0u8; 65536];
-    put_arg(&mut mem, &cc, "order.amount", 500);
-    put_arg(&mut mem, &cc, "order.to", ACCOUNT_A);
-    put_quorum(&mut mem, &cc, "approvals", &members);
+    put_arg(&mut mem, mint, "order.amount", 500);
+    put_arg(&mut mem, mint, "order.to", ACCOUNT_A);
+    put_quorum(&mut mem, mint, "approvals", &members);
 
     let mut storage = BTreeMap::new();
     storage.insert(SLOT_MAX, CEILING);
 
     assert_eq!(
-        run(&cc, storage, &mem),
+        run(&cc, mint.selector, storage, &mem),
         Err(Fault::DivByZero),
         "an unauthorized mint reverts at the quorum trap"
     );
+}
+
+#[test]
+fn a_call_to_an_unknown_selector_reverts() {
+    let cc = compile_contract(&token_standard()).expect("the token standard compiles");
+    let res = Interpreter::for_entry(&cc.container, selector("nonexistent()"), GAS);
+    assert!(matches!(res, Err(Fault::UnknownSelector)));
 }

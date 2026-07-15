@@ -60,22 +60,6 @@ pub fn compile_contract(contract: &Contract) -> Result<CompiledContract, Codegen
     compile_entries(contract, &entries)
 }
 
-/// Compiles one named entry of a contract into its own container entered at offset zero. The
-pub fn compile_entry(contract: &Contract, name: &str) -> Result<CompiledContract, CodegenError> {
-    let entry = contract
-        .items
-        .iter()
-        .find_map(|item| match item {
-            Item::Entry(entry) if entry.name.text == name => Some(entry),
-            _ => None,
-        })
-        .ok_or_else(|| CodegenError::Unsupported {
-            what: format!("a build of the unknown entry `{name}`"),
-            span: contract.name.span,
-        })?;
-    compile_entries(contract, &[entry])
-}
-
 /// Lowers a set of entries into one code image, each beginning at its own offset, sharing the revert
 fn compile_entries(
     contract: &Contract,
