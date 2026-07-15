@@ -153,3 +153,92 @@ fn a_signed_mint_creates_supply_and_credits_the_vault() {
         "the vault receives the minted asset"
     );
 }
+
+/// The keyed base of the first `Map` or `Registry` field, matching the code generator's layout.
+const KEYED_BASE: u64 = 1 << 40;
+
+const LEDGER: &str = "contract CallerLedger {\n\
+  state { balances: Map<Q_Address, u128>; }\n\
+  entry withdraw(to: Q_Address, amt: u64) writes(balances) {\n\
+    balances.debit(caller, amt);\n\
+    balances.credit(to, amt);\n\
+  }\n\
+}\n";
+
+#[test]
+fn a_transfer_debits_the_caller_and_credits_the_recipient_balance() {
+    let cc = compile(LEDGER);
+    let mut storage = BTreeMap::new();
+    storage.insert(KEYED_BASE + 1, 100u64); // caller balance
+    let mem = memory_with(&cc, 0, &[("@caller", 1), ("to", 2), ("amt", 40)]);
+    let out = run(&cc, storage, &mem).expect("clean halt");
+    assert_eq!(
+        out.get(&(KEYED_BASE + 1)),
+        Some(&60),
+        "caller balance falls"
+    );
+    assert_eq!(
+        out.get(&(KEYED_BASE + 2)),
+        Some(&40),
+        "recipient balance rises by the same amount"
+    );
+}
+
+#[test]
+fn debiting_more_than_the_caller_holds_reverts() {
+    let cc = compile(LEDGER);
+    let mut storage = BTreeMap::new();
+    storage.insert(KEYED_BASE + 1, 10u64);
+    let mem = memory_with(&cc, 0, &[("@caller", 1), ("to", 2), ("amt", 40)]);
+    assert_eq!(
+        run(&cc, storage, &mem),
+        Err(Fault::Overflow),
+        "an overdrawn debit must fault"
+    );
+}
+
+const FREEZER: &str = "contract Freezer {\n\
+  state { frozen: Registry<Q_Address>; flag: u64; }\n\
+  entry freeze(who: Q_Address) writes(frozen, flag) {\n\
+    frozen.insert(who);\n\
+    guard frozen.contains(who);\n\
+    flag = 1;\n\
+  }\n\
+}\n";
+
+#[test]
+fn an_insert_sets_a_flag_that_contains_reads_back() {
+    let cc = compile(FREEZER);
+    let mem = memory_with(&cc, 0, &[("who", 5)]);
+    let out = run(&cc, BTreeMap::new(), &mem).expect("clean halt");
+    assert_eq!(out.get(&(KEYED_BASE + 5)), Some(&1), "the flag is set");
+    assert_eq!(out.get(&1), Some(&1), "the guard over contains passed");
+}
+
+const GATE: &str = "contract Gate {\n\
+  state { allow: Registry<Q_Address>; flag: u64; }\n\
+  entry act(who: Q_Address) reads(allow) writes(flag) {\n\
+    guard allow.contains(who);\n\
+    flag = 1;\n\
+  }\n\
+}\n";
+
+#[test]
+fn a_membership_guard_admits_a_listed_key_and_reverts_an_absent_one() {
+    let cc = compile(GATE);
+    let listed = memory_with(&cc, 0, &[("who", 3)]);
+    let mut storage = BTreeMap::new();
+    storage.insert(KEYED_BASE + 3, 1u64);
+    assert_eq!(
+        run(&cc, storage, &listed).expect("clean halt").get(&1),
+        Some(&1),
+        "a listed key passes the guard"
+    );
+
+    let absent = memory_with(&cc, 0, &[("who", 3)]);
+    assert_eq!(
+        run(&cc, BTreeMap::new(), &absent),
+        Err(Fault::DivByZero),
+        "an absent key reverts at the guard trap"
+    );
+}

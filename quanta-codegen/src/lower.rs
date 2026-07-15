@@ -28,6 +28,9 @@ const SIG_PTR_SUFFIX: &str = "#ptr";
 /// Argument key suffix for the length of a signed parameter's verify region.
 const SIG_LEN_SUFFIX: &str = "#len";
 
+/// Argument key of the caller context word. It is not a source level parameter, so its key uses the
+const CALLER_KEY: &str = "@caller";
+
 /// Signature scheme identifiers carried in the envelope. ML DSA is the module lattice scheme and the
 const SCHEME_ML: u64 = 0x01;
 const SCHEME_SLH: u64 = 0x02;
@@ -162,10 +165,12 @@ pub fn lower_expr(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<Reg, Cod
         Expr::Binary {
             op, left, right, ..
         } => lower_binary(ctx, *op, left, right, wrapping),
-        Expr::Caller { span } => Err(CodegenError::Unsupported {
-            what: "the caller value".into(),
-            span: *span,
-        }),
+        // The caller address arrives as a host provided context word, read like any argument word.
+        // The tagged machine has no caller opcode, so the transaction context supplies it in scratch.
+        Expr::Caller { span } => {
+            let off = ctx.args.offset_of(CALLER_KEY);
+            load_arg(ctx, off, *span)
+        }
         Expr::Str(s) => Err(CodegenError::Unsupported {
             what: "a string literal".into(),
             span: s.span,
@@ -174,11 +179,33 @@ pub fn lower_expr(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<Reg, Cod
             what: "a date literal".into(),
             span: *span,
         }),
-        Expr::Call { span, .. } => Err(CodegenError::Unsupported {
-            what: "a call expression".into(),
-            span: *span,
-        }),
+        Expr::Call { callee, args, span } => lower_call_value(ctx, callee, args, *span),
     }
+}
+
+/// Lowers a call used as a value. A `contains` reads a keyed ledger entry, and a `split` or `mint`
+fn lower_call_value(
+    ctx: &mut Ctx,
+    callee: &Expr,
+    args: &[Expr],
+    span: Span,
+) -> Result<Reg, CodegenError> {
+    if let Expr::Field { base, name, .. } = callee {
+        match name.text.as_str() {
+            "contains" => return lower_map_read(ctx, base, args, span),
+            "split" => return lower_split(ctx, base, args, span),
+            _ => {}
+        }
+    }
+    if let Expr::Ident(id) = callee {
+        if id.text == "mint" {
+            return lower_mint(ctx, args, span);
+        }
+    }
+    Err(CodegenError::Unsupported {
+        what: "a call expression".into(),
+        span,
+    })
 }
 
 fn lower_ident(ctx: &mut Ctx, name: &str, span: Span) -> Result<Reg, CodegenError> {
@@ -669,14 +696,149 @@ fn lower_call_effect(
     _trap: Label,
 ) -> Result<(), CodegenError> {
     if let Expr::Field { base, name, .. } = callee {
-        if name.text == "merge" {
-            return lower_merge(ctx, base, args, span);
+        match name.text.as_str() {
+            "merge" => return lower_merge(ctx, base, args, span),
+            "credit" => return lower_map_credit(ctx, base, args, span, true),
+            "debit" => return lower_map_credit(ctx, base, args, span, false),
+            "insert" => return lower_map_flag(ctx, base, args, span, 1),
+            "remove" => return lower_map_flag(ctx, base, args, span, 0),
+            _ => {}
         }
     }
     Err(CodegenError::Unsupported {
         what: "this call statement".into(),
         span,
     })
+}
+
+/// The keyed base of a `Map` or `Registry` field named as the receiver of a ledger operation.
+fn map_base_of(ctx: &Ctx, base: &Expr, span: Span) -> Result<u64, CodegenError> {
+    if let Expr::Ident(id) = base {
+        if let Some(b) = ctx.layout.map_base(&id.text) {
+            return Ok(b);
+        }
+    }
+    Err(CodegenError::Unsupported {
+        what: "a ledger operation on a value that is not a map field".into(),
+        span,
+    })
+}
+
+/// The two arguments of a call, or an error when the arity is wrong.
+fn two_args(args: &[Expr], span: Span) -> Result<(&Expr, &Expr), CodegenError> {
+    match args {
+        [a, b] => Ok((a, b)),
+        _ => Err(CodegenError::Unsupported {
+            what: "a ledger operation with an unexpected argument count".into(),
+            span,
+        }),
+    }
+}
+
+/// Computes the storage key of a keyed entry into `addr`: the field base plus the address word the
+fn keyed_key(ctx: &mut Ctx, base: u64, addr: Reg, span: Span) -> Result<(), CodegenError> {
+    let rbase = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: rbase,
+        imm: base,
+    });
+    ctx.b.op(Instr::Add {
+        d: addr,
+        a: addr,
+        b: rbase,
+    });
+    ctx.regs.free(rbase);
+    Ok(())
+}
+
+/// Lowers a value that a ledger credit or debit moves: an asset value contributes its amount, and any
+fn ledger_amount(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<Reg, CodegenError> {
+    if is_asset_value(ctx, value) {
+        asset_amount(ctx, value, span)
+    } else {
+        lower_expr(ctx, value, false)
+    }
+}
+
+/// True when an expression denotes an asset value rather than a plain integer.
+fn is_asset_value(ctx: &Ctx, value: &Expr) -> bool {
+    match value {
+        Expr::Ident(id) => {
+            ctx.asset_params.contains(&id.text) || ctx.asset_locals.contains_key(&id.text)
+        }
+        Expr::Call { .. } => produces_asset(value),
+        _ => false,
+    }
+}
+
+/// Credits or debits a recipient's ledger balance by a checked add or subtract at the keyed slot, so
+fn lower_map_credit(
+    ctx: &mut Ctx,
+    base: &Expr,
+    args: &[Expr],
+    span: Span,
+    add: bool,
+) -> Result<(), CodegenError> {
+    let mbase = map_base_of(ctx, base, span)?;
+    let (key_expr, value_expr) = two_args(args, span)?;
+    let value = ledger_amount(ctx, value_expr, span)?;
+    let addr = lower_expr(ctx, key_expr, false)?;
+    keyed_key(ctx, mbase, addr, span)?;
+    let cur = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::SLoad { d: cur, a: addr });
+    if add {
+        ctx.b.op(Instr::Add {
+            d: cur,
+            a: cur,
+            b: value,
+        });
+    } else {
+        ctx.b.op(Instr::Sub {
+            d: cur,
+            a: cur,
+            b: value,
+        });
+    }
+    ctx.b.op(Instr::SStore { a: addr, b: cur });
+    ctx.regs.free(cur);
+    ctx.regs.free(addr);
+    ctx.regs.free(value);
+    Ok(())
+}
+
+/// Sets or clears a keyed flag, the lowering of a freeze insert or an unfreeze remove.
+fn lower_map_flag(
+    ctx: &mut Ctx,
+    base: &Expr,
+    args: &[Expr],
+    span: Span,
+    flag: u64,
+) -> Result<(), CodegenError> {
+    let mbase = map_base_of(ctx, base, span)?;
+    let key_expr = one_arg(args, span)?;
+    let addr = lower_expr(ctx, key_expr, false)?;
+    keyed_key(ctx, mbase, addr, span)?;
+    let v = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: v, imm: flag });
+    ctx.b.op(Instr::SStore { a: addr, b: v });
+    ctx.regs.free(v);
+    ctx.regs.free(addr);
+    Ok(())
+}
+
+/// Reads a keyed entry, the lowering of `map.contains(key)`. A non zero result means the entry is
+fn lower_map_read(
+    ctx: &mut Ctx,
+    base: &Expr,
+    args: &[Expr],
+    span: Span,
+) -> Result<Reg, CodegenError> {
+    let mbase = map_base_of(ctx, base, span)?;
+    let key_expr = one_arg(args, span)?;
+    let addr = lower_expr(ctx, key_expr, false)?;
+    keyed_key(ctx, mbase, addr, span)?;
+    ctx.b.op(Instr::SLoad { d: addr, a: addr });
+    Ok(addr)
 }
 
 /// The storage slot of an asset state field named as the receiver of an asset operation.
