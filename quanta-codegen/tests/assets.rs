@@ -64,3 +64,37 @@ fn merge_overflow_reverts_and_keeps_state() {
         "a merge that overflows the balance must fault"
     );
 }
+
+const SPLIT: &str = "contract Split {\n\
+  state { reserve: Q_Asset<QTOV>; pool: Q_Asset<QTOV>; }\n\
+  entry moveover(req: MoveReq) writes(reserve, pool) conserves QTOV {\n\
+    let part = reserve.split(req.amount);\n\
+    pool.merge(part);\n\
+  }\n\
+}\n";
+
+#[test]
+fn split_moves_a_balance_between_two_asset_fields_conserving_total() {
+    let cc = compile(SPLIT);
+    let mut storage = BTreeMap::new();
+    storage.insert(0u64, 100u64); // reserve
+    storage.insert(1u64, 10u64); // pool
+    let mem = memory_with(&cc, 0, &[("req.amount", 30)]);
+    let out = run(&cc, storage, &mem).expect("clean halt");
+    assert_eq!(out.get(&0), Some(&70), "reserve loses the split amount");
+    assert_eq!(out.get(&1), Some(&40), "pool gains the split amount");
+}
+
+#[test]
+fn splitting_more_than_is_held_reverts() {
+    let cc = compile(SPLIT);
+    let mut storage = BTreeMap::new();
+    storage.insert(0u64, 20u64);
+    storage.insert(1u64, 10u64);
+    let mem = memory_with(&cc, 0, &[("req.amount", 30)]);
+    assert_eq!(
+        run(&cc, storage.clone(), &mem),
+        Err(Fault::Overflow),
+        "a split larger than the balance must fault"
+    );
+}

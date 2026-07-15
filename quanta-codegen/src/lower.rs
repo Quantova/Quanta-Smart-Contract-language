@@ -18,6 +18,9 @@ pub const ARG_BASE: u64 = 0;
 /// Width of one argument word.
 const WORD: u64 = 8;
 
+/// Base offset of the asset local region in scratch memory. A `let` bound asset value keeps its
+const ASSET_LOCAL_BASE: u64 = 4096;
+
 /// Argument key suffix for the scheme identifier of a signed parameter.
 const SIG_SCHEME_SUFFIX: &str = "#scheme";
 /// Argument key suffix for the pointer to a signed parameter's verify region.
@@ -99,6 +102,8 @@ pub struct Ctx<'a> {
     asset_params: &'a HashSet<String>,
     /// Asset values bound by a `let`, each mapped to the scratch memory word that holds its amount.
     asset_locals: HashMap<String, u64>,
+    /// The next free word in the asset local region.
+    next_asset_local: u64,
     b: &'a mut Builder,
     regs: &'a mut Regs,
     args: &'a mut Args,
@@ -118,10 +123,22 @@ impl<'a> Ctx<'a> {
             params,
             asset_params,
             asset_locals: HashMap::new(),
+            next_asset_local: ASSET_LOCAL_BASE,
             b,
             regs,
             args,
         }
+    }
+
+    /// Reserves the scratch memory word that holds a `let` bound asset value's amount.
+    fn bind_asset_local(&mut self, name: &str) -> u64 {
+        if let Some(off) = self.asset_locals.get(name) {
+            return *off;
+        }
+        let off = self.next_asset_local;
+        self.next_asset_local += WORD;
+        self.asset_locals.insert(name.to_string(), off);
+        off
     }
 }
 
@@ -211,11 +228,75 @@ fn asset_amount(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<Reg, CodegenE
             let off = ctx.asset_locals[&id.text];
             load_arg(ctx, off, id.span)
         }
+        Expr::Call { callee, args, span } => match callee.as_ref() {
+            Expr::Field { base, name, .. } if name.text == "split" => {
+                lower_split(ctx, base, args, *span)
+            }
+            _ => Err(CodegenError::Unsupported {
+                what: "an asset producing call here".into(),
+                span: *span,
+            }),
+        },
         _ => Err(CodegenError::Unsupported {
             what: "an asset value here".into(),
             span,
         }),
     }
+}
+
+/// Splits an amount off an asset state field, a checked balance subtract that yields the amount it
+fn lower_split(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Result<Reg, CodegenError> {
+    let slot = asset_field_slot(ctx, base, span)?;
+    let value = one_arg(args, span)?;
+    let amt = lower_expr(ctx, value, false)?;
+    let rf = load_slot(ctx, slot, span)?;
+    ctx.b.op(Instr::Sub {
+        d: rf,
+        a: rf,
+        b: amt,
+    });
+    store_slot(ctx, slot, rf);
+    ctx.regs.free(rf);
+    Ok(amt)
+}
+
+/// True when an expression produces a fresh asset value, a split or a mint.
+fn produces_asset(value: &Expr) -> bool {
+    match value {
+        Expr::Call { callee, .. } => match callee.as_ref() {
+            Expr::Field { name, .. } => name.text == "split",
+            Expr::Ident(id) => id.text == "mint",
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Lowers a `let` that binds an asset value. The value's amount is computed and stored in the local's
+fn lower_let(ctx: &mut Ctx, name: &str, value: &Expr, span: Span) -> Result<(), CodegenError> {
+    if !produces_asset(value) {
+        return Err(CodegenError::Unsupported {
+            what: "a let binding that is not an asset split or mint".into(),
+            span,
+        });
+    }
+    let off = ctx.bind_asset_local(name);
+    let amt = asset_amount(ctx, value, span)?;
+    store_mem_word(ctx, off, amt);
+    ctx.regs.free(amt);
+    Ok(())
+}
+
+/// Writes a register value to a scratch memory word.
+fn store_mem_word(ctx: &mut Ctx, off: u64, value: Reg) {
+    ctx.b.op(Instr::Ldi {
+        d: SCRATCH,
+        imm: off,
+    });
+    ctx.b.op(Instr::MStore {
+        a: SCRATCH,
+        b: value,
+    });
 }
 
 fn load_arg(ctx: &mut Ctx, off: u64, span: Span) -> Result<Reg, CodegenError> {
@@ -545,10 +626,7 @@ fn lower_stmt(ctx: &mut Ctx, stmt: &Stmt, trap: Label) -> Result<(), CodegenErro
             }
             Ok(())
         }
-        Stmt::Let { span, .. } => Err(CodegenError::Unsupported {
-            what: "a let binding".into(),
-            span: *span,
-        }),
+        Stmt::Let { name, value, span } => lower_let(ctx, &name.text, value, *span),
         // A bare call is a state mutating asset or ledger operation.
         Stmt::Expr {
             expr: Expr::Call { callee, args, span },
