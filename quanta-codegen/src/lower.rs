@@ -364,55 +364,67 @@ fn lower_signed_prologue(
         let scheme_off = ctx.args.offset_of(&format!("{name}{SIG_SCHEME_SUFFIX}"));
         let ptr_off = ctx.args.offset_of(&format!("{name}{SIG_PTR_SUFFIX}"));
         let len_off = ctx.args.offset_of(&format!("{name}{SIG_LEN_SUFFIX}"));
-
-        let ml_label = ctx.b.label();
-        let slh_label = ctx.b.label();
-        let done_label = ctx.b.label();
-
-        // Read the scheme identifier and branch to the matching verify, reverting on an unknown one.
-        let scheme = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: SCRATCH,
-            imm: scheme_off,
-        });
-        ctx.b.op(Instr::MLoad {
-            d: scheme,
-            a: SCRATCH,
-        });
-        let test = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: SCRATCH,
-            imm: SCHEME_ML,
-        });
-        ctx.b.op(Instr::Eq {
-            d: test,
-            a: scheme,
-            b: SCRATCH,
-        });
-        ctx.b.jnz(test, ml_label);
-        ctx.b.op(Instr::Ldi {
-            d: SCRATCH,
-            imm: SCHEME_SLH,
-        });
-        ctx.b.op(Instr::Eq {
-            d: test,
-            a: scheme,
-            b: SCRATCH,
-        });
-        ctx.b.jnz(test, slh_label);
-        ctx.b.jmp(trap);
-        ctx.regs.free(test);
-        ctx.regs.free(scheme);
-
-        ctx.b.mark(ml_label);
-        emit_verify(ctx, VerifyOp::Ml, ptr_off, len_off, trap, span)?;
-        ctx.b.jmp(done_label);
-
-        ctx.b.mark(slh_label);
-        emit_verify(ctx, VerifyOp::Slh, ptr_off, len_off, trap, span)?;
-
-        ctx.b.mark(done_label);
+        dispatch_verify(ctx, scheme_off, ptr_off, len_off, trap, span)?;
     }
+    Ok(())
+}
+
+/// Dispatches one signature on its one byte scheme identifier and verifies it, reverting to the trap
+fn dispatch_verify(
+    ctx: &mut Ctx,
+    scheme_off: u64,
+    ptr_off: u64,
+    len_off: u64,
+    trap: Label,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let ml_label = ctx.b.label();
+    let slh_label = ctx.b.label();
+    let done_label = ctx.b.label();
+
+    // Read the scheme identifier and branch to the matching verify, reverting on an unknown one.
+    let scheme = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: SCRATCH,
+        imm: scheme_off,
+    });
+    ctx.b.op(Instr::MLoad {
+        d: scheme,
+        a: SCRATCH,
+    });
+    let test = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: SCRATCH,
+        imm: SCHEME_ML,
+    });
+    ctx.b.op(Instr::Eq {
+        d: test,
+        a: scheme,
+        b: SCRATCH,
+    });
+    ctx.b.jnz(test, ml_label);
+    ctx.b.op(Instr::Ldi {
+        d: SCRATCH,
+        imm: SCHEME_SLH,
+    });
+    ctx.b.op(Instr::Eq {
+        d: test,
+        a: scheme,
+        b: SCRATCH,
+    });
+    ctx.b.jnz(test, slh_label);
+    ctx.b.jmp(trap);
+    ctx.regs.free(test);
+    ctx.regs.free(scheme);
+
+    ctx.b.mark(ml_label);
+    emit_verify(ctx, VerifyOp::Ml, ptr_off, len_off, trap, span)?;
+    ctx.b.jmp(done_label);
+
+    ctx.b.mark(slh_label);
+    emit_verify(ctx, VerifyOp::Slh, ptr_off, len_off, trap, span)?;
+
+    ctx.b.mark(done_label);
     Ok(())
 }
 
