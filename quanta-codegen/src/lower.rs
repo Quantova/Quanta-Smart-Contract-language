@@ -462,7 +462,7 @@ fn refuse_sealed(entry: &EntryDecl) -> Result<(), CodegenError> {
             return Err(CodegenError::Unsupported {
                 what: format!(
                     "opening the sealed parameter `{}`, which needs a decapsulation opcode absent \
-                     from qtv-vm v0.1.0",
+                     from qtv-vm v0.2.0",
                     param.name.text
                 ),
                 span: param.span,
