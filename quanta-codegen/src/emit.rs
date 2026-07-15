@@ -62,6 +62,11 @@ impl Builder {
 
     /// Resolves every label to an offset and emits the bytecode.
     pub fn link(self) -> Result<Vec<u8>, LinkError> {
+        self.link_with_offsets().map(|(code, _)| code)
+    }
+
+    /// Links the code and returns it with the resolved offset of every placed label, so a caller can
+    pub fn link_with_offsets(self) -> Result<(Vec<u8>, Vec<Option<u32>>), LinkError> {
         let mut offsets: Vec<Option<u32>> = vec![None; self.next_label as usize];
         let mut at: u32 = 0;
         for line in &self.lines {
@@ -95,7 +100,7 @@ impl Builder {
                 .encode(&mut code),
             }
         }
-        Ok(code)
+        Ok((code, offsets))
     }
 }
 
@@ -154,5 +159,22 @@ mod tests {
         let missing = b.label();
         b.jmp(missing);
         assert_eq!(b.link(), Err(LinkError::UnplacedLabel(missing)));
+    }
+
+    #[test]
+    fn link_reports_the_offset_of_each_marked_label() {
+        let mut b = Builder::new();
+        let head = b.label();
+        let tail = b.label();
+        b.mark(head);
+        b.op(Instr::Ldi { d: 0, imm: 5 });
+        b.mark(tail);
+        b.op(Instr::Halt);
+        let (_code, offsets) = b.link_with_offsets().expect("link");
+        assert_eq!(offsets[head as usize], Some(0));
+        assert_eq!(
+            offsets[tail as usize],
+            Some(Instr::Ldi { d: 0, imm: 5 }.encoded_len() as u32)
+        );
     }
 }
