@@ -705,6 +705,21 @@ fn lower_call_effect(
             _ => {}
         }
     }
+    // A send of an asset to an external account is the one asset operation that has no lowering: it
+    // needs the native cross account transfer instruction, which qtv-vm v0.1.0 decodes as the SEND
+    // opcode but leaves pending in the interpreter. Rather than emit a path that faults as pending at
+    // run time, the operation is stopped here and flagged. A within contract transfer that credits a
+    // recipient's ledger balance does lower; only the cross account move is blocked (SPEC-lowering).
+    if matches!(callee, Expr::Ident(id) if id.text == "send") {
+        return Err(CodegenError::Unsupported {
+            what:
+                "a send of an asset to an account, which needs the native cross account transfer \
+                   instruction the SEND opcode names; qtv-vm v0.1.0 decodes SEND but leaves it \
+                   pending, so the transfer cannot be lowered"
+                    .into(),
+            span,
+        });
+    }
     Err(CodegenError::Unsupported {
         what: "this call statement".into(),
         span,

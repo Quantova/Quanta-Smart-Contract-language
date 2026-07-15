@@ -242,3 +242,27 @@ fn a_membership_guard_admits_a_listed_key_and_reverts_an_absent_one() {
         "an absent key reverts at the guard trap"
     );
 }
+
+// A send moves an asset to an external account and needs the native cross account transfer
+// instruction. qtv-vm v0.1.0 leaves the SEND opcode pending, so the operation is refused with a flag
+// rather than lowered to a path that faults at run time.
+const SENDER: &str = "contract Sender {\n\
+  state { pool: Q_Asset<QTOV>; }\n\
+  entry payout(to: Q_Address, funds: Q_Asset<QTOV>) conserves QTOV { send(to, funds); }\n\
+}\n";
+
+#[test]
+fn a_send_to_an_account_is_refused_naming_the_missing_instruction() {
+    let program = quanta_parser::parse(SENDER).expect("parse");
+    quanta_typeck::check(&program).expect("typecheck");
+    let err = compile_contract(&program.contracts[0]).expect_err("a send must not lower");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("SEND"),
+        "the flag names the missing opcode: {msg}"
+    );
+    assert!(
+        msg.contains("cross account"),
+        "the flag explains the gap: {msg}"
+    );
+}
