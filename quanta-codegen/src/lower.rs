@@ -104,6 +104,8 @@ pub struct Ctx<'a> {
     asset_locals: HashMap<String, u64>,
     /// The next free word in the asset local region.
     next_asset_local: u64,
+    /// Whether the entry declares `mints`, which is the only place a `mint(..)` may create supply.
+    entry_mints: bool,
     b: &'a mut Builder,
     regs: &'a mut Regs,
     args: &'a mut Args,
@@ -124,6 +126,7 @@ impl<'a> Ctx<'a> {
             asset_params,
             asset_locals: HashMap::new(),
             next_asset_local: ASSET_LOCAL_BASE,
+            entry_mints: false,
             b,
             regs,
             args,
@@ -232,6 +235,7 @@ fn asset_amount(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<Reg, CodegenE
             Expr::Field { base, name, .. } if name.text == "split" => {
                 lower_split(ctx, base, args, *span)
             }
+            Expr::Ident(id) if id.text == "mint" => lower_mint(ctx, args, *span),
             _ => Err(CodegenError::Unsupported {
                 what: "an asset producing call here".into(),
                 span: *span,
@@ -258,6 +262,18 @@ fn lower_split(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Result<
     store_slot(ctx, slot, rf);
     ctx.regs.free(rf);
     Ok(amt)
+}
+
+/// Mints a fresh asset value of the given amount. Supply is created only inside an entry that
+fn lower_mint(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<Reg, CodegenError> {
+    if !ctx.entry_mints {
+        return Err(CodegenError::Unsupported {
+            what: "a mint outside an entry that declares mints".into(),
+            span,
+        });
+    }
+    let amount = one_arg(args, span)?;
+    lower_expr(ctx, amount, false)
 }
 
 /// True when an expression produces a fresh asset value, a split or a mint.
@@ -446,10 +462,15 @@ pub fn lower_entry(
         .map(|p| p.name.text.clone())
         .collect();
     let writes_state = !layout.access(entry).writes.is_empty();
+    let entry_mints = entry
+        .clauses
+        .iter()
+        .any(|c| matches!(c, quanta_ast::Clause::Mints { .. }));
     let mut regs = Regs::new();
     let mut args = Args::new();
     {
         let mut ctx = Ctx::new(layout, &params, &asset_params, b, &mut regs, &mut args);
+        ctx.entry_mints = entry_mints;
         lower_signed_prologue(&mut ctx, entry, trap)?;
         for stmt in &entry.body {
             lower_stmt(&mut ctx, stmt, trap)?;

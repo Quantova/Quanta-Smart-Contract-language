@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use qtv_crypto::ml_dsa;
 use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
 
@@ -96,5 +97,59 @@ fn splitting_more_than_is_held_reverts() {
         run(&cc, storage.clone(), &mem),
         Err(Fault::Overflow),
         "a split larger than the balance must fault"
+    );
+}
+
+const MINT: &str = "contract Minter {\n\
+  asset TKN;\n\
+  state { owner: Q_Address; vault: Q_Asset<TKN>; supply: u128; }\n\
+  entry issue(order: MintOrder signed by owner)\n\
+    mints TKN writes(vault, supply)\n\
+    limits supply + order.amount <= 1000000000\n\
+  {\n\
+    supply += order.amount;\n\
+    vault.merge(mint(order.amount));\n\
+  }\n\
+}\n";
+
+// Seed the argument words and a valid module lattice signature region for the `issue` entry.
+fn signed_mint_memory(cc: &CompiledContract, amount: u64) -> Vec<u8> {
+    let region_off = 8192usize;
+    let (pk, sk) = ml_dsa::keygen(&[7u8; 32]);
+    let payload = b"mint order";
+    let sig = ml_dsa::sign(&sk, payload, &[], &[0u8; 32]).expect("sign");
+    let mut region = Vec::new();
+    region.extend_from_slice(&pk);
+    region.extend_from_slice(&sig);
+    region.extend_from_slice(payload);
+
+    let mut mem = vec![0u8; region_off + region.len()];
+    let mut put = |key: &str, value: u64| {
+        if let Some(slot) = cc.entries[0].args.iter().find(|s| s.key == key) {
+            let at = slot.offset as usize;
+            mem[at..at + 8].copy_from_slice(&value.to_be_bytes());
+        }
+    };
+    put("order#scheme", 1);
+    put("order#ptr", region_off as u64);
+    put("order#len", region.len() as u64);
+    put("order.amount", amount);
+    mem[region_off..].copy_from_slice(&region);
+    mem
+}
+
+#[test]
+fn a_signed_mint_creates_supply_and_credits_the_vault() {
+    let cc = compile(MINT);
+    let mem = signed_mint_memory(&cc, 500);
+    let mut storage = BTreeMap::new();
+    storage.insert(1u64, 0u64); // vault
+    storage.insert(2u64, 0u64); // supply
+    let out = run(&cc, storage, &mem).expect("clean halt");
+    assert_eq!(out.get(&2), Some(&500), "supply grows by the minted amount");
+    assert_eq!(
+        out.get(&1),
+        Some(&500),
+        "the vault receives the minted asset"
     );
 }
