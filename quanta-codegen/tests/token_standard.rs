@@ -153,7 +153,7 @@ fn a_mint_with_an_unmet_quorum_is_refused() {
     // returns false and the quorum is not met.
     let mut bad = ml_region(3);
     let last = bad.len() - 1;
-    bad[last] ^= 0xff;
+    bad[last] ^= 255;
     let members = vec![(1, ml_region(1)), (1, ml_region(2)), (1, bad)];
 
     let mut mem = vec![0u8; 65536];

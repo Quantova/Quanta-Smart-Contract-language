@@ -102,7 +102,7 @@ fn an_invalid_member_signature_refuses_the_entry() {
     // its verify returns false and the entry reverts at the guard trap: the quorum is not met.
     let mut bad = ml_region(9);
     let last = bad.len() - 1;
-    bad[last] ^= 0xff;
+    bad[last] ^= 255;
     let mem = scratch(&cc, &[(1, ml_region(3)), (1, bad)]);
     assert_eq!(
         run(&cc, &mem),

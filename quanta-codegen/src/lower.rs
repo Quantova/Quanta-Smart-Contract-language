@@ -32,8 +32,8 @@ const SIG_LEN_SUFFIX: &str = "#len";
 const CALLER_KEY: &str = "@caller";
 
 /// Signature scheme identifiers carried in the envelope. ML DSA is the module lattice scheme and the
-const SCHEME_ML: u64 = 0x01;
-const SCHEME_SLH: u64 = 0x02;
+const SCHEME_ML: u64 = 1;
+const SCHEME_SLH: u64 = 2;
 
 /// A stack of temporary registers. They allocate and free in stack order.
 pub struct Regs {

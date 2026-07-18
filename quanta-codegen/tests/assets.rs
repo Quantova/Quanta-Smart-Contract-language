@@ -254,7 +254,7 @@ const SENDER: &str = "contract Sender {\n\
 #[test]
 fn a_send_lowers_and_the_machine_records_the_transfer_effect() {
     let cc = compile(SENDER);
-    let mem = memory_with(&cc, 0, &[("to", 0xA11CE), ("funds", 750)]);
+    let mem = memory_with(&cc, 0, &[("to", 659918), ("funds", 750)]);
     let out = Interpreter::for_entry(&cc.container, cc.entries[0].selector, 300_000)
         .expect("the payout selector resolves")
         .with_memory(&mem)
@@ -263,7 +263,7 @@ fn a_send_lowers_and_the_machine_records_the_transfer_effect() {
     assert_eq!(
         out.effects,
         vec![Effect::Transfer {
-            to: 0xA11CE_u64.to_be_bytes().to_vec(),
+            to: 659918u64.to_be_bytes().to_vec(),
             amount: 750,
         }],
         "the machine records the transfer the send names"
