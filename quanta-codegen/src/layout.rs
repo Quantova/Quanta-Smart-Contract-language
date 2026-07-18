@@ -2,7 +2,7 @@
 
 use qtv_vm::container::StateAccess;
 use quanta_ast::{Clause, Contract, EntryDecl, Item};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Keyed field types. A `Map` or `Registry` holds one value per key, addressed at a base far above
 const KEYED_TYPES: &[&str] = &["Map", "Registry"];
@@ -10,11 +10,16 @@ const KEYED_TYPES: &[&str] = &["Map", "Registry"];
 const KEYED_BASE: u64 = 1 << 40;
 /// Gap between one keyed field's region and the next, wide enough that distinct fields never share a
 const KEYED_STRIDE: u64 = 1 << 32;
+/// The wide type that needs two machine words to hold. Its low word lives in the field's slot and its
+const WIDE_TYPE: &str = "u128";
+/// The offset that separates the high word of a two word scalar field from its low word. It sits far
+const HI_OFFSET: u64 = 1 << 56;
 
 /// The storage slot assigned to each state field, keyed by field name. A keyed field also records the
 pub struct Layout {
     slots: HashMap<String, u64>,
     map_bases: HashMap<String, u64>,
+    wide: HashSet<String>,
 }
 
 impl Layout {
@@ -22,6 +27,7 @@ impl Layout {
     pub fn build(contract: &Contract) -> Layout {
         let mut slots = HashMap::new();
         let mut map_bases = HashMap::new();
+        let mut wide = HashSet::new();
         let mut next = 0u64;
         let mut keyed = 0u64;
         for item in &contract.items {
@@ -34,12 +40,18 @@ impl Layout {
                             map_bases
                                 .insert(field.name.text.clone(), KEYED_BASE + keyed * KEYED_STRIDE);
                             keyed += 1;
+                        } else if field.ty.name.text == WIDE_TYPE {
+                            wide.insert(field.name.text.clone());
                         }
                     }
                 }
             }
         }
-        Layout { slots, map_bases }
+        Layout {
+            slots,
+            map_bases,
+            wide,
+        }
     }
 
     /// The slot of a state field, if the name is one.
@@ -50,6 +62,20 @@ impl Layout {
     /// The base storage key of a keyed field, if the name is a `Map` or `Registry`.
     pub fn map_base(&self, name: &str) -> Option<u64> {
         self.map_bases.get(name).copied()
+    }
+
+    /// Whether a scalar state field is a two word field, held across a low and a high machine word.
+    pub fn is_wide(&self, name: &str) -> bool {
+        self.wide.contains(name)
+    }
+
+    /// The storage slot of the high word of a two word field, if the name is a two word field. The low
+    pub fn hi_slot(&self, name: &str) -> Option<u64> {
+        if self.is_wide(name) {
+            self.slot(name).map(|slot| slot | HI_OFFSET)
+        } else {
+            None
+        }
     }
 
     /// The state access manifest of an entry, built from its reads and writes clauses. The checker
@@ -106,6 +132,25 @@ mod tests {
         assert_eq!(layout.slot("b"), Some(1));
         assert_eq!(layout.slot("c"), Some(2));
         assert_eq!(layout.slot("missing"), None);
+    }
+
+    #[test]
+    fn two_word_fields_are_marked_and_carry_a_distinct_high_word_slot() {
+        let c = contract("contract C { state { a: u64; total: u128; owner: Q_Address; } }");
+        let layout = Layout::build(&c);
+        assert!(!layout.is_wide("a"));
+        assert!(layout.is_wide("total"));
+        assert!(!layout.is_wide("owner"));
+        // The low word stays at the plain slot; the high word sits far above every slot.
+        assert_eq!(layout.hi_slot("a"), None);
+        let total_lo = layout.slot("total").unwrap();
+        let total_hi = layout.hi_slot("total").unwrap();
+        assert!(total_hi > super::KEYED_BASE);
+        assert_ne!(total_hi, total_lo);
+        // Distinct two word fields never share a high word slot.
+        let d = contract("contract D { state { x: u128; y: u128; } }");
+        let dl = Layout::build(&d);
+        assert_ne!(dl.hi_slot("x"), dl.hi_slot("y"));
     }
 
     #[test]
