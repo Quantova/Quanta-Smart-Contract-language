@@ -492,8 +492,12 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
             let _ = span;
             Ok((llo, lhi))
         }
+        // A wide multiply needs the machine's high word multiply, which the pinned qtv-vm v0.2.0 does
+        // not expose. It is refused rather than lowered to a truncating single word product, and it
+        // waits on a qtv-vm release that carries the high word multiply.
         Expr::Binary { op: BinOp::Mul, span, .. } => Err(CodegenError::Unsupported {
-            what: "a u128 multiply".into(),
+            what: "a u128 multiply, which needs the high word multiply absent from qtv-vm v0.2.0"
+                .into(),
             span: *span,
         }),
         _ => {
