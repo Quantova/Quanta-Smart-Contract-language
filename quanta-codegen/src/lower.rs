@@ -4,7 +4,9 @@ use crate::emit::{Builder, Label};
 use crate::error::CodegenError;
 use crate::layout::Layout;
 use qtv_vm::isa::{Instr, Reg, NUM_REGS};
-use quanta_ast::{AssignOp, BinOp, EntryDecl, Expr, GenericArg, Param, Stmt, UnaryOp};
+use quanta_ast::{
+    AfterTarget, AssignOp, BinOp, Clause, EntryDecl, Expr, GenericArg, Param, Stmt, UnaryOp,
+};
 use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
 
@@ -30,6 +32,23 @@ const SIG_LEN_SUFFIX: &str = "#len";
 
 /// Argument key of the caller context word. It is not a source level parameter, so its key uses the
 const CALLER_KEY: &str = "@caller";
+
+/// Argument key of the consensus time context word, the host supplied time an `after` guard measures
+const TIME_KEY: &str = "@time";
+
+/// Seconds in each duration unit an `after` clause can name.
+fn unit_seconds(unit: &str) -> Option<u64> {
+    match unit {
+        "seconds" => Some(1),
+        "minutes" => Some(60),
+        "hours" => Some(3_600),
+        "days" => Some(86_400),
+        "weeks" => Some(604_800),
+        "months" => Some(2_592_000),
+        "years" => Some(31_536_000),
+        _ => None,
+    }
+}
 
 /// Signature scheme identifiers carried in the envelope. ML DSA is the module lattice scheme and the
 const SCHEME_ML: u64 = 1;
@@ -652,6 +671,7 @@ pub fn lower_entry(
         ctx.entry_mints = entry_mints;
         lower_signed_prologue(&mut ctx, entry, trap)?;
         lower_quorum_prologue(&mut ctx, entry, trap)?;
+        lower_after_prologue(&mut ctx, entry, trap)?;
         for stmt in &entry.body {
             lower_stmt(&mut ctx, stmt, trap)?;
         }
@@ -772,6 +792,71 @@ fn lower_quorum_prologue(
             let len_off = ctx.args.offset_of(&format!("{name}#{i}{SIG_LEN_SUFFIX}"));
             dispatch_verify(ctx, scheme_off, ptr_off, len_off, trap, span)?;
         }
+    }
+    Ok(())
+}
+
+/// Guards every `after` clause on the entry against the host supplied consensus time, so a time
+fn lower_after_prologue(
+    ctx: &mut Ctx,
+    entry: &EntryDecl,
+    trap: Label,
+) -> Result<(), CodegenError> {
+    for clause in &entry.clauses {
+        let Clause::After { target, from, span } = clause else {
+            continue;
+        };
+        let time_off = ctx.args.offset_of(TIME_KEY);
+        let time = load_arg(ctx, time_off, *span)?;
+        let threshold = match target {
+            AfterTarget::Duration(duration) => {
+                let unit = unit_seconds(&duration.unit.text).ok_or_else(|| {
+                    CodegenError::Unsupported {
+                        what: format!("the duration unit `{}`", duration.unit.text),
+                        span: duration.span,
+                    }
+                })?;
+                let value = parse_int(&duration.value.text, duration.value.span)?;
+                let seconds = value
+                    .checked_mul(unit)
+                    .ok_or_else(|| CodegenError::IntegerTooWide {
+                        text: duration.value.text.clone(),
+                        span: duration.span,
+                    })?;
+                if let Some(base) = from {
+                    let reg = lower_expr(ctx, base, false)?;
+                    let addend = ctx.regs.alloc(*span)?;
+                    ctx.b.op(Instr::Ldi {
+                        d: addend,
+                        imm: seconds,
+                    });
+                    ctx.b.op(Instr::Add {
+                        d: reg,
+                        a: reg,
+                        b: addend,
+                    });
+                    ctx.regs.free(addend);
+                    reg
+                } else {
+                    let reg = ctx.regs.alloc(*span)?;
+                    ctx.b.op(Instr::Ldi {
+                        d: reg,
+                        imm: seconds,
+                    });
+                    reg
+                }
+            }
+            AfterTarget::Expr(expr) => lower_expr(ctx, expr, false)?,
+        };
+        // Revert when the consensus time is still below the threshold.
+        ctx.b.op(Instr::LtU {
+            d: time,
+            a: time,
+            b: threshold,
+        });
+        ctx.b.jnz(time, trap);
+        ctx.regs.free(threshold);
+        ctx.regs.free(time);
     }
     Ok(())
 }
