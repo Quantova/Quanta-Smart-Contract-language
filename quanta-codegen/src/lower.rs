@@ -673,6 +673,12 @@ pub fn lower_entry(
     {
         let mut ctx = Ctx::new(layout, &params, &asset_params, trap, b, &mut regs, &mut args);
         ctx.entry_mints = entry_mints;
+        // Reserve the caller word at argument offset zero and the consensus time word at offset eight
+        // for every entry, whether or not it reads them, so a host injects the two trusted context
+        // words at fixed offsets and a caller can never place them itself. The source parameters
+        // follow after, and an entry that does not read a context word simply leaves its slot unused.
+        ctx.args.offset_of(CALLER_KEY);
+        ctx.args.offset_of(TIME_KEY);
         lower_signed_prologue(&mut ctx, entry, trap)?;
         lower_quorum_prologue(&mut ctx, entry, trap)?;
         lower_after_prologue(&mut ctx, entry, trap)?;

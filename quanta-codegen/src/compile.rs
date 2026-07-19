@@ -181,14 +181,24 @@ mod tests {
     }
 
     #[test]
-    fn the_argument_layout_places_the_step_at_the_base() {
+    fn the_argument_layout_reserves_the_context_words_then_the_parameters() {
         let cc = compile_one(METER);
         assert_eq!(
             cc.entries[0].args,
-            vec![ArgSlot {
-                key: "step".to_string(),
-                offset: 0,
-            }]
+            vec![
+                ArgSlot {
+                    key: "@caller".to_string(),
+                    offset: 0,
+                },
+                ArgSlot {
+                    key: "@time".to_string(),
+                    offset: 8,
+                },
+                ArgSlot {
+                    key: "step".to_string(),
+                    offset: 16,
+                },
+            ]
         );
     }
 

@@ -28,7 +28,12 @@ fn run(src: &str, total: u64, amount: u64) -> Result<u64, Fault> {
     let cc = compile_contract(&program.contracts[0]).expect("compile");
 
     let mut mem = vec![0u8; 4096];
-    let at = cc.entries[0].args[0].offset as usize;
+    let at = cc.entries[0]
+        .args
+        .iter()
+        .find(|slot| slot.key == "amount")
+        .expect("the amount argument")
+        .offset as usize;
     mem[at..at + 8].copy_from_slice(&amount.to_be_bytes());
 
     let mut storage = BTreeMap::new();
