@@ -89,12 +89,18 @@ impl Layout {
                         if let Some(slot) = self.slot(&name.text) {
                             reads.push(slot);
                         }
+                        if let Some(hi) = self.hi_slot(&name.text) {
+                            reads.push(hi);
+                        }
                     }
                 }
                 Clause::Writes { names, .. } => {
                     for name in names {
                         if let Some(slot) = self.slot(&name.text) {
                             writes.push(slot);
+                        }
+                        if let Some(hi) = self.hi_slot(&name.text) {
+                            writes.push(hi);
                         }
                     }
                 }

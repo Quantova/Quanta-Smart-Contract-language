@@ -109,6 +109,8 @@ pub struct Ctx<'a> {
     next_asset_local: u64,
     /// Whether the entry declares `mints`, which is the only place a `mint(..)` may create supply.
     entry_mints: bool,
+    /// The shared trap a checked overflow jumps to, so a two word arithmetic that carries past the
+    trap: Label,
     b: &'a mut Builder,
     regs: &'a mut Regs,
     args: &'a mut Args,
@@ -119,6 +121,7 @@ impl<'a> Ctx<'a> {
         layout: &'a Layout,
         params: &'a HashSet<String>,
         asset_params: &'a HashSet<String>,
+        trap: Label,
         b: &'a mut Builder,
         regs: &'a mut Regs,
         args: &'a mut Args,
@@ -130,6 +133,7 @@ impl<'a> Ctx<'a> {
             asset_locals: HashMap::new(),
             next_asset_local: ASSET_LOCAL_BASE,
             entry_mints: false,
+            trap,
             b,
             regs,
             args,
@@ -379,6 +383,17 @@ fn lower_binary(
     right: &Expr,
     wrapping: bool,
 ) -> Result<Reg, CodegenError> {
+    // A comparison where either side is a two word value orders the full wide value, so both sides
+    // evaluate to a register pair and the compare reduces them to a one word boolean.
+    if matches!(
+        op,
+        BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge | BinOp::Eq | BinOp::Ne
+    ) && (is_wide_expr(ctx, left) || is_wide_expr(ctx, right))
+    {
+        let (llo, lhi) = eval_wide(ctx, left, wrapping)?;
+        let (rlo, rhi) = eval_wide(ctx, right, wrapping)?;
+        return Ok(wide_compare(ctx, op, llo, lhi, rlo, rhi));
+    }
     let l = lower_expr(ctx, left, wrapping)?;
     let r = lower_expr(ctx, right, wrapping)?;
     match op {
@@ -410,6 +425,121 @@ fn lower_binary(
     }
     ctx.regs.free(r);
     Ok(l)
+}
+
+/// Whether an expression evaluates to a two word value. Only a two word state field is wide, and
+fn is_wide_expr(ctx: &Ctx, expr: &Expr) -> bool {
+    match expr {
+        Expr::Ident(id) => ctx.layout.is_wide(&id.text),
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => is_wide_expr(ctx, expr),
+        Expr::Binary { op, left, right, .. } => {
+            matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul)
+                && (is_wide_expr(ctx, left) || is_wide_expr(ctx, right))
+        }
+        _ => false,
+    }
+}
+
+/// Evaluates an expression into a contiguous low and high register pair. A wide state field reads its
+fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), CodegenError> {
+    match expr {
+        Expr::Checked { expr, .. } => eval_wide(ctx, expr, false),
+        Expr::Wrapping { expr, .. } => eval_wide(ctx, expr, true),
+        Expr::Ident(id) if ctx.layout.is_wide(&id.text) => {
+            let slot = ctx.layout.slot(&id.text).expect("a wide field has a slot");
+            let hi_slot = ctx.layout.hi_slot(&id.text).expect("a wide field has a high slot");
+            let lo = load_slot(ctx, slot, id.span)?;
+            let hi = load_slot(ctx, hi_slot, id.span)?;
+            Ok((lo, hi))
+        }
+        Expr::Binary { op, left, right, span } if matches!(op, BinOp::Add | BinOp::Sub) => {
+            let (llo, lhi) = eval_wide(ctx, left, wrapping)?;
+            let (rlo, rhi) = eval_wide(ctx, right, wrapping)?;
+            match op {
+                BinOp::Add => two_word_add(ctx, llo, lhi, rlo, rhi, wrapping),
+                _ => two_word_sub(ctx, llo, lhi, rlo, rhi, wrapping),
+            }
+            let _ = span;
+            Ok((llo, lhi))
+        }
+        Expr::Binary { op: BinOp::Mul, span, .. } => Err(CodegenError::Unsupported {
+            what: "a u128 multiply".into(),
+            span: *span,
+        }),
+        _ => {
+            let lo = lower_expr(ctx, expr, wrapping)?;
+            let hi = ctx.regs.alloc(expr.span())?;
+            ctx.b.op(Instr::Ldi { d: hi, imm: 0 });
+            Ok((lo, hi))
+        }
+    }
+}
+
+/// Two word add of the right pair into the left pair, carrying the low overflow into the high word.
+fn two_word_add(ctx: &mut Ctx, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg, wrapping: bool) {
+    ctx.b.op(Instr::AddW { d: llo, a: llo, b: rlo });
+    ctx.b.op(Instr::LtU { d: SCRATCH, a: llo, b: rlo });
+    ctx.b.op(Instr::AddW { d: lhi, a: lhi, b: rhi });
+    ctx.b.op(Instr::LtU { d: rlo, a: lhi, b: rhi });
+    ctx.b.op(Instr::AddW { d: lhi, a: lhi, b: SCRATCH });
+    ctx.b.op(Instr::LtU { d: rhi, a: lhi, b: SCRATCH });
+    if !wrapping {
+        ctx.b.op(Instr::Or { d: rlo, a: rlo, b: rhi });
+        ctx.b.jnz(rlo, ctx.trap);
+    }
+    ctx.regs.free(rhi);
+    ctx.regs.free(rlo);
+}
+
+/// Two word subtract of the right pair from the left pair, borrowing the low underflow out of the
+fn two_word_sub(ctx: &mut Ctx, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg, wrapping: bool) {
+    ctx.b.op(Instr::LtU { d: SCRATCH, a: llo, b: rlo });
+    ctx.b.op(Instr::SubW { d: llo, a: llo, b: rlo });
+    ctx.b.op(Instr::LtU { d: rlo, a: lhi, b: rhi });
+    ctx.b.op(Instr::SubW { d: lhi, a: lhi, b: rhi });
+    ctx.b.op(Instr::LtU { d: rhi, a: lhi, b: SCRATCH });
+    ctx.b.op(Instr::SubW { d: lhi, a: lhi, b: SCRATCH });
+    if !wrapping {
+        ctx.b.op(Instr::Or { d: rlo, a: rlo, b: rhi });
+        ctx.b.jnz(rlo, ctx.trap);
+    }
+    ctx.regs.free(rhi);
+    ctx.regs.free(rlo);
+}
+
+/// A two word comparison of the left pair against the right pair, reducing to a one word boolean held
+fn wide_compare(ctx: &mut Ctx, op: BinOp, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg) -> Reg {
+    let t1 = ctx.regs.alloc(Span::default()).expect("a compare temporary");
+    let t2 = ctx.regs.alloc(Span::default()).expect("a compare temporary");
+    ctx.b.op(Instr::Eq { d: SCRATCH, a: lhi, b: rhi });
+    ctx.b.op(Instr::LtU { d: t1, a: llo, b: rlo });
+    ctx.b.op(Instr::And { d: t1, a: t1, b: SCRATCH });
+    ctx.b.op(Instr::LtU { d: t2, a: lhi, b: rhi });
+    ctx.b.op(Instr::Or { d: t2, a: t2, b: t1 });
+    ctx.b.op(Instr::LtU { d: t1, a: rlo, b: llo });
+    ctx.b.op(Instr::And { d: t1, a: t1, b: SCRATCH });
+    ctx.b.op(Instr::LtU { d: llo, a: rhi, b: lhi });
+    ctx.b.op(Instr::Or { d: llo, a: llo, b: t1 });
+    match op {
+        BinOp::Lt => ctx.b.op(Instr::Or { d: llo, a: t2, b: t2 }),
+        BinOp::Gt => {}
+        BinOp::Le => logical_not(ctx, llo),
+        BinOp::Ge => {
+            ctx.b.op(Instr::Or { d: llo, a: t2, b: t2 });
+            logical_not(ctx, llo);
+        }
+        BinOp::Eq => {
+            ctx.b.op(Instr::Or { d: llo, a: llo, b: t2 });
+            logical_not(ctx, llo);
+        }
+        _ => ctx.b.op(Instr::Or { d: llo, a: llo, b: t2 }),
+    }
+    ctx.regs.free(t2);
+    ctx.regs.free(t1);
+    ctx.regs.free(rhi);
+    ctx.regs.free(rlo);
+    ctx.regs.free(lhi);
+    llo
 }
 
 /// Flips a boolean in `r` between zero and one.
@@ -496,7 +626,7 @@ pub fn lower_entry(
     let mut regs = Regs::new();
     let mut args = Args::new();
     {
-        let mut ctx = Ctx::new(layout, &params, &asset_params, b, &mut regs, &mut args);
+        let mut ctx = Ctx::new(layout, &params, &asset_params, trap, b, &mut regs, &mut args);
         ctx.entry_mints = entry_mints;
         lower_signed_prologue(&mut ctx, entry, trap)?;
         lower_quorum_prologue(&mut ctx, entry, trap)?;
@@ -973,14 +1103,46 @@ fn lower_assign(
     value: &Expr,
     span: Span,
 ) -> Result<(), CodegenError> {
-    let slot = match target {
-        Expr::Ident(id) => ctx.layout.slot(&id.text),
-        _ => None,
+    let name = match target {
+        Expr::Ident(id) => &id.text,
+        _ => {
+            return Err(CodegenError::Unsupported {
+                what: "an assignment target that is not a state field".into(),
+                span,
+            })
+        }
     };
-    let slot = slot.ok_or_else(|| CodegenError::Unsupported {
+    let slot = ctx.layout.slot(name).ok_or_else(|| CodegenError::Unsupported {
         what: "an assignment target that is not a state field".into(),
         span,
     })?;
+
+    if ctx.layout.is_wide(name) {
+        let hi_slot = ctx.layout.hi_slot(name).expect("a wide field has a high slot");
+        match op {
+            AssignOp::Set => {
+                let (vlo, vhi) = eval_wide(ctx, value, false)?;
+                store_slot(ctx, slot, vlo);
+                store_slot(ctx, hi_slot, vhi);
+                ctx.regs.free(vhi);
+                ctx.regs.free(vlo);
+            }
+            AssignOp::Add | AssignOp::Sub => {
+                let flo = load_slot(ctx, slot, span)?;
+                let fhi = load_slot(ctx, hi_slot, span)?;
+                let (vlo, vhi) = eval_wide(ctx, value, false)?;
+                match op {
+                    AssignOp::Add => two_word_add(ctx, flo, fhi, vlo, vhi, false),
+                    _ => two_word_sub(ctx, flo, fhi, vlo, vhi, false),
+                }
+                store_slot(ctx, slot, flo);
+                store_slot(ctx, hi_slot, fhi);
+                ctx.regs.free(fhi);
+                ctx.regs.free(flo);
+            }
+        }
+        return Ok(());
+    }
 
     match op {
         AssignOp::Set => {
@@ -1050,11 +1212,13 @@ mod tests {
         let mut regs = Regs::new();
         let mut args = Args::new();
         let asset_params = HashSet::new();
+        let trap = b.label();
         let dest = {
             let mut ctx = Ctx::new(
                 &layout,
                 &params,
                 &asset_params,
+                trap,
                 &mut b,
                 &mut regs,
                 &mut args,
@@ -1062,6 +1226,7 @@ mod tests {
             lower_expr(&mut ctx, &expr, false).expect("lower")
         };
         b.op(Instr::Halt);
+        b.mark(trap);
         let code = b.link().expect("link");
 
         let mut storage = BTreeMap::new();
