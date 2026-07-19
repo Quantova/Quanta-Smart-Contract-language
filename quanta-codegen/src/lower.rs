@@ -90,6 +90,7 @@ impl Default for Regs {
 pub struct Args {
     offsets: HashMap<String, u64>,
     order: Vec<String>,
+    next: u64,
 }
 
 impl Args {
@@ -97,14 +98,20 @@ impl Args {
         Args::default()
     }
 
-    fn offset_of(&mut self, key: &str) -> u64 {
+    /// Reserve an argument of a given byte width, so a full width value such as a thirty two byte
+    fn offset_of_width(&mut self, key: &str, bytes: u64) -> u64 {
         if let Some(off) = self.offsets.get(key) {
             return *off;
         }
-        let off = ARG_BASE + self.order.len() as u64 * WORD;
+        let off = ARG_BASE + self.next;
+        self.next += bytes;
         self.offsets.insert(key.to_string(), off);
         self.order.push(key.to_string());
         off
+    }
+
+    fn offset_of(&mut self, key: &str) -> u64 {
+        self.offset_of_width(key, WORD)
     }
 
     /// The argument words in assignment order, each a key and its memory offset.
