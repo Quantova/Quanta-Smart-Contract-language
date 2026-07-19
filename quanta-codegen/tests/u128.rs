@@ -48,6 +48,21 @@ const SUB: &str =
     "contract W { state { total: u128; } genesis { total = 0; } \
      entry take(amount: u64) writes(total) { total -= amount; } }";
 
+const LIT: &str =
+    "contract W { state { total: u128; } genesis { total = 0; } \
+     entry set() writes(total) { total = 20_000_000_000_000_000_000; } }";
+
+#[test]
+fn a_wide_literal_stores_across_both_words() {
+    let cc = compile(LIT);
+    let set = entry(&cc, "set");
+    let mem = vec![0u8; 4096];
+    // Twenty quintillion is above one machine word, so it splits into a low and a high word.
+    let out = run(&cc, set, BTreeMap::new(), &mem).expect("the set halts");
+    assert_eq!(out.get(&0), Some(&1_553_255_926_290_448_384));
+    assert_eq!(out.get(&HI), Some(&1));
+}
+
 #[test]
 fn a_low_word_add_carries_into_the_high_word() {
     let cc = compile(ADD);

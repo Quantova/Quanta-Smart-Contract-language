@@ -445,6 +445,17 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
     match expr {
         Expr::Checked { expr, .. } => eval_wide(ctx, expr, false),
         Expr::Wrapping { expr, .. } => eval_wide(ctx, expr, true),
+        Expr::Int(lit) => {
+            let value = parse_u128(&lit.text, lit.span)?;
+            let lo = ctx.regs.alloc(lit.span)?;
+            ctx.b.op(Instr::Ldi { d: lo, imm: value as u64 });
+            let hi = ctx.regs.alloc(lit.span)?;
+            ctx.b.op(Instr::Ldi {
+                d: hi,
+                imm: (value >> 64) as u64,
+            });
+            Ok((lo, hi))
+        }
         Expr::Ident(id) if ctx.layout.is_wide(&id.text) => {
             let slot = ctx.layout.slot(&id.text).expect("a wide field has a slot");
             let hi_slot = ctx.layout.hi_slot(&id.text).expect("a wide field has a high slot");
@@ -556,6 +567,17 @@ fn parse_int(text: &str, span: Span) -> Result<u64, CodegenError> {
     let cleaned: String = text.chars().filter(|c| *c != '_').collect();
     cleaned
         .parse::<u64>()
+        .map_err(|_| CodegenError::IntegerTooWide {
+            text: text.to_string(),
+            span,
+        })
+}
+
+/// Parses a numeric literal into a two word value, so a wide field accepts a constant above one
+fn parse_u128(text: &str, span: Span) -> Result<u128, CodegenError> {
+    let cleaned: String = text.chars().filter(|c| *c != '_').collect();
+    cleaned
+        .parse::<u128>()
         .map_err(|_| CodegenError::IntegerTooWide {
             text: text.to_string(),
             span,
