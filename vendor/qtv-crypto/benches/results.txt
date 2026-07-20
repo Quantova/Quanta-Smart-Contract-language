@@ -1,0 +1,12 @@
+sha3_256                    3.824 us/op        261482.81 ops/s
+ml_dsa_keygen              96.483 us/op         10364.50 ops/s
+ml_dsa_sign               194.926 us/op          5130.14 ops/s
+ml_dsa_verify              96.087 us/op         10407.28 ops/s
+ml_kem_keygen              27.787 us/op         35988.04 ops/s
+ml_kem_encaps              29.601 us/op         33782.26 ops/s
+ml_kem_decaps              32.885 us/op         30408.74 ops/s
+slh_dsa_keygen         124138.692 us/op             8.06 ops/s
+slh_dsa_sign          1208006.967 us/op             0.83 ops/s
+slh_dsa_verify            977.930 us/op          1022.57 ops/s
+vrf_prove             1391313.025 us/op             0.72 ops/s
+vrf_verify                959.756 us/op          1041.93 ops/s

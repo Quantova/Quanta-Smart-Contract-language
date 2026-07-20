@@ -8,6 +8,7 @@ use crate::selector::{entry_selector, entry_signature, event_selector, event_sig
 use qtv_vm::container::{Container, Entry, SELECTOR_BYTES};
 use qtv_vm::isa::Instr;
 use quanta_ast::{Contract, EntryDecl, Item, Program};
+use std::collections::HashMap;
 
 /// A compiled contract: the loadable container plus the interface facts a caller needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +76,20 @@ fn compile_entries(
         })
         .collect();
 
+    // The event selectors, mapped by name, so an emit in an entry body names the event the machine
+    // records. Each four byte selector is packed big endian into a word.
+    let events_map: HashMap<String, u32> = contract
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Event(ev) => Some((
+                ev.name.text.clone(),
+                u32::from_be_bytes(event_selector(ev)),
+            )),
+            _ => None,
+        })
+        .collect();
+
     let mut b = Builder::new();
     let trap = b.label();
 
@@ -83,7 +98,7 @@ fn compile_entries(
     for entry in entries {
         let start = b.label();
         b.mark(start);
-        let args = lower_entry(&layout, entry, &invariants, &mut b, trap)?;
+        let args = lower_entry(&layout, entry, &invariants, &events_map, &mut b, trap)?;
         let selector = entry_selector(entry);
         placed.push((selector, layout.access(entry), start));
         artifacts.push(EntryArtifact {

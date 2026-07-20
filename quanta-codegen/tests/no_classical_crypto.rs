@@ -55,6 +55,7 @@ fn is_cryptographic(op: OpCode) -> bool {
         | OpCode::AddW
         | OpCode::SubW
         | OpCode::MulW
+        | OpCode::MulHi
         | OpCode::And
         | OpCode::Or
         | OpCode::Xor
@@ -75,7 +76,8 @@ fn is_cryptographic(op: OpCode) -> bool {
         | OpCode::Ret
         | OpCode::SLoad
         | OpCode::SStore
-        | OpCode::Send => false,
+        | OpCode::Send
+        | OpCode::Emit => false,
     }
 }
 

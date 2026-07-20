@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 quanta-lexer = { path = "../quanta-lexer" }
 quanta-ast = { path = "../quanta-ast" }
-qtv-vm = { git = "https://github.com/Quantova/QVM.git", tag = "v0.2.0" }
+qtv-vm = { git = "https://github.com/Quantova/QVM.git", tag = "v0.4.0" }
 
 [dev-dependencies]
 quanta-parser = { path = "../quanta-parser" }

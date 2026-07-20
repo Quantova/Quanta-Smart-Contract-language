@@ -50,7 +50,9 @@ fn meter_advance_runs_metered_and_writes_state() {
         .expect("clean halt");
 
     assert_eq!(out.storage.get(&0), Some(&12), "reading must become twelve");
-    assert_eq!(out.gas_used, 717, "metered gas cost of the advance entry");
+    // The advance guards the step, adds it into the reading, and emits the Advanced event, which
+    // marshals the operand into the payload region and records the event through the EMIT opcode.
+    assert_eq!(out.gas_used, 924, "metered gas cost of the advance entry");
 }
 
 #[test]

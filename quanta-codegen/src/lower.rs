@@ -23,6 +23,9 @@ const WORD: u64 = 8;
 /// Base offset of the asset local region in scratch memory. A `let` bound asset value keeps its
 const ASSET_LOCAL_BASE: u64 = 4096;
 
+/// Base offset of the event payload region in scratch memory. An emit marshals its operand words here
+const EVENT_BASE: u64 = 32768;
+
 /// Argument key suffix for the scheme identifier of a signed parameter.
 const SIG_SCHEME_SUFFIX: &str = "#scheme";
 /// Argument key suffix for the pointer to a signed parameter's verify region.
@@ -140,13 +143,17 @@ pub struct Ctx<'a> {
     b: &'a mut Builder,
     regs: &'a mut Regs,
     args: &'a mut Args,
+    /// The declared events of the contract, each name mapped to its four byte interface selector packed
+    events: &'a HashMap<String, u32>,
 }
 
 impl<'a> Ctx<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         layout: &'a Layout,
         params: &'a HashSet<String>,
         asset_params: &'a HashSet<String>,
+        events: &'a HashMap<String, u32>,
         trap: Label,
         b: &'a mut Builder,
         regs: &'a mut Regs,
@@ -163,6 +170,7 @@ impl<'a> Ctx<'a> {
             b,
             regs,
             args,
+            events,
         }
     }
 
@@ -489,24 +497,18 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
             let hi = load_slot(ctx, hi_slot, id.span)?;
             Ok((lo, hi))
         }
-        Expr::Binary { op, left, right, span } if matches!(op, BinOp::Add | BinOp::Sub) => {
+        Expr::Binary { op, left, right, span }
+            if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) =>
+        {
             let (llo, lhi) = eval_wide(ctx, left, wrapping)?;
             let (rlo, rhi) = eval_wide(ctx, right, wrapping)?;
             match op {
                 BinOp::Add => two_word_add(ctx, llo, lhi, rlo, rhi, wrapping),
-                _ => two_word_sub(ctx, llo, lhi, rlo, rhi, wrapping),
+                BinOp::Sub => two_word_sub(ctx, llo, lhi, rlo, rhi, wrapping),
+                _ => two_word_mul(ctx, llo, lhi, rlo, rhi, wrapping, *span)?,
             }
-            let _ = span;
             Ok((llo, lhi))
         }
-        // A wide multiply needs the machine's high word multiply, which the pinned qtv-vm v0.2.0 does
-        // not expose. It is refused rather than lowered to a truncating single word product, and it
-        // waits on a qtv-vm release that carries the high word multiply.
-        Expr::Binary { op: BinOp::Mul, span, .. } => Err(CodegenError::Unsupported {
-            what: "a u128 multiply, which needs the high word multiply absent from qtv-vm v0.2.0"
-                .into(),
-            span: *span,
-        }),
         _ => {
             let lo = lower_expr(ctx, expr, wrapping)?;
             let hi = ctx.regs.alloc(expr.span())?;
@@ -546,6 +548,77 @@ fn two_word_sub(ctx: &mut Ctx, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg, wrapping:
     }
     ctx.regs.free(rhi);
     ctx.regs.free(rlo);
+}
+
+/// Two word multiply of the left pair by the right pair, the low one hundred twenty eight bits of the
+fn two_word_mul(
+    ctx: &mut Ctx,
+    llo: Reg,
+    lhi: Reg,
+    rlo: Reg,
+    rhi: Reg,
+    wrapping: bool,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let reslo = ctx.regs.alloc(span)?;
+    let reshi = ctx.regs.alloc(span)?;
+    let t = ctx.regs.alloc(span)?;
+    let ov = if !wrapping {
+        Some(ctx.regs.alloc(span)?)
+    } else {
+        None
+    };
+
+    // The low product a_lo * b_lo gives the result low word and the base of the result high word.
+    ctx.b.op(Instr::MulW { d: reslo, a: llo, b: rlo });
+    ctx.b.op(Instr::MulHi { d: reshi, a: llo, b: rlo });
+    if let Some(ov) = ov {
+        ctx.b.op(Instr::Ldi { d: ov, imm: 0 });
+    }
+
+    // Add the low half of the cross term a_lo * b_hi into the high word, folding its carry.
+    ctx.b.op(Instr::MulW { d: t, a: llo, b: rhi });
+    ctx.b.op(Instr::AddW { d: reshi, a: reshi, b: t });
+    if let Some(ov) = ov {
+        ctx.b.op(Instr::LtU { d: SCRATCH, a: reshi, b: t });
+        ctx.b.op(Instr::Or { d: ov, a: ov, b: SCRATCH });
+    }
+
+    // Add the low half of the cross term a_hi * b_lo into the high word, folding its carry.
+    ctx.b.op(Instr::MulW { d: t, a: lhi, b: rlo });
+    ctx.b.op(Instr::AddW { d: reshi, a: reshi, b: t });
+    if let Some(ov) = ov {
+        ctx.b.op(Instr::LtU { d: SCRATCH, a: reshi, b: t });
+        ctx.b.op(Instr::Or { d: ov, a: ov, b: SCRATCH });
+
+        // The high halves of the cross terms and the whole a_hi * b_hi term land above the wide range,
+        // so a nonzero one of them is an overflow.
+        ctx.b.op(Instr::MulHi { d: t, a: llo, b: rhi });
+        ctx.b.op(Instr::Or { d: ov, a: ov, b: t });
+        ctx.b.op(Instr::MulHi { d: t, a: lhi, b: rlo });
+        ctx.b.op(Instr::Or { d: ov, a: ov, b: t });
+        ctx.b.op(Instr::MulW { d: t, a: lhi, b: rhi });
+        ctx.b.op(Instr::Or { d: ov, a: ov, b: t });
+        ctx.b.op(Instr::MulHi { d: t, a: lhi, b: rhi });
+        ctx.b.op(Instr::Or { d: ov, a: ov, b: t });
+    }
+
+    // Move the product into the left pair, then revert on overflow for the checked form.
+    ctx.b.op(Instr::Mov { d: llo, a: reslo });
+    ctx.b.op(Instr::Mov { d: lhi, a: reshi });
+    if let Some(ov) = ov {
+        ctx.b.jnz(ov, ctx.trap);
+    }
+
+    if let Some(ov) = ov {
+        ctx.regs.free(ov);
+    }
+    ctx.regs.free(t);
+    ctx.regs.free(reshi);
+    ctx.regs.free(reslo);
+    ctx.regs.free(rhi);
+    ctx.regs.free(rlo);
+    Ok(())
 }
 
 /// A two word comparison of the left pair against the right pair, reducing to a one word boolean held
@@ -659,6 +732,7 @@ pub fn lower_entry(
     layout: &Layout,
     entry: &EntryDecl,
     invariants: &[&Expr],
+    events: &HashMap<String, u32>,
     b: &mut Builder,
     trap: Label,
 ) -> Result<Args, CodegenError> {
@@ -678,7 +752,16 @@ pub fn lower_entry(
     let mut regs = Regs::new();
     let mut args = Args::new();
     {
-        let mut ctx = Ctx::new(layout, &params, &asset_params, trap, b, &mut regs, &mut args);
+        let mut ctx = Ctx::new(
+            layout,
+            &params,
+            &asset_params,
+            events,
+            trap,
+            b,
+            &mut regs,
+            &mut args,
+        );
         ctx.entry_mints = entry_mints;
         // Reserve the caller word at argument offset zero and the consensus time word at offset eight
         // for every entry, whether or not it reads them, so a host injects the two trusted context
@@ -955,15 +1038,9 @@ fn lower_stmt(ctx: &mut Ctx, stmt: &Stmt, trap: Label) -> Result<(), CodegenErro
             value,
             span,
         } => lower_assign(ctx, target, *op, value, *span),
-        // An emit computes the event operands. Appending the typed event to the event trie has no
-        // machine opcode yet, so only the operand evaluation lowers here.
-        Stmt::Emit { args, .. } => {
-            for arg in args {
-                let r = lower_expr(ctx, arg, false)?;
-                ctx.regs.free(r);
-            }
-            Ok(())
-        }
+        // An emit marshals the event operands into the payload region and records the typed event the
+        // host appends to the block event trie.
+        Stmt::Emit { name, args, span } => lower_emit(ctx, &name.text, args, *span),
         Stmt::Let { name, value, span } => lower_let(ctx, &name.text, value, *span),
         // A bare call is a state mutating asset or ledger operation.
         Stmt::Expr {
@@ -1025,6 +1102,59 @@ fn lower_send(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), CodegenErr
     ctx.regs.free(rlen);
     ctx.regs.free(raddr);
     ctx.regs.free(amount);
+    Ok(())
+}
+
+/// Lowers an `emit` to the native event the EMIT opcode records. Each operand is marshalled into the
+fn lower_emit(ctx: &mut Ctx, name: &str, args: &[Expr], span: Span) -> Result<(), CodegenError> {
+    let selector = *ctx
+        .events
+        .get(name)
+        .ok_or_else(|| CodegenError::Unsupported {
+            what: format!("an emit of the undeclared event `{name}`"),
+            span,
+        })?;
+
+    let mut offset = EVENT_BASE;
+    for arg in args {
+        if is_wide_expr(ctx, arg) {
+            let (lo, hi) = eval_wide(ctx, arg, false)?;
+            store_mem_word(ctx, offset, lo);
+            store_mem_word(ctx, offset + WORD, hi);
+            ctx.regs.free(hi);
+            ctx.regs.free(lo);
+            offset += 2 * WORD;
+        } else {
+            let r = lower_expr(ctx, arg, false)?;
+            store_mem_word(ctx, offset, r);
+            ctx.regs.free(r);
+            offset += WORD;
+        }
+    }
+
+    // The payload spans from the event base to the running offset. The selector rides the low four
+    // bytes of a register, matching the machine's four byte selector width.
+    let len = offset - EVENT_BASE;
+    let off_reg = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: off_reg,
+        imm: EVENT_BASE,
+    });
+    let len_reg = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: len_reg, imm: len });
+    let sel_reg = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: sel_reg,
+        imm: selector as u64,
+    });
+    ctx.b.op(Instr::Emit {
+        a: off_reg,
+        b: len_reg,
+        c: sel_reg,
+    });
+    ctx.regs.free(sel_reg);
+    ctx.regs.free(len_reg);
+    ctx.regs.free(off_reg);
     Ok(())
 }
 
@@ -1336,12 +1466,14 @@ mod tests {
         let mut regs = Regs::new();
         let mut args = Args::new();
         let asset_params = HashSet::new();
+        let events: HashMap<String, u32> = HashMap::new();
         let trap = b.label();
         let dest = {
             let mut ctx = Ctx::new(
                 &layout,
                 &params,
                 &asset_params,
+                &events,
                 trap,
                 &mut b,
                 &mut regs,

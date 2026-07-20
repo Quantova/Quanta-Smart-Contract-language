@@ -113,6 +113,80 @@ fn a_checked_overflow_reverts() {
     );
 }
 
+// total is a u128 field; wscale multiplies it wrapping, cscale multiplies it checked.
+const MUL: &str =
+    "contract W { state { total: u128; } genesis { total = 0; } \
+     entry wscale(factor: u64) writes(total) { total = wrapping(total * factor); } \
+     entry cscale(factor: u64) writes(total) { total = checked(total * factor); } }";
+
+#[test]
+fn a_wrapping_multiply_stays_in_the_low_word() {
+    let cc = compile(MUL);
+    let e = entry(&cc, "wscale");
+    let mut mem = vec![0u8; 4096];
+    put_arg(&mut mem, e, "factor", 6);
+    let mut storage = BTreeMap::new();
+    storage.insert(0, 7);
+    let out = run(&cc, e, storage, &mem).expect("the multiply halts");
+    assert_eq!(out.get(&0), Some(&42), "seven times six is forty two");
+    assert_eq!(
+        out.get(&HI).copied().unwrap_or(0),
+        0,
+        "no carry into the high word"
+    );
+}
+
+#[test]
+fn a_wrapping_multiply_carries_into_the_high_word() {
+    let cc = compile(MUL);
+    let e = entry(&cc, "wscale");
+    let mut mem = vec![0u8; 4096];
+    put_arg(&mut mem, e, "factor", 4);
+    let mut storage = BTreeMap::new();
+    // Two to the sixty third times four is two to the sixty fifth, which is two in the high word.
+    storage.insert(0, 1u64 << 63);
+    let out = run(&cc, e, storage, &mem).expect("the multiply halts");
+    assert_eq!(
+        out.get(&0).copied().unwrap_or(0),
+        0,
+        "the low word product is zero"
+    );
+    assert_eq!(out.get(&HI), Some(&2), "the product lands two in the high word");
+}
+
+#[test]
+fn a_checked_multiply_without_overflow_passes() {
+    let cc = compile(MUL);
+    let e = entry(&cc, "cscale");
+    let mut mem = vec![0u8; 4096];
+    put_arg(&mut mem, e, "factor", 5);
+    let mut storage = BTreeMap::new();
+    storage.insert(0, 3);
+    let out = run(&cc, e, storage, &mem).expect("the checked multiply halts");
+    assert_eq!(out.get(&0), Some(&15), "three times five is fifteen");
+    assert_eq!(
+        out.get(&HI).copied().unwrap_or(0),
+        0,
+        "no high word"
+    );
+}
+
+#[test]
+fn a_checked_multiply_overflow_reverts() {
+    let cc = compile(MUL);
+    let e = entry(&cc, "cscale");
+    let mut mem = vec![0u8; 4096];
+    put_arg(&mut mem, e, "factor", 1u64 << 63);
+    let mut storage = BTreeMap::new();
+    // Two in the high word is two to the sixty fifth; times two to the sixty third is two to the one
+    // hundred twenty eighth, which is above the wide range and reverts rather than wrapping.
+    storage.insert(HI, 2);
+    assert!(
+        run(&cc, e, storage, &mem).is_err(),
+        "a product at or above two to the one hundred twenty eighth reverts"
+    );
+}
+
 #[test]
 fn a_two_word_limit_orders_the_full_value() {
     let cc = compile(ADD);
