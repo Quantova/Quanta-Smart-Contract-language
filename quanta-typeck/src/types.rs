@@ -123,6 +123,7 @@ impl<'a> Env<'a> {
             Expr::Field { name, .. } => match name.text.as_str() {
                 "contains" => Ty::Bool,
                 "split" => Ty::Asset,
+                "get" => Ty::Int,
                 _ => Ty::Unknown,
             },
             Expr::Ident(id) if id.text == "mint" => Ty::Asset,

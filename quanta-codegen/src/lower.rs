@@ -273,7 +273,7 @@ fn lower_call_value(
 ) -> Result<Reg, CodegenError> {
     if let Expr::Field { base, name, .. } = callee {
         match name.text.as_str() {
-            "contains" => return lower_map_read(ctx, base, args, span),
+            "contains" | "get" => return lower_map_read(ctx, base, args, span),
             "split" => return lower_split(ctx, base, args, span),
             _ => {}
         }
@@ -2329,20 +2329,29 @@ fn lower_map_set(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Resul
     let mbase = map_base_of(ctx, base, span)?;
     let (key_expr, value_expr) = two_args(args, span)?;
     let key_off = lower_address(ctx, key_expr, span)?;
-    let val_off = lower_address(ctx, value_expr, span)?;
-    for i in 0..ADDR_WORDS {
-        compute_map_addr_word_key(ctx, mbase, key_off, i, span)?;
-        let w = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: SCRATCH,
-            imm: val_off + i * WORD,
-        });
-        ctx.b.op(Instr::MLoad { d: w, a: SCRATCH });
-        let key = map_key_ptr(ctx, span)?;
-        ctx.b.op(Instr::SStore { a: key, b: w });
-        ctx.regs.free(key);
-        ctx.regs.free(w);
+    if map_name_is_value_addr(ctx, base) {
+        let val_off = lower_address(ctx, value_expr, span)?;
+        for i in 0..ADDR_WORDS {
+            compute_map_addr_word_key(ctx, mbase, key_off, i, span)?;
+            let w = ctx.regs.alloc(span)?;
+            ctx.b.op(Instr::Ldi {
+                d: SCRATCH,
+                imm: val_off + i * WORD,
+            });
+            ctx.b.op(Instr::MLoad { d: w, a: SCRATCH });
+            let key = map_key_ptr(ctx, span)?;
+            ctx.b.op(Instr::SStore { a: key, b: w });
+            ctx.regs.free(key);
+            ctx.regs.free(w);
+        }
+        return Ok(());
     }
+    let v = lower_expr(ctx, value_expr, false)?;
+    compute_map_key(ctx, mbase, key_off, span)?;
+    let key = map_key_ptr(ctx, span)?;
+    ctx.b.op(Instr::SStore { a: key, b: v });
+    ctx.regs.free(key);
+    ctx.regs.free(v);
     Ok(())
 }
 
