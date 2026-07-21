@@ -2,7 +2,7 @@
 
 Quanta is the smart contract language of Quantova. A contract is written in a `.qs` source file and compiles to a QVM container, the unit of code the Quantova virtual machine loads and runs. There is no EVM and no WebAssembly virtual machine beneath it.
 
-Quantova is a sovereign post quantum Layer 1 built from scratch, sharing no code, no wire, and no trust assumption with any other chain. It is post quantum end to end and not a classical chain with a post quantum signature bolted on, built on NIST standardized schemes alone with no classical escape hatch anywhere. Consensus is QORUS, the virtual machine is the QVM running compiled containers, addresses are q1 bech32m, and the asset is QTOV with its base unit the Quon and TQTOV on the testnet.
+Quantova is a sovereign post quantum Layer 1 built from scratch, sharing no code, no wire, and no trust assumption with any other chain. It is post quantum end to end and not a classical chain with a post quantum signature bolted on, built on NIST standardized schemes alone with no classical escape hatch anywhere. Consensus is QORUS, the virtual machine is the QVM running compiled containers, addresses are Q1 bech32m, and the asset is QTOV with its base unit the Quon and TQTOV on the testnet.
 
 The defining property of Quanta is that the classic smart contract exploits are not runtime hazards guarded by checks. They are errors that stop the compile. A contract that could reenter, overflow, forge authority, mint without limit, drop value, or be front run does not produce a container, because the shape that carries the exploit is not a valid program.
 
