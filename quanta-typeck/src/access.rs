@@ -5,7 +5,7 @@ use crate::model::Model;
 use quanta_ast::{Clause, EntryDecl, Expr, Item, Stmt};
 use std::collections::HashSet;
 
-const MUTATORS: &[&str] = &["merge", "split", "credit", "insert", "remove"];
+const MUTATORS: &[&str] = &["merge", "split", "credit", "insert", "remove", "set"];
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
     for item in &model.contract.items {

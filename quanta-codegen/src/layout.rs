@@ -29,6 +29,8 @@ pub struct Layout {
     addr: HashSet<String>,
     /// Keyed fields whose key type is `Q_Address`, so a key expression handed to one is read as a full
     map_key_addr: HashSet<String>,
+    /// Keyed fields whose value type is `Q_Address`, so an entry holds a full thirty two byte address
+    map_value_addr: HashSet<String>,
     /// Guardian set fields, each mapped to the number of guardians it holds. A `GuardianSet<N>` field
     guardian_sets: HashMap<String, u64>,
 }
@@ -41,6 +43,7 @@ impl Layout {
         let mut wide = HashSet::new();
         let mut addr = HashSet::new();
         let mut map_key_addr = HashSet::new();
+        let mut map_value_addr = HashSet::new();
         let mut guardian_sets = HashMap::new();
         let mut next = 0u64;
         let mut keyed = 0u64;
@@ -62,6 +65,12 @@ impl Layout {
                             Some(quanta_ast::GenericArg::Type(t)) if t.name.text == ADDR_TYPE
                         ) {
                             map_key_addr.insert(field.name.text.clone());
+                        }
+                        if matches!(
+                            field.ty.args.get(1),
+                            Some(quanta_ast::GenericArg::Type(t)) if t.name.text == ADDR_TYPE
+                        ) {
+                            map_value_addr.insert(field.name.text.clone());
                         }
                         next += 1;
                     } else if ty == WIDE_TYPE {
@@ -95,6 +104,7 @@ impl Layout {
             wide,
             addr,
             map_key_addr,
+            map_value_addr,
             guardian_sets,
         }
     }
@@ -109,6 +119,11 @@ impl Layout {
     /// Whether a keyed field keys on a full `Q_Address`, so a key expression handed to it is a whole
     pub fn map_key_is_addr(&self, name: &str) -> bool {
         self.map_key_addr.contains(name)
+    }
+
+    /// Whether a keyed field holds a full `Q_Address` value, stored across four one word slots derived
+    pub fn map_value_is_addr(&self, name: &str) -> bool {
+        self.map_value_addr.contains(name)
     }
 
     /// The slot of a state field, if the name is one.
@@ -250,6 +265,18 @@ mod tests {
         let frozen = layout.map_base("frozen").expect("a keyed base");
         assert!(balances >= super::KEYED_BASE);
         assert_ne!(balances, frozen, "distinct keyed fields never share a base");
+    }
+
+    #[test]
+    fn a_map_value_of_address_is_marked() {
+        let c = contract(
+            "contract C { state { expiry_of: Map<Q_Address, u64>; \
+             owner_of: Map<Q_Address, Q_Address>; } }",
+        );
+        let layout = Layout::build(&c);
+        assert!(!layout.map_value_is_addr("expiry_of"));
+        assert!(layout.map_value_is_addr("owner_of"));
+        assert!(layout.map_key_is_addr("owner_of"));
     }
 
     #[test]

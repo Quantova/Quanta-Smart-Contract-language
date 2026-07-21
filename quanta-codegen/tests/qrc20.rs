@@ -180,8 +180,9 @@ fn an_owner_signed_mint_raises_supply_and_credits_the_holder_and_emits() {
             _ => None,
         })
         .expect("a Minted event is recorded");
-    let amount = u64::from_be_bytes(minted[8..16].try_into().unwrap());
-    assert_eq!(amount, 500, "the Minted event carries the amount");
+    assert_eq!(&minted[0..32], &to, "the Minted event carries the whole recipient address");
+    let amount = u64::from_be_bytes(minted[32..40].try_into().unwrap());
+    assert_eq!(amount, 500, "the Minted event carries the amount after the full address");
 }
 
 #[test]
@@ -213,8 +214,10 @@ fn a_transfer_moves_balance_between_two_holders_and_conserves_supply() {
             _ => None,
         })
         .expect("a Transferred event is recorded");
-    let amount = u64::from_be_bytes(transferred[16..24].try_into().unwrap());
-    assert_eq!(amount, 200, "the Transferred event carries the amount as its third word");
+    assert_eq!(&transferred[0..32], &holder_a(), "the Transferred event carries the whole sender address");
+    assert_eq!(&transferred[32..64], &holder_b(), "the Transferred event carries the whole recipient address");
+    let amount = u64::from_be_bytes(transferred[64..72].try_into().unwrap());
+    assert_eq!(amount, 200, "the Transferred event carries the amount after the two full addresses");
 }
 
 #[test]

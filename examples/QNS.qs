@@ -7,8 +7,8 @@ contract QNS {
     vault: u64;
     registered: Registry<Q_Address>;
     expiry_of: Map<Q_Address, u64>;
-    owners: Registry<Q_Address>;
-    resolved_of: Map<Q_Address, u64>;
+    owner_of: Map<Q_Address, Q_Address>;
+    resolved_of: Map<Q_Address, Q_Address>;
   }
   genesis {
     admin = deploy_params.admin;
@@ -17,14 +17,14 @@ contract QNS {
   }
   entry register(name: Q_Address, until: u64)
     reads(purchase_fee)
-    writes(registered, expiry_of, owners, vault)
+    writes(registered, expiry_of, owner_of, vault)
     after expiry_of.contains(name)
     limits vault + purchase_fee <= 9000000000000000000
   {
+    owner_of.set(name, caller);
     expiry_of.debit(name, expiry_of.contains(name));
     expiry_of.credit(name, until);
     registered.insert(name);
-    owners.insert(caller);
     vault += purchase_fee;
     emit Registered(name, caller, until);
   }
@@ -39,22 +39,20 @@ contract QNS {
     emit Renewed(name, years);
   }
   entry set_resolved(name: Q_Address, target: Q_Address)
-    reads(owners, registered)
+    reads(owner_of, registered)
     writes(resolved_of)
   {
-    guard owners.contains(caller);
+    guard owner_of.get(name) == caller;
     guard registered.contains(name);
-    resolved_of.debit(name, resolved_of.contains(name));
-    resolved_of.credit(name, target);
+    resolved_of.set(name, target);
     emit Resolved(name, caller, target);
   }
   entry transfer(name: Q_Address, to: Q_Address)
-    reads(registered)
-    writes(owners)
+    reads(owner_of)
+    writes(owner_of)
   {
-    guard owners.contains(caller);
-    guard registered.contains(name);
-    owners.insert(to);
+    guard owner_of.get(name) == caller;
+    owner_of.set(name, to);
     emit Transferred(name, caller, to);
   }
   entry withdraw(order: Sweep signed by admin)

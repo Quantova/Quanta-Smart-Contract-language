@@ -2,12 +2,12 @@
 
 use crate::emit::{Builder, LinkError};
 use crate::error::CodegenError;
-use crate::layout::Layout;
-use crate::lower::lower_entry;
+use crate::layout::{Layout, ADDR_WORDS};
+use crate::lower::{lower_entry, EventSig};
 use crate::selector::{entry_selector, entry_signature, event_selector, event_signature};
 use qtv_vm::container::{Container, Entry, SELECTOR_BYTES};
 use qtv_vm::isa::Instr;
-use quanta_ast::{Contract, EntryDecl, Item, Program};
+use quanta_ast::{Contract, EntryDecl, EventDecl, Item, Program, Type};
 use std::collections::HashMap;
 
 /// A compiled contract: the loadable container plus the interface facts a caller needs.
@@ -58,6 +58,19 @@ pub fn compile(program: &Program) -> Result<Vec<CompiledContract>, CodegenError>
     program.contracts.iter().map(compile_contract).collect()
 }
 
+/// The machine word width of each event field in declaration order: a `Q_Address` is four words, a two
+fn event_field_words(ev: &EventDecl) -> Vec<u64> {
+    ev.params.iter().map(|p| type_words(&p.ty)).collect()
+}
+
+fn type_words(ty: &Type) -> u64 {
+    match ty.name.text.as_str() {
+        "Q_Address" => ADDR_WORDS,
+        "u128" | "i128" => 2,
+        _ => 1,
+    }
+}
+
 /// Compiles one contract to its container and interface. Every entry lowers into one code image, and
 pub fn compile_contract(contract: &Contract) -> Result<CompiledContract, CodegenError> {
     let entries: Vec<&EntryDecl> = contract
@@ -86,15 +99,18 @@ fn compile_entries(
         })
         .collect();
 
-    // The event selectors, mapped by name, so an emit in an entry body names the event the machine
-    // records. Each four byte selector is packed big endian into a word.
-    let events_map: HashMap<String, u32> = contract
+    // The declared events, mapped by name, so an emit in an entry body names the event the machine
+    // records and marshals each field to its declared word width.
+    let events_map: HashMap<String, EventSig> = contract
         .items
         .iter()
         .filter_map(|item| match item {
             Item::Event(ev) => Some((
                 ev.name.text.clone(),
-                u32::from_be_bytes(event_selector(ev)),
+                EventSig {
+                    selector: u32::from_be_bytes(event_selector(ev)),
+                    field_words: event_field_words(ev),
+                },
             )),
             _ => None,
         })

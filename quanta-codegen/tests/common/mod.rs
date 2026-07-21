@@ -25,6 +25,27 @@ pub fn map_key(map_base: u64, addr: &[u8; 32]) -> [u8; 32] {
     sha3_256(&input)
 }
 
+/// The thirty two byte storage key of word `word` of an address valued map entry: SHA3 of the map's
+pub fn map_addr_word_key(map_base: u64, addr: &[u8; 32], word: u64) -> [u8; 32] {
+    let mut input = map_base.to_be_bytes().to_vec();
+    input.extend_from_slice(addr);
+    input.extend_from_slice(&word.to_be_bytes());
+    sha3_256(&input)
+}
+
+/// Reassemble the thirty two byte address value stored across the four hashed word slots of an address
+pub fn read_addr_value(storage: &BTreeMap<[u8; 32], u64>, map_base: u64, addr: &[u8; 32]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for i in 0..4u64 {
+        let w = storage
+            .get(&map_addr_word_key(map_base, addr, i))
+            .copied()
+            .unwrap_or(0);
+        out[i as usize * 8..i as usize * 8 + 8].copy_from_slice(&w.to_be_bytes());
+    }
+    out
+}
+
 /// The signer address the ADDR opcode and the chain both derive: SHA3 of the scheme byte then the key.
 pub fn signer_address(scheme: u8, pk: &[u8]) -> [u8; 32] {
     let mut input = vec![scheme];

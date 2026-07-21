@@ -137,6 +137,13 @@ pub struct DeployParamSlot {
     pub width: u64,
 }
 
+/// A declared event: its four byte selector packed big endian into a word, and the machine word width
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventSig {
+    pub selector: u32,
+    pub field_words: Vec<u64>,
+}
+
 /// The scratch memory offset each argument value loads from. An argument is a scalar parameter named
 #[derive(Default)]
 pub struct Args {
@@ -218,8 +225,8 @@ pub struct Ctx<'a> {
     b: &'a mut Builder,
     regs: &'a mut Regs,
     args: &'a mut Args,
-    /// The declared events of the contract, each name mapped to its four byte interface selector packed
-    events: &'a HashMap<String, u32>,
+    /// The declared events of the contract, each name mapped to its selector and the field widths an
+    events: &'a HashMap<String, EventSig>,
 }
 
 impl<'a> Ctx<'a> {
@@ -228,7 +235,7 @@ impl<'a> Ctx<'a> {
         layout: &'a Layout,
         params: &'a HashSet<String>,
         asset_params: &'a HashSet<String>,
-        events: &'a HashMap<String, u32>,
+        events: &'a HashMap<String, EventSig>,
         trap: Label,
         b: &'a mut Builder,
         regs: &'a mut Regs,
@@ -502,6 +509,16 @@ fn lower_binary(
     right: &Expr,
     wrapping: bool,
 ) -> Result<Reg, CodegenError> {
+    // An equality against an address valued `map.get(key)` compares all thirty two stored bytes, so a
+    // stored owner check binds the whole address rather than a leading word of it.
+    if matches!(op, BinOp::Eq | BinOp::Ne) {
+        if let Some((mbase, key)) = addr_map_get(ctx, left) {
+            return lower_addr_map_eq(ctx, op, mbase, key, right, left.span());
+        }
+        if let Some((mbase, key)) = addr_map_get(ctx, right) {
+            return lower_addr_map_eq(ctx, op, mbase, key, left, right.span());
+        }
+    }
     // A comparison where either side is a two word value orders the full wide value, so both sides
     // evaluate to a register pair and the compare reduces them to a one word boolean.
     if matches!(
@@ -860,7 +877,7 @@ pub fn lower_entry(
     layout: &Layout,
     entry: &EntryDecl,
     invariants: &[&Expr],
-    events: &HashMap<String, u32>,
+    events: &HashMap<String, EventSig>,
     b: &mut Builder,
     trap: Label,
     is_genesis: bool,
@@ -2005,6 +2022,7 @@ fn lower_call_effect(
             "debit" => return lower_map_credit(ctx, base, args, span, false),
             "insert" => return lower_map_flag(ctx, base, args, span, 1),
             "remove" => return lower_map_flag(ctx, base, args, span, 0),
+            "set" => return lower_map_set(ctx, base, args, span),
             _ => {}
         }
     }
@@ -2046,17 +2064,27 @@ fn lower_send(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), CodegenErr
 
 /// Lowers an `emit` to the native event the EMIT opcode records. Each operand is marshalled into the
 fn lower_emit(ctx: &mut Ctx, name: &str, args: &[Expr], span: Span) -> Result<(), CodegenError> {
-    let selector = *ctx
+    let sig = ctx
         .events
         .get(name)
         .ok_or_else(|| CodegenError::Unsupported {
             what: format!("an emit of the undeclared event `{name}`"),
             span,
-        })?;
+        })?
+        .clone();
+    let selector = sig.selector;
 
     let mut offset = EVENT_BASE;
-    for arg in args {
-        if is_wide_expr(ctx, arg) {
+    for (i, arg) in args.iter().enumerate() {
+        // The declared field width drives the marshalling: a `Q_Address` field takes its whole four
+        // words, a two word field its low then high word, and any other field a single word. When the
+        // field width is unknown the argument's own wideness decides, so an untyped emit is unchanged.
+        let declared = sig.field_words.get(i).copied();
+        if declared == Some(ADDR_WORDS) {
+            let src_off = lower_address(ctx, arg, span)?;
+            copy_words_fixed(ctx, src_off, offset, ADDR_WORDS, span)?;
+            offset += ADDR_BYTES;
+        } else if declared == Some(2) || (declared.is_none() && is_wide_expr(ctx, arg)) {
             let (lo, hi) = eval_wide(ctx, arg, false)?;
             store_mem_word(ctx, offset, lo);
             store_mem_word(ctx, offset + WORD, hi);
@@ -2171,16 +2199,23 @@ fn address_keys_stmt(stmt: &Stmt, layout: &Layout, params: &HashSet<String>, out
 
 fn address_keys_expr(expr: &Expr, layout: &Layout, params: &HashSet<String>, out: &mut Vec<String>) {
     if let Expr::Call { callee, args, .. } = expr {
-        // A map or registry key position: map.credit / debit / insert / remove / contains(key, ..).
+        // A map or registry key position: credit / debit / insert / remove / contains / get / set take
+        // the key as their first argument, and a `set` on an address valued map takes the stored address
+        // as its second, so both are laid out as full addresses.
         if let Expr::Field { base, name, .. } = callee.as_ref() {
             if matches!(
                 name.text.as_str(),
-                "credit" | "debit" | "insert" | "remove" | "contains"
+                "credit" | "debit" | "insert" | "remove" | "contains" | "get" | "set"
             ) {
                 if let Expr::Ident(id) = base.as_ref() {
                     if layout.map_key_is_addr(&id.text) {
                         if let Some(key_expr) = args.first() {
                             push_addr_key(key_expr, params, out);
+                        }
+                    }
+                    if name.text == "set" && layout.map_value_is_addr(&id.text) {
+                        if let Some(value_expr) = args.get(1) {
+                            push_addr_key(value_expr, params, out);
                         }
                     }
                 }
@@ -2251,6 +2286,49 @@ fn compute_map_key(
     ctx.b.op(Instr::Ldi {
         d: rb,
         imm: WORD + ADDR_BYTES,
+    });
+    let rc = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: rc,
+        imm: MAP_KEY_SCRATCH,
+    });
+    ctx.b.op(Instr::Hash {
+        a: ra,
+        b: rb,
+        c: rc,
+    });
+    ctx.regs.free(rc);
+    ctx.regs.free(rb);
+    ctx.regs.free(ra);
+    Ok(())
+}
+
+/// Computes the thirty two byte storage key of word `word` of an address valued entry into the map key
+fn compute_map_addr_word_key(
+    ctx: &mut Ctx,
+    mbase: u64,
+    addr_off: u64,
+    word: u64,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let tag = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: tag, imm: mbase });
+    store_mem_word(ctx, MAP_PREIMAGE_SCRATCH, tag);
+    ctx.regs.free(tag);
+    copy_words_fixed(ctx, addr_off, MAP_PREIMAGE_SCRATCH + WORD, ADDR_WORDS, span)?;
+    let widx = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: widx, imm: word });
+    store_mem_word(ctx, MAP_PREIMAGE_SCRATCH + WORD + ADDR_BYTES, widx);
+    ctx.regs.free(widx);
+    let ra = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: ra,
+        imm: MAP_PREIMAGE_SCRATCH,
+    });
+    let rb = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: rb,
+        imm: WORD + ADDR_BYTES + WORD,
     });
     let rc = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi {
@@ -2365,12 +2443,129 @@ fn lower_map_read(
     let mbase = map_base_of(ctx, base, span)?;
     let key_expr = one_arg(args, span)?;
     let addr_off = lower_address(ctx, key_expr, span)?;
+    if map_name_is_value_addr(ctx, base) {
+        let acc = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi { d: acc, imm: 0 });
+        for i in 0..ADDR_WORDS {
+            compute_map_addr_word_key(ctx, mbase, addr_off, i, span)?;
+            let w = ctx.regs.alloc(span)?;
+            let key = map_key_ptr(ctx, span)?;
+            ctx.b.op(Instr::SLoad { d: w, a: key });
+            ctx.regs.free(key);
+            ctx.b.op(Instr::Or {
+                d: acc,
+                a: acc,
+                b: w,
+            });
+            ctx.regs.free(w);
+        }
+        ctx.b.op(Instr::Ldi { d: SCRATCH, imm: 0 });
+        ctx.b.op(Instr::Eq {
+            d: acc,
+            a: acc,
+            b: SCRATCH,
+        });
+        logical_not(ctx, acc);
+        return Ok(acc);
+    }
     compute_map_key(ctx, mbase, addr_off, span)?;
     let d = ctx.regs.alloc(span)?;
     let key = map_key_ptr(ctx, span)?;
     ctx.b.op(Instr::SLoad { d, a: key });
     ctx.regs.free(key);
     Ok(d)
+}
+
+/// Whether a map receiver names a keyed field whose value is a full address.
+fn map_name_is_value_addr(ctx: &Ctx, base: &Expr) -> bool {
+    matches!(base, Expr::Ident(id) if ctx.layout.map_value_is_addr(&id.text))
+}
+
+/// Sets an address valued entry, the lowering of `map.set(key, addr)`. Each of the four words of the
+fn lower_map_set(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Result<(), CodegenError> {
+    let mbase = map_base_of(ctx, base, span)?;
+    let (key_expr, value_expr) = two_args(args, span)?;
+    let key_off = lower_address(ctx, key_expr, span)?;
+    let val_off = lower_address(ctx, value_expr, span)?;
+    for i in 0..ADDR_WORDS {
+        compute_map_addr_word_key(ctx, mbase, key_off, i, span)?;
+        let w = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: val_off + i * WORD,
+        });
+        ctx.b.op(Instr::MLoad { d: w, a: SCRATCH });
+        let key = map_key_ptr(ctx, span)?;
+        ctx.b.op(Instr::SStore { a: key, b: w });
+        ctx.regs.free(key);
+        ctx.regs.free(w);
+    }
+    Ok(())
+}
+
+/// A `map.get(key)` on an address valued map, giving the map's keyed base and the key expression, so an
+fn addr_map_get<'e>(ctx: &Ctx, expr: &'e Expr) -> Option<(u64, &'e Expr)> {
+    let Expr::Call { callee, args, .. } = expr else {
+        return None;
+    };
+    let Expr::Field { base, name, .. } = callee.as_ref() else {
+        return None;
+    };
+    if name.text != "get" {
+        return None;
+    }
+    let Expr::Ident(id) = base.as_ref() else {
+        return None;
+    };
+    if !ctx.layout.map_value_is_addr(&id.text) {
+        return None;
+    }
+    let mbase = ctx.layout.map_base(&id.text)?;
+    args.first().map(|key| (mbase, key))
+}
+
+/// Lowers `map.get(key) == addr` (or `!=`) as a full thirty two byte compare: the four stored words are
+fn lower_addr_map_eq(
+    ctx: &mut Ctx,
+    op: BinOp,
+    mbase: u64,
+    key_expr: &Expr,
+    other: &Expr,
+    span: Span,
+) -> Result<Reg, CodegenError> {
+    let key_off = lower_address(ctx, key_expr, span)?;
+    let other_off = lower_address(ctx, other, span)?;
+    let acc = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: acc, imm: 1 });
+    for i in 0..ADDR_WORDS {
+        compute_map_addr_word_key(ctx, mbase, key_off, i, span)?;
+        let stored = ctx.regs.alloc(span)?;
+        let key = map_key_ptr(ctx, span)?;
+        ctx.b.op(Instr::SLoad { d: stored, a: key });
+        ctx.regs.free(key);
+        let ow = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: other_off + i * WORD,
+        });
+        ctx.b.op(Instr::MLoad { d: ow, a: SCRATCH });
+        ctx.b.op(Instr::Eq {
+            d: stored,
+            a: stored,
+            b: ow,
+        });
+        ctx.b.op(Instr::And {
+            d: acc,
+            a: acc,
+            b: stored,
+        });
+        ctx.regs.free(ow);
+        ctx.regs.free(stored);
+    }
+    if op == BinOp::Ne {
+        logical_not(ctx, acc);
+    }
+    Ok(acc)
 }
 
 /// The storage slot of an asset state field named as the receiver of an asset operation.
@@ -2586,7 +2781,7 @@ mod tests {
         let mut regs = Regs::new();
         let mut args = Args::new();
         let asset_params = HashSet::new();
-        let events: HashMap<String, u32> = HashMap::new();
+        let events: HashMap<String, EventSig> = HashMap::new();
         let trap = b.label();
         let dest = {
             let mut ctx = Ctx::new(
