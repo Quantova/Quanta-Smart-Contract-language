@@ -16,6 +16,8 @@ const WIDE_TYPE: &str = "u128";
 const ADDR_TYPE: &str = "Q_Address";
 /// The number of machine words a `Q_Address` field spans.
 pub const ADDR_WORDS: u64 = 4;
+/// A guardian set field, holding a fixed number of guardian addresses inline. Each guardian is a full
+const GUARDIAN_SET_TYPE: &str = "GuardianSet";
 /// The offset that separates the high word of a two word scalar field from its low word. It sits far
 const HI_OFFSET: u64 = 1 << 56;
 
@@ -27,6 +29,8 @@ pub struct Layout {
     addr: HashSet<String>,
     /// Keyed fields whose key type is `Q_Address`, so a key expression handed to one is read as a full
     map_key_addr: HashSet<String>,
+    /// Guardian set fields, each mapped to the number of guardians it holds. A `GuardianSet<N>` field
+    guardian_sets: HashMap<String, u64>,
 }
 
 impl Layout {
@@ -37,6 +41,7 @@ impl Layout {
         let mut wide = HashSet::new();
         let mut addr = HashSet::new();
         let mut map_key_addr = HashSet::new();
+        let mut guardian_sets = HashMap::new();
         let mut next = 0u64;
         let mut keyed = 0u64;
         for item in &contract.items {
@@ -67,6 +72,17 @@ impl Layout {
                         // past its four words and never overlaps them.
                         addr.insert(field.name.text.clone());
                         next += ADDR_WORDS;
+                    } else if ty == GUARDIAN_SET_TYPE {
+                        // A guardian set holds a fixed number of guardian addresses inline, so it
+                        // occupies that many address spans and the field after it starts past them all.
+                        let n = match field.ty.args.first() {
+                            Some(quanta_ast::GenericArg::Int(i)) => {
+                                i.text.replace('_', "").parse::<u64>().unwrap_or(0)
+                            }
+                            _ => 0,
+                        };
+                        guardian_sets.insert(field.name.text.clone(), n);
+                        next += n * ADDR_WORDS;
                     } else {
                         next += 1;
                     }
@@ -79,7 +95,15 @@ impl Layout {
             wide,
             addr,
             map_key_addr,
+            guardian_sets,
         }
+    }
+
+    /// The base slot and the guardian count of a guardian set field, if the name is one. Guardian `j`
+    pub fn guardian_set(&self, name: &str) -> Option<(u64, u64)> {
+        let count = self.guardian_sets.get(name).copied()?;
+        let base = self.slot(name)?;
+        Some((base, count))
     }
 
     /// Whether a keyed field keys on a full `Q_Address`, so a key expression handed to it is a whole

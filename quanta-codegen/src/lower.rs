@@ -33,8 +33,6 @@ const EVENT_BASE: u64 = 32768;
 const SIG_SCHEME_SUFFIX: &str = "#scheme";
 /// Argument key suffix for the pointer to a signed parameter's verify region.
 const SIG_PTR_SUFFIX: &str = "#ptr";
-/// Argument key suffix for the length of a signed parameter's verify region.
-const SIG_LEN_SUFFIX: &str = "#len";
 
 /// Argument key of the caller context word. It is not a source level parameter, so its key uses the
 const CALLER_KEY: &str = "@caller";
@@ -734,6 +732,29 @@ fn write_scalar_key(ctx: &mut Ctx, slot: u64, key: Reg) {
     });
 }
 
+/// Materialize the thirty two byte scalar key for a slot given in a register, for a slot whose number
+fn write_scalar_key_reg(ctx: &mut Ctx, slot: Reg, key: Reg) {
+    ctx.b.op(Instr::Ldi {
+        d: key,
+        imm: SCALAR_KEY_SCRATCH + ADDR_BYTES - WORD,
+    });
+    ctx.b.op(Instr::MStore { a: key, b: slot });
+    ctx.b.op(Instr::Ldi {
+        d: key,
+        imm: SCALAR_KEY_SCRATCH,
+    });
+}
+
+/// Reads a scalar state slot whose number is in a register into a fresh temporary register.
+fn load_slot_reg(ctx: &mut Ctx, slot: Reg, span: Span) -> Result<Reg, CodegenError> {
+    let d = ctx.regs.alloc(span)?;
+    let key = ctx.regs.alloc(span)?;
+    write_scalar_key_reg(ctx, slot, key);
+    ctx.b.op(Instr::SLoad { d, a: key });
+    ctx.regs.free(key);
+    Ok(d)
+}
+
 /// Reads a scalar state slot into a fresh temporary register. The slot is named by its thirty two
 fn load_slot(ctx: &mut Ctx, slot: u64, span: Span) -> Result<Reg, CodegenError> {
     let d = ctx.regs.alloc(span)?;
@@ -864,12 +885,99 @@ fn lower_signed_prologue(
     Ok(())
 }
 
-/// Dispatches one signature on its one byte scheme identifier and verifies it, reverting to the trap
-fn dispatch_verify(
+/// Verifies and binds each quorum parameter before the body runs. A `Quorum<M of N, set>` is
+fn lower_quorum_prologue(
     ctx: &mut Ctx,
+    entry: &EntryDecl,
+    trap: Label,
+) -> Result<(), CodegenError> {
+    for param in &entry.params {
+        let Some((threshold, count, set)) = quorum_spec(param) else {
+            continue;
+        };
+        let (set_base, set_count) = ctx.layout.guardian_set(&set).ok_or_else(|| {
+            CodegenError::Unsupported {
+                what: format!("a quorum over `{set}`, which must be a GuardianSet state field"),
+                span: param.span,
+            }
+        })?;
+        if count != set_count {
+            return Err(CodegenError::Unsupported {
+                what: format!(
+                    "a quorum whose N does not match the size of the guardian set `{set}`"
+                ),
+                span: param.span,
+            });
+        }
+        let name = &param.name.text;
+        let span = param.span;
+        let field_specs = quorum_message_fields(ctx, entry, name);
+        let selector_word = u32::from_be_bytes(entry_selector(entry)) as u64;
+        let mut prev_index_off: Option<u64> = None;
+        for i in 0..threshold {
+            let scheme_off = ctx
+                .args
+                .offset_of(&format!("{name}#{i}{SIG_SCHEME_SUFFIX}"));
+            let ptr_off = ctx.args.offset_of(&format!("{name}#{i}{SIG_PTR_SUFFIX}"));
+            let index_off = ctx.args.offset_of(&format!("{name}#{i}#index"));
+            lower_quorum_member(
+                ctx,
+                QuorumMember {
+                    scheme_off,
+                    ptr_off,
+                    index_off,
+                    prev_index_off,
+                    set_base,
+                    set_count,
+                    selector_word,
+                    field_specs: &field_specs,
+                },
+                trap,
+                span,
+            )?;
+            prev_index_off = Some(index_off);
+        }
+    }
+    Ok(())
+}
+
+/// The order fields a quorum message commits to: the fields of every parameter other than the quorum
+fn quorum_message_fields(ctx: &mut Ctx, entry: &EntryDecl, quorum_name: &str) -> Vec<(u64, u64)> {
+    let mut specs = Vec::new();
+    for param in &entry.params {
+        let pname = &param.name.text;
+        if pname == quorum_name || quorum_spec(param).is_some() || ctx.asset_params.contains(pname) {
+            continue;
+        }
+        for key in collect_signed_fields(entry, pname) {
+            let words = if ctx.address_keys.contains(&key) {
+                ADDR_WORDS
+            } else {
+                1
+            };
+            specs.push((ctx.args.offset_of_width(&key, words * WORD), words));
+        }
+    }
+    specs
+}
+
+/// One quorum member's binding inputs.
+struct QuorumMember<'a> {
     scheme_off: u64,
     ptr_off: u64,
-    len_off: u64,
+    index_off: u64,
+    /// The previous member's index argument, so this member's index is required strictly greater and
+    prev_index_off: Option<u64>,
+    set_base: u64,
+    set_count: u64,
+    selector_word: u64,
+    field_specs: &'a [(u64, u64)],
+}
+
+/// Dispatches one quorum member on its scheme and binds it under the matching scheme.
+fn lower_quorum_member(
+    ctx: &mut Ctx,
+    member: QuorumMember,
     trap: Label,
     span: Span,
 ) -> Result<(), CodegenError> {
@@ -877,11 +985,10 @@ fn dispatch_verify(
     let slh_label = ctx.b.label();
     let done_label = ctx.b.label();
 
-    // Read the scheme identifier and branch to the matching verify, reverting on an unknown one.
     let scheme = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi {
         d: SCRATCH,
-        imm: scheme_off,
+        imm: member.scheme_off,
     });
     ctx.b.op(Instr::MLoad {
         d: scheme,
@@ -913,37 +1020,287 @@ fn dispatch_verify(
     ctx.regs.free(scheme);
 
     ctx.b.mark(ml_label);
-    emit_verify(ctx, VerifyOp::Ml, ptr_off, len_off, trap, span)?;
+    emit_quorum_member(ctx, VerifyOp::Ml, &member, trap, span)?;
     ctx.b.jmp(done_label);
 
     ctx.b.mark(slh_label);
-    emit_verify(ctx, VerifyOp::Slh, ptr_off, len_off, trap, span)?;
+    emit_quorum_member(ctx, VerifyOp::Slh, &member, trap, span)?;
 
     ctx.b.mark(done_label);
     Ok(())
 }
 
-/// Verifies each quorum parameter before the body runs. A `Quorum<M of N, set>` is constructed only
-fn lower_quorum_prologue(
+/// Emits the verify and the guardian binding for one quorum member under a known scheme, the quorum
+fn emit_quorum_member(
     ctx: &mut Ctx,
-    entry: &EntryDecl,
+    op: VerifyOp,
+    member: &QuorumMember,
     trap: Label,
+    span: Span,
 ) -> Result<(), CodegenError> {
-    for param in &entry.params {
-        let Some(threshold) = quorum_threshold(param) else {
-            continue;
-        };
-        let name = &param.name.text;
-        let span = param.span;
-        for i in 0..threshold {
-            let scheme_off = ctx
-                .args
-                .offset_of(&format!("{name}#{i}{SIG_SCHEME_SUFFIX}"));
-            let ptr_off = ctx.args.offset_of(&format!("{name}#{i}{SIG_PTR_SUFFIX}"));
-            let len_off = ctx.args.offset_of(&format!("{name}#{i}{SIG_LEN_SUFFIX}"));
-            dispatch_verify(ctx, scheme_off, ptr_off, len_off, trap, span)?;
+    let (pk, sig, scheme_id) = match op {
+        VerifyOp::Ml => (
+            qtv_vm::abi::ML_DSA_PUBLIC_KEY_BYTES as u64,
+            qtv_vm::abi::ML_DSA_SIGNATURE_BYTES as u64,
+            SCHEME_ML,
+        ),
+        VerifyOp::Slh => (
+            qtv_vm::abi::SLH_DSA_PUBLIC_KEY_BYTES as u64,
+            qtv_vm::abi::SLH_DSA_SIGNATURE_BYTES as u64,
+            SCHEME_SLH,
+        ),
+    };
+    let msg_start = pk + sig;
+    let fields_bytes: u64 = member.field_specs.iter().map(|(_, words)| words * WORD).sum();
+    let msg_len = MSG_FIELDS_OFF + fields_bytes;
+
+    let ptr = load_arg(ctx, member.ptr_off, span)?;
+
+    // 1. Derive the member address from the public key into the signer scratch.
+    {
+        let rscheme = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rscheme,
+            imm: scheme_id,
+        });
+        let rout = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rout,
+            imm: SIGNER_ADDR_SCRATCH,
+        });
+        ctx.b.op(Instr::Addr {
+            a: ptr,
+            b: rscheme,
+            c: rout,
+        });
+        ctx.regs.free(rout);
+        ctx.regs.free(rscheme);
+    }
+
+    // 2. Compute the per member nonce slot, hash(NONCE_TAG || member), and read the current nonce.
+    {
+        let rtag = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rtag,
+            imm: NONCE_TAG,
+        });
+        store_mem_word(ctx, NONCE_PREIMAGE_SCRATCH, rtag);
+        ctx.regs.free(rtag);
+    }
+    copy_words_fixed(
+        ctx,
+        SIGNER_ADDR_SCRATCH,
+        NONCE_PREIMAGE_SCRATCH + WORD,
+        ADDR_WORDS,
+        span,
+    )?;
+    {
+        let ra = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: ra,
+            imm: NONCE_PREIMAGE_SCRATCH,
+        });
+        let rb = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rb,
+            imm: WORD + ADDR_BYTES,
+        });
+        let rc = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rc,
+            imm: NONCE_DIGEST_SCRATCH,
+        });
+        ctx.b.op(Instr::Hash {
+            a: ra,
+            b: rb,
+            c: rc,
+        });
+        ctx.regs.free(rc);
+        ctx.regs.free(rb);
+        ctx.regs.free(ra);
+    }
+    let slot = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: slot,
+        imm: NONCE_DIGEST_SCRATCH,
+    });
+    let nonce = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::SLoad {
+        d: nonce,
+        a: slot,
+    });
+
+    // 3. Rebuild the canonical order message just past the public key and signature.
+    let dst = ctx.regs.alloc(span)?;
+    {
+        let k = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: k,
+            imm: msg_start,
+        });
+        ctx.b.op(Instr::AddW {
+            d: dst,
+            a: ptr,
+            b: k,
+        });
+        ctx.regs.free(k);
+    }
+    {
+        let r = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: r,
+            imm: SIGNED_MSG_TAG,
+        });
+        store_off(ctx, dst, MSG_TAG_OFF, r);
+        ctx.regs.free(r);
+    }
+    let contract_off = ctx.args.offset_of(CONTRACT_KEY);
+    copy_words_to_region(ctx, contract_off, dst, MSG_CONTRACT_OFF, ADDR_WORDS, span)?;
+    {
+        let r = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: r,
+            imm: member.selector_word,
+        });
+        store_off(ctx, dst, MSG_SELECTOR_OFF, r);
+        ctx.regs.free(r);
+    }
+    copy_words_to_region(ctx, SIGNER_ADDR_SCRATCH, dst, MSG_SIGNER_OFF, ADDR_WORDS, span)?;
+    store_off(ctx, dst, MSG_NONCE_OFF, nonce);
+    {
+        let mut field_off_in_msg = MSG_FIELDS_OFF;
+        for (arg_off, words) in member.field_specs {
+            copy_words_to_region(ctx, *arg_off, dst, field_off_in_msg, *words, span)?;
+            field_off_in_msg += words * WORD;
         }
     }
+
+    // 4. Verify the signature over the public key, signature, and the rebuilt message.
+    {
+        let rlen = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rlen,
+            imm: msg_start + msg_len,
+        });
+        let rok = ctx.regs.alloc(span)?;
+        let instr = match op {
+            VerifyOp::Ml => Instr::VerifyMl {
+                a: ptr,
+                b: rlen,
+                c: rok,
+            },
+            VerifyOp::Slh => Instr::VerifySlh {
+                a: ptr,
+                b: rlen,
+                c: rok,
+            },
+        };
+        ctx.b.op(instr);
+        ctx.b.jz(rok, trap);
+        ctx.regs.free(rok);
+        ctx.regs.free(rlen);
+    }
+
+    // 5. The guardian index the caller names: in range and strictly greater than the previous member's,
+    // so the M members are M distinct guardians in order.
+    let index = load_arg(ctx, member.index_off, span)?;
+    {
+        let bound = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: bound,
+            imm: member.set_count,
+        });
+        let ok = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::LtU {
+            d: ok,
+            a: index,
+            b: bound,
+        });
+        ctx.b.jz(ok, trap);
+        ctx.regs.free(ok);
+        ctx.regs.free(bound);
+    }
+    if let Some(prev_off) = member.prev_index_off {
+        let prev = load_arg(ctx, prev_off, span)?;
+        let ok = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::GtU {
+            d: ok,
+            a: index,
+            b: prev,
+        });
+        ctx.b.jz(ok, trap);
+        ctx.regs.free(ok);
+        ctx.regs.free(prev);
+    }
+
+    // 6. Compare the derived member address to the guardian at that index, all four words. The guardian
+    // slot is the set base plus the index times four plus the word, computed at run time.
+    {
+        let base_idx = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: ADDR_WORDS,
+        });
+        ctx.b.op(Instr::MulW {
+            d: base_idx,
+            a: index,
+            b: SCRATCH,
+        });
+        for w in 0..ADDR_WORDS {
+            let gslot = ctx.regs.alloc(span)?;
+            ctx.b.op(Instr::Ldi {
+                d: SCRATCH,
+                imm: member.set_base + w,
+            });
+            ctx.b.op(Instr::AddW {
+                d: gslot,
+                a: base_idx,
+                b: SCRATCH,
+            });
+            let gword = load_slot_reg(ctx, gslot, span)?;
+            let mword = ctx.regs.alloc(span)?;
+            ctx.b.op(Instr::Ldi {
+                d: SCRATCH,
+                imm: SIGNER_ADDR_SCRATCH + w * WORD,
+            });
+            ctx.b.op(Instr::MLoad {
+                d: mword,
+                a: SCRATCH,
+            });
+            ctx.b.op(Instr::Eq {
+                d: gword,
+                a: gword,
+                b: mword,
+            });
+            ctx.b.jz(gword, trap);
+            ctx.regs.free(mword);
+            ctx.regs.free(gword);
+            ctx.regs.free(gslot);
+        }
+        ctx.regs.free(base_idx);
+    }
+    ctx.regs.free(index);
+
+    // 7. Consume the member nonce, so the same quorum cannot run twice.
+    {
+        let one = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi { d: one, imm: 1 });
+        ctx.b.op(Instr::AddW {
+            d: nonce,
+            a: nonce,
+            b: one,
+        });
+        ctx.b.op(Instr::SStore {
+            a: slot,
+            b: nonce,
+        });
+        ctx.regs.free(one);
+    }
+
+    ctx.regs.free(dst);
+    ctx.regs.free(nonce);
+    ctx.regs.free(slot);
+    ctx.regs.free(ptr);
     Ok(())
 }
 
@@ -1013,66 +1370,25 @@ fn lower_after_prologue(
 }
 
 /// The threshold M of a `Quorum<M of N, set>` parameter, if the parameter is a quorum.
-fn quorum_threshold(param: &Param) -> Option<u64> {
+fn quorum_spec(param: &Param) -> Option<(u64, u64, String)> {
     if param.ty.name.text != "Quorum" {
         return None;
     }
-    param.ty.args.iter().find_map(|arg| match arg {
-        GenericArg::MofN { m, .. } => m.text.parse::<u64>().ok(),
-        _ => None,
-    })
+    let mut threshold_of = None;
+    let mut set = None;
+    for arg in &param.ty.args {
+        match arg {
+            GenericArg::MofN { m, n, .. } => {
+                threshold_of = Some((m.text.parse::<u64>().ok()?, n.text.parse::<u64>().ok()?));
+            }
+            GenericArg::Type(t) => set = Some(t.name.text.clone()),
+            _ => {}
+        }
+    }
+    let (m, n) = threshold_of?;
+    Some((m, n, set?))
 }
 
-/// Emits one verify over the parameter region and reverts to the trap when it does not verify.
-fn emit_verify(
-    ctx: &mut Ctx,
-    op: VerifyOp,
-    ptr_off: u64,
-    len_off: u64,
-    trap: Label,
-    span: Span,
-) -> Result<(), CodegenError> {
-    let rptr = ctx.regs.alloc(span)?;
-    ctx.b.op(Instr::Ldi {
-        d: SCRATCH,
-        imm: ptr_off,
-    });
-    ctx.b.op(Instr::MLoad {
-        d: rptr,
-        a: SCRATCH,
-    });
-
-    let rlen = ctx.regs.alloc(span)?;
-    ctx.b.op(Instr::Ldi {
-        d: SCRATCH,
-        imm: len_off,
-    });
-    ctx.b.op(Instr::MLoad {
-        d: rlen,
-        a: SCRATCH,
-    });
-
-    let rok = ctx.regs.alloc(span)?;
-    let instr = match op {
-        VerifyOp::Ml => Instr::VerifyMl {
-            a: rptr,
-            b: rlen,
-            c: rok,
-        },
-        VerifyOp::Slh => Instr::VerifySlh {
-            a: rptr,
-            b: rlen,
-            c: rok,
-        },
-    };
-    ctx.b.op(instr);
-    ctx.b.jz(rok, trap);
-
-    ctx.regs.free(rok);
-    ctx.regs.free(rlen);
-    ctx.regs.free(rptr);
-    Ok(())
-}
 
 /// Stores `value` to scratch memory at `base + off`, computing the address in the scratch register.
 fn store_off(ctx: &mut Ctx, base: Reg, off: u64, value: Reg) {

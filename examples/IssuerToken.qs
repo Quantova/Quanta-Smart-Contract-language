@@ -11,7 +11,6 @@ contract IssuerToken {
     frozen: Registry<Q_Address>;
   }
   genesis {
-    guardians = deploy_params.board;
     total_supply = 0;
   }
   invariant total_supply <= max_supply;

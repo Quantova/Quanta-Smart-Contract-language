@@ -5,8 +5,6 @@ use qtv_vm::interp::{Effect, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 use std::collections::BTreeMap;
 
-mod common;
-use common::slot_key;
 
 const GAS: u64 = 2_000_000;
 /// Matches the code generator's high word offset for a two word scalar field.
