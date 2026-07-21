@@ -1,17 +1,11 @@
-//! Code generation errors. Each carries the source span of the offending construct so the front end
-
 use crate::emit::LinkError;
 use quanta_lexer::Span;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodegenError {
-    /// A construct the code generator does not yet lower.
     Unsupported { what: String, span: Span },
-    /// An expression needs more temporary registers than the machine provides.
     RegisterExhausted { span: Span },
-    /// An integer literal does not fit a 64 bit machine word.
     IntegerTooWide { text: String, span: Span },
-    /// A branch target failed to resolve while linking the code image.
     Link(LinkError),
 }
 

@@ -1,5 +1,3 @@
-//! Type checking of expressions and clauses over the numeric types u8 through
-
 use crate::error::TypeError;
 use crate::model::{is_asset_param, is_integer_type, Model};
 use quanta_ast::{AssignOp, BinOp, Clause, EntryDecl, Expr, Item, Stmt, Type, UnaryOp};
@@ -191,7 +189,6 @@ fn ty_of_decl(ty: &Type) -> Ty {
     }
 }
 
-/// The checked arithmetic rule. An addition into a stored integer whose addend
 fn check_arithmetic(entry: &EntryDecl, params: &HashMap<&str, Ty>) -> Result<(), TypeError> {
     if entry
         .clauses
@@ -258,7 +255,6 @@ fn check_arithmetic(entry: &EntryDecl, params: &HashMap<&str, Ty>) -> Result<(),
     Ok(())
 }
 
-/// True when the assigned value wraps its arithmetic in `checked` or `wrapping`,
 fn acknowledged(value: &Expr) -> bool {
     matches!(value, Expr::Checked { .. } | Expr::Wrapping { .. })
 }

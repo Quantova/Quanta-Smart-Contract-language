@@ -1,14 +1,10 @@
-//! Selectors and canonical signatures. A selector is the leading bytes of the SHA3 hash of the
-
 use qtv_vm::container::{selector as vm_selector, SELECTOR_BYTES};
 use quanta_ast::{EntryDecl, EventDecl, GenericArg, Type};
 
-/// The canonical signature string of an entry.
 pub fn entry_signature(entry: &EntryDecl) -> String {
     signature(&entry.name.text, entry.params.iter().map(|p| &p.ty))
 }
 
-/// The canonical signature string of an event.
 pub fn event_signature(event: &EventDecl) -> String {
     signature(&event.name.text, event.params.iter().map(|p| &p.ty))
 }
@@ -18,7 +14,6 @@ fn signature<'a>(name: &str, types: impl Iterator<Item = &'a Type>) -> String {
     format!("{name}({joined})")
 }
 
-/// Renders a type with the language type names, including any generic arguments.
 pub fn type_string(ty: &Type) -> String {
     if ty.args.is_empty() {
         return ty.name.text.clone();
@@ -35,12 +30,10 @@ fn arg_string(arg: &GenericArg) -> String {
     }
 }
 
-/// The selector of an entry.
 pub fn entry_selector(entry: &EntryDecl) -> [u8; SELECTOR_BYTES] {
     vm_selector(&entry_signature(entry))
 }
 
-/// The selector of an event.
 pub fn event_selector(event: &EventDecl) -> [u8; SELECTOR_BYTES] {
     vm_selector(&event_signature(event))
 }

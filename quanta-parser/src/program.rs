@@ -1,11 +1,8 @@
-//! Top level grammar: imports, contracts, and the public entry point.
-
 use crate::error::ParseError;
 use crate::parser::Parser;
 use quanta_ast::{Contract, Import, Program};
 use quanta_lexer::TokenKind;
 
-/// Parses a whole Quanta source unit into an abstract syntax tree.
 pub fn parse(src: &str) -> Result<Program, ParseError> {
     let mut p = Parser::new(src)?;
     let program = p.program()?;

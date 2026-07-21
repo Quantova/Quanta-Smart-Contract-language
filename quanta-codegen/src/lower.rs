@@ -1,5 +1,3 @@
-//! Expression lowering. A value computes into a stack of temporary registers. A state field reads
-
 use crate::emit::{Builder, Label};
 use crate::error::CodegenError;
 use crate::layout::Layout;
@@ -11,63 +9,40 @@ use quanta_ast::{
 use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
 
-/// Scratch register zero holds transient addresses and keys and is never held across a step.
 const SCRATCH: Reg = 0;
-/// Temporaries begin above the scratch register.
 const FIRST_TEMP: Reg = 1;
 
-/// Base offset of the argument words in scratch memory.
 pub const ARG_BASE: u64 = 0;
-/// Width of one argument word.
 const WORD: u64 = 8;
-/// Byte width of a full account address, four machine words.
 const ADDR_BYTES: u64 = 32;
 
-/// Base offset of the asset local region in scratch memory. A `let` bound asset value keeps its
 const ASSET_LOCAL_BASE: u64 = 4096;
 
-/// Base offset of the event payload region in scratch memory. An emit marshals its operand words here
 const EVENT_BASE: u64 = 32768;
 
-/// Argument key suffix for the scheme identifier of a signed parameter.
 const SIG_SCHEME_SUFFIX: &str = "#scheme";
-/// Argument key suffix for the pointer to a signed parameter's verify region.
 const SIG_PTR_SUFFIX: &str = "#ptr";
 
-/// Reserved name a genesis block reads deploy arguments through. Genesis only.
 const DEPLOY_PARAMS: &str = "deploy_params";
 
-/// Sentinel word past the deploy parameters. A short or missing parameter region reads a zero here and
 const GENESIS_PARAM_SENTINEL: u64 = u64::from_be_bytes(*b"QGENSNTL");
 
-/// Argument key of the caller context word. It is not a source level parameter, so its key uses the
 const CALLER_KEY: &str = "@caller";
 
-/// Argument key of the contract self address context block, the thirty two byte address of the
 const CONTRACT_KEY: &str = "@contract";
 
-/// Argument key of the consensus time context word, the host supplied time an `after` guard measures
 const TIME_KEY: &str = "@time";
 
-/// Scratch region holding the thirty two byte signer address the ADDR opcode derives from a verify
 const SIGNER_ADDR_SCRATCH: u64 = 40960;
-/// Scratch region assembling the per signer nonce slot preimage, the nonce domain tag then the signer
 const NONCE_PREIMAGE_SCRATCH: u64 = 41088;
-/// Scratch region receiving the nonce slot digest, which is itself the thirty two byte nonce key.
 const NONCE_DIGEST_SCRATCH: u64 = 41216;
-/// Scratch region holding the thirty two byte key of a scalar field slot. Its leading twenty four
 const SCALAR_KEY_SCRATCH: u64 = 41344;
-/// Scratch region assembling a keyed map slot preimage, the map domain tag then the thirty two byte
 const MAP_PREIMAGE_SCRATCH: u64 = 41408;
-/// Scratch region receiving a keyed map slot digest, the thirty two byte storage key of the entry.
 const MAP_KEY_SCRATCH: u64 = 41472;
 
-/// The byte width of a full address in machine words.
 const ADDR_WORDS: u64 = ADDR_BYTES / WORD;
 
-/// Domain tag of the canonical signed order message, packed big endian into one machine word, so a
 const SIGNED_MSG_TAG: u64 = u64::from_be_bytes(*b"QTVSGN01");
-/// Domain tag of the per signer nonce slot preimage, separating nonce slots from any other hashed slot.
 const NONCE_TAG: u64 = u64::from_be_bytes(*b"QTVNONCE");
 
 fn deploy_param_name(expr: &Expr) -> Option<&str> {
@@ -81,7 +56,6 @@ fn deploy_param_name(expr: &Expr) -> Option<&str> {
     None
 }
 
-/// Seconds in each duration unit an `after` clause can name.
 fn unit_seconds(unit: &str) -> Option<u64> {
     match unit {
         "seconds" => Some(1),
@@ -95,11 +69,9 @@ fn unit_seconds(unit: &str) -> Option<u64> {
     }
 }
 
-/// Signature scheme identifiers carried in the envelope. ML DSA is the module lattice scheme and the
 const SCHEME_ML: u64 = 1;
 const SCHEME_SLH: u64 = 2;
 
-/// A stack of temporary registers. They allocate and free in stack order.
 pub struct Regs {
     next: Reg,
 }
@@ -137,14 +109,12 @@ pub struct DeployParamSlot {
     pub width: u64,
 }
 
-/// A declared event: its four byte selector packed big endian into a word, and the machine word width
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventSig {
     pub selector: u32,
     pub field_words: Vec<u64>,
 }
 
-/// The scratch memory offset each argument value loads from. An argument is a scalar parameter named
 #[derive(Default)]
 pub struct Args {
     offsets: HashMap<String, u64>,
@@ -158,7 +128,6 @@ impl Args {
         Args::default()
     }
 
-    /// Reserve an argument of a given byte width, so a full width value such as a thirty two byte
     fn offset_of_width(&mut self, key: &str, bytes: u64) -> u64 {
         if let Some(off) = self.offsets.get(key) {
             return *off;
@@ -196,7 +165,6 @@ impl Args {
         &self.deploy_params
     }
 
-    /// The argument words in assignment order, each a key and its memory offset.
     pub fn layout(&self) -> Vec<(String, u64)> {
         self.order
             .iter()
@@ -205,27 +173,19 @@ impl Args {
     }
 }
 
-/// The mutable state threaded through lowering one entry.
 pub struct Ctx<'a> {
     layout: &'a Layout,
     params: &'a HashSet<String>,
-    /// The subset of the parameters that carry a linear asset value.
     asset_params: &'a HashSet<String>,
-    /// Asset values bound by a `let`, each mapped to the scratch memory word that holds its amount.
     asset_locals: HashMap<String, u64>,
-    /// The next free word in the asset local region.
     next_asset_local: u64,
-    /// Whether the entry declares `mints`, which is the only place a `mint(..)` may create supply.
     entry_mints: bool,
     is_genesis: bool,
-    /// The argument keys the entry consumes as a full address, a map key of a `Q_Address` keyed field,
     address_keys: HashSet<String>,
-    /// The shared trap a checked overflow jumps to, so a two word arithmetic that carries past the
     trap: Label,
     b: &'a mut Builder,
     regs: &'a mut Regs,
     args: &'a mut Args,
-    /// The declared events of the contract, each name mapped to its selector and the field widths an
     events: &'a HashMap<String, EventSig>,
 }
 
@@ -258,7 +218,6 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// Reserves the scratch memory word that holds a `let` bound asset value's amount.
     fn bind_asset_local(&mut self, name: &str) -> u64 {
         if let Some(off) = self.asset_locals.get(name) {
             return *off;
@@ -270,7 +229,6 @@ impl<'a> Ctx<'a> {
     }
 }
 
-/// Lowers an expression, returning the temporary register that holds its value. `wrapping` selects
 pub fn lower_expr(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<Reg, CodegenError> {
     match expr {
         Expr::Int(lit) => {
@@ -287,8 +245,6 @@ pub fn lower_expr(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<Reg, Cod
         Expr::Binary {
             op, left, right, ..
         } => lower_binary(ctx, *op, left, right, wrapping),
-        // The caller address arrives as a host provided context word, read like any argument word.
-        // The tagged machine has no caller opcode, so the transaction context supplies it in scratch.
         Expr::Caller { span } => {
             let off = ctx.args.offset_of(CALLER_KEY);
             load_arg(ctx, off, *span)
@@ -305,7 +261,6 @@ pub fn lower_expr(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<Reg, Cod
     }
 }
 
-/// Lowers a call used as a value. A `contains` reads a keyed ledger entry, and a `split` or `mint`
 fn lower_call_value(
     ctx: &mut Ctx,
     callee: &Expr,
@@ -354,8 +309,6 @@ fn lower_field(ctx: &mut Ctx, base: &Expr, field: &str, span: Span) -> Result<Re
         }
     }
     if let Expr::Ident(id) = base {
-        // The amount of an asset value is its one canonical word, so `funds.amount` reads the same
-        // word as the bare `funds`, and the two spellings never diverge.
         if field == "amount" && ctx.asset_params.contains(&id.text) {
             let off = ctx.args.offset_of(&id.text);
             return load_arg(ctx, off, span);
@@ -377,7 +330,6 @@ fn lower_field(ctx: &mut Ctx, base: &Expr, field: &str, span: Span) -> Result<Re
     })
 }
 
-/// Lowers an asset value to a fresh register holding its amount. An asset parameter reads its
 fn asset_amount(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<Reg, CodegenError> {
     match value {
         Expr::Ident(id) if ctx.asset_params.contains(&id.text) => {
@@ -405,7 +357,6 @@ fn asset_amount(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<Reg, CodegenE
     }
 }
 
-/// Splits an amount off an asset state field, a checked balance subtract that yields the amount it
 fn lower_split(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Result<Reg, CodegenError> {
     let slot = asset_field_slot(ctx, base, span)?;
     let value = one_arg(args, span)?;
@@ -421,7 +372,6 @@ fn lower_split(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Result<
     Ok(amt)
 }
 
-/// Mints a fresh asset value of the given amount. Supply is created only inside an entry that
 fn lower_mint(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<Reg, CodegenError> {
     if !ctx.entry_mints {
         return Err(CodegenError::Unsupported {
@@ -433,7 +383,6 @@ fn lower_mint(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<Reg, CodegenEr
     lower_expr(ctx, amount, false)
 }
 
-/// True when an expression produces a fresh asset value, a split or a mint.
 fn produces_asset(value: &Expr) -> bool {
     match value {
         Expr::Call { callee, .. } => match callee.as_ref() {
@@ -445,7 +394,6 @@ fn produces_asset(value: &Expr) -> bool {
     }
 }
 
-/// Lowers a `let` that binds an asset value. The value's amount is computed and stored in the local's
 fn lower_let(ctx: &mut Ctx, name: &str, value: &Expr, span: Span) -> Result<(), CodegenError> {
     if !produces_asset(value) {
         return Err(CodegenError::Unsupported {
@@ -460,7 +408,6 @@ fn lower_let(ctx: &mut Ctx, name: &str, value: &Expr, span: Span) -> Result<(), 
     Ok(())
 }
 
-/// Writes a register value to a scratch memory word.
 fn store_mem_word(ctx: &mut Ctx, off: u64, value: Reg) {
     ctx.b.op(Instr::Ldi {
         d: SCRATCH,
@@ -509,8 +456,6 @@ fn lower_binary(
     right: &Expr,
     wrapping: bool,
 ) -> Result<Reg, CodegenError> {
-    // An equality against an address valued `map.get(key)` compares all thirty two stored bytes, so a
-    // stored owner check binds the whole address rather than a leading word of it.
     if matches!(op, BinOp::Eq | BinOp::Ne) {
         if let Some((mbase, key)) = addr_map_get(ctx, left) {
             return lower_addr_map_eq(ctx, op, mbase, key, right, left.span());
@@ -519,8 +464,6 @@ fn lower_binary(
             return lower_addr_map_eq(ctx, op, mbase, key, left, right.span());
         }
     }
-    // A comparison where either side is a two word value orders the full wide value, so both sides
-    // evaluate to a register pair and the compare reduces them to a one word boolean.
     if matches!(
         op,
         BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge | BinOp::Eq | BinOp::Ne
@@ -563,7 +506,6 @@ fn lower_binary(
     Ok(l)
 }
 
-/// Whether an expression evaluates to a two word value. Only a two word state field is wide, and
 fn is_wide_expr(ctx: &Ctx, expr: &Expr) -> bool {
     match expr {
         Expr::Ident(id) => ctx.layout.is_wide(&id.text),
@@ -576,7 +518,6 @@ fn is_wide_expr(ctx: &Ctx, expr: &Expr) -> bool {
     }
 }
 
-/// Evaluates an expression into a contiguous low and high register pair. A wide state field reads its
 fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), CodegenError> {
     match expr {
         Expr::Checked { expr, .. } => eval_wide(ctx, expr, false),
@@ -626,7 +567,6 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
     }
 }
 
-/// Two word add of the right pair into the left pair, carrying the low overflow into the high word.
 fn two_word_add(ctx: &mut Ctx, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg, wrapping: bool) {
     ctx.b.op(Instr::AddW { d: llo, a: llo, b: rlo });
     ctx.b.op(Instr::LtU { d: SCRATCH, a: llo, b: rlo });
@@ -642,7 +582,6 @@ fn two_word_add(ctx: &mut Ctx, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg, wrapping:
     ctx.regs.free(rlo);
 }
 
-/// Two word subtract of the right pair from the left pair, borrowing the low underflow out of the
 fn two_word_sub(ctx: &mut Ctx, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg, wrapping: bool) {
     ctx.b.op(Instr::LtU { d: SCRATCH, a: llo, b: rlo });
     ctx.b.op(Instr::SubW { d: llo, a: llo, b: rlo });
@@ -658,7 +597,6 @@ fn two_word_sub(ctx: &mut Ctx, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg, wrapping:
     ctx.regs.free(rlo);
 }
 
-/// Two word multiply of the left pair by the right pair, the low one hundred twenty eight bits of the
 fn two_word_mul(
     ctx: &mut Ctx,
     llo: Reg,
@@ -677,14 +615,12 @@ fn two_word_mul(
         None
     };
 
-    // The low product a_lo * b_lo gives the result low word and the base of the result high word.
     ctx.b.op(Instr::MulW { d: reslo, a: llo, b: rlo });
     ctx.b.op(Instr::MulHi { d: reshi, a: llo, b: rlo });
     if let Some(ov) = ov {
         ctx.b.op(Instr::Ldi { d: ov, imm: 0 });
     }
 
-    // Add the low half of the cross term a_lo * b_hi into the high word, folding its carry.
     ctx.b.op(Instr::MulW { d: t, a: llo, b: rhi });
     ctx.b.op(Instr::AddW { d: reshi, a: reshi, b: t });
     if let Some(ov) = ov {
@@ -692,15 +628,12 @@ fn two_word_mul(
         ctx.b.op(Instr::Or { d: ov, a: ov, b: SCRATCH });
     }
 
-    // Add the low half of the cross term a_hi * b_lo into the high word, folding its carry.
     ctx.b.op(Instr::MulW { d: t, a: lhi, b: rlo });
     ctx.b.op(Instr::AddW { d: reshi, a: reshi, b: t });
     if let Some(ov) = ov {
         ctx.b.op(Instr::LtU { d: SCRATCH, a: reshi, b: t });
         ctx.b.op(Instr::Or { d: ov, a: ov, b: SCRATCH });
 
-        // The high halves of the cross terms and the whole a_hi * b_hi term land above the wide range,
-        // so a nonzero one of them is an overflow.
         ctx.b.op(Instr::MulHi { d: t, a: llo, b: rhi });
         ctx.b.op(Instr::Or { d: ov, a: ov, b: t });
         ctx.b.op(Instr::MulHi { d: t, a: lhi, b: rlo });
@@ -711,7 +644,6 @@ fn two_word_mul(
         ctx.b.op(Instr::Or { d: ov, a: ov, b: t });
     }
 
-    // Move the product into the left pair, then revert on overflow for the checked form.
     ctx.b.op(Instr::Mov { d: llo, a: reslo });
     ctx.b.op(Instr::Mov { d: lhi, a: reshi });
     if let Some(ov) = ov {
@@ -729,7 +661,6 @@ fn two_word_mul(
     Ok(())
 }
 
-/// A two word comparison of the left pair against the right pair, reducing to a one word boolean held
 fn wide_compare(ctx: &mut Ctx, op: BinOp, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg) -> Reg {
     let t1 = ctx.regs.alloc(Span::default()).expect("a compare temporary");
     let t2 = ctx.regs.alloc(Span::default()).expect("a compare temporary");
@@ -764,7 +695,6 @@ fn wide_compare(ctx: &mut Ctx, op: BinOp, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg
     llo
 }
 
-/// Flips a boolean in `r` between zero and one.
 fn logical_not(ctx: &mut Ctx, r: Reg) {
     ctx.b.op(Instr::Ldi { d: SCRATCH, imm: 1 });
     ctx.b.op(Instr::Xor {
@@ -784,7 +714,6 @@ fn parse_int(text: &str, span: Span) -> Result<u64, CodegenError> {
         })
 }
 
-/// Parses a numeric literal into a two word value, so a wide field accepts a constant above one
 fn parse_u128(text: &str, span: Span) -> Result<u128, CodegenError> {
     let cleaned: String = text.chars().filter(|c| *c != '_').collect();
     cleaned
@@ -795,7 +724,6 @@ fn parse_u128(text: &str, span: Span) -> Result<u128, CodegenError> {
         })
 }
 
-/// Materialize the thirty two byte scalar key for a slot into the scalar key scratch and leave its
 fn write_scalar_key(ctx: &mut Ctx, slot: u64, key: Reg) {
     ctx.b.op(Instr::Ldi {
         d: SCRATCH,
@@ -812,7 +740,6 @@ fn write_scalar_key(ctx: &mut Ctx, slot: u64, key: Reg) {
     });
 }
 
-/// Materialize the thirty two byte scalar key for a slot given in a register, for a slot whose number
 fn write_scalar_key_reg(ctx: &mut Ctx, slot: Reg, key: Reg) {
     ctx.b.op(Instr::Ldi {
         d: key,
@@ -825,7 +752,6 @@ fn write_scalar_key_reg(ctx: &mut Ctx, slot: Reg, key: Reg) {
     });
 }
 
-/// Reads a scalar state slot whose number is in a register into a fresh temporary register.
 fn load_slot_reg(ctx: &mut Ctx, slot: Reg, span: Span) -> Result<Reg, CodegenError> {
     let d = ctx.regs.alloc(span)?;
     let key = ctx.regs.alloc(span)?;
@@ -835,7 +761,6 @@ fn load_slot_reg(ctx: &mut Ctx, slot: Reg, span: Span) -> Result<Reg, CodegenErr
     Ok(d)
 }
 
-/// Reads a scalar state slot into a fresh temporary register. The slot is named by its thirty two
 fn load_slot(ctx: &mut Ctx, slot: u64, span: Span) -> Result<Reg, CodegenError> {
     let d = ctx.regs.alloc(span)?;
     let key = ctx.regs.alloc(span)?;
@@ -845,7 +770,6 @@ fn load_slot(ctx: &mut Ctx, slot: u64, span: Span) -> Result<Reg, CodegenError> 
     Ok(d)
 }
 
-/// Writes a register value to a scalar state slot, named by its thirty two byte key.
 fn store_slot(ctx: &mut Ctx, slot: u64, value: Reg, span: Span) -> Result<(), CodegenError> {
     let key = ctx.regs.alloc(span)?;
     write_scalar_key(ctx, slot, key);
@@ -854,7 +778,6 @@ fn store_slot(ctx: &mut Ctx, slot: u64, value: Reg, span: Span) -> Result<(), Co
     Ok(())
 }
 
-/// Refuses to lower an entry that takes a sealed parameter. A sealed value is confidential in the
 fn refuse_sealed(entry: &EntryDecl) -> Result<(), CodegenError> {
     for param in &entry.params {
         if param.sealed {
@@ -871,7 +794,6 @@ fn refuse_sealed(entry: &EntryDecl) -> Result<(), CodegenError> {
     Ok(())
 }
 
-/// Lowers the body of one entry into the builder and appends the clean halt. A fresh register stack
 #[allow(clippy::too_many_arguments)]
 pub fn lower_entry(
     layout: &Layout,
@@ -912,18 +834,9 @@ pub fn lower_entry(
         ctx.is_genesis = is_genesis;
         let address_key_list = collect_address_keys(layout, &params, entry);
         ctx.address_keys = address_key_list.iter().cloned().collect();
-        // Reserve the trusted context at fixed offsets for every entry, whether or not it reads them,
-        // so the host injects them and a caller can never place them itself: the full thirty two byte
-        // caller address at offset zero, the full thirty two byte contract self address at offset
-        // thirty two, and the consensus time word at offset sixty four. The source parameters follow
-        // after, and an entry that does not read a context value simply leaves its slot unused. The
-        // caller is a full address, so an owner check the entry runs binds all thirty two bytes.
         ctx.args.offset_of_width(CALLER_KEY, ADDR_BYTES);
         ctx.args.offset_of_width(CONTRACT_KEY, ADDR_BYTES);
         ctx.args.offset_of_width(TIME_KEY, WORD);
-        // Lay out every address the entry keys on or sends to as a thirty two byte argument up front,
-        // in a deterministic order, so its width does not depend on which use the lowering reaches
-        // first and the argument layout is stable across compilations.
         for key in &address_key_list {
             if key != CALLER_KEY {
                 ctx.args.offset_of_width(key, ADDR_BYTES);
@@ -935,7 +848,6 @@ pub fn lower_entry(
         for stmt in &entry.body {
             lower_stmt(&mut ctx, stmt, trap)?;
         }
-        // Require the sentinel past the deploy parameters.
         if ctx.is_genesis && !ctx.args.deploy_params().is_empty() {
             let sentinel_off = ctx.args.end();
             let got = load_arg(&mut ctx, sentinel_off, entry.span)?;
@@ -965,13 +877,11 @@ pub fn lower_entry(
     Ok(args)
 }
 
-/// The verify opcode a scheme identifier dispatches to.
 enum VerifyOp {
     Ml,
     Slh,
 }
 
-/// Verifies and binds each `signed by` parameter before the body runs. The dispatch on the one byte
 fn lower_signed_prologue(
     ctx: &mut Ctx,
     entry: &EntryDecl,
@@ -986,7 +896,6 @@ fn lower_signed_prologue(
     Ok(())
 }
 
-/// Verifies and binds each quorum parameter before the body runs. A `Quorum<M of N, set>` is
 fn lower_quorum_prologue(
     ctx: &mut Ctx,
     entry: &EntryDecl,
@@ -1042,7 +951,6 @@ fn lower_quorum_prologue(
     Ok(())
 }
 
-/// The order fields a quorum message commits to: the fields of every parameter other than the quorum
 fn quorum_message_fields(ctx: &mut Ctx, entry: &EntryDecl, quorum_name: &str) -> Vec<(u64, u64)> {
     let mut specs = Vec::new();
     for param in &entry.params {
@@ -1062,12 +970,10 @@ fn quorum_message_fields(ctx: &mut Ctx, entry: &EntryDecl, quorum_name: &str) ->
     specs
 }
 
-/// One quorum member's binding inputs.
 struct QuorumMember<'a> {
     scheme_off: u64,
     ptr_off: u64,
     index_off: u64,
-    /// The previous member's index argument, so this member's index is required strictly greater and
     prev_index_off: Option<u64>,
     set_base: u64,
     set_count: u64,
@@ -1075,7 +981,6 @@ struct QuorumMember<'a> {
     field_specs: &'a [(u64, u64)],
 }
 
-/// Dispatches one quorum member on its scheme and binds it under the matching scheme.
 fn lower_quorum_member(
     ctx: &mut Ctx,
     member: QuorumMember,
@@ -1131,7 +1036,6 @@ fn lower_quorum_member(
     Ok(())
 }
 
-/// Emits the verify and the guardian binding for one quorum member under a known scheme, the quorum
 fn emit_quorum_member(
     ctx: &mut Ctx,
     op: VerifyOp,
@@ -1157,7 +1061,6 @@ fn emit_quorum_member(
 
     let ptr = load_arg(ctx, member.ptr_off, span)?;
 
-    // 1. Derive the member address from the public key into the signer scratch.
     {
         let rscheme = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
@@ -1178,7 +1081,6 @@ fn emit_quorum_member(
         ctx.regs.free(rscheme);
     }
 
-    // 2. Compute the per member nonce slot, hash(NONCE_TAG || member), and read the current nonce.
     {
         let rtag = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
@@ -1231,7 +1133,6 @@ fn emit_quorum_member(
         a: slot,
     });
 
-    // 3. Rebuild the canonical order message just past the public key and signature.
     let dst = ctx.regs.alloc(span)?;
     {
         let k = ctx.regs.alloc(span)?;
@@ -1276,7 +1177,6 @@ fn emit_quorum_member(
         }
     }
 
-    // 4. Verify the signature over the public key, signature, and the rebuilt message.
     {
         let rlen = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
@@ -1302,8 +1202,6 @@ fn emit_quorum_member(
         ctx.regs.free(rlen);
     }
 
-    // 5. The guardian index the caller names: in range and strictly greater than the previous member's,
-    // so the M members are M distinct guardians in order.
     let index = load_arg(ctx, member.index_off, span)?;
     {
         let bound = ctx.regs.alloc(span)?;
@@ -1334,8 +1232,6 @@ fn emit_quorum_member(
         ctx.regs.free(prev);
     }
 
-    // 6. Compare the derived member address to the guardian at that index, all four words. The guardian
-    // slot is the set base plus the index times four plus the word, computed at run time.
     {
         let base_idx = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
@@ -1382,7 +1278,6 @@ fn emit_quorum_member(
     }
     ctx.regs.free(index);
 
-    // 7. Consume the member nonce, so the same quorum cannot run twice.
     {
         let one = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi { d: one, imm: 1 });
@@ -1405,7 +1300,6 @@ fn emit_quorum_member(
     Ok(())
 }
 
-/// Guards every `after` clause on the entry against the host supplied consensus time, so a time
 fn lower_after_prologue(
     ctx: &mut Ctx,
     entry: &EntryDecl,
@@ -1457,7 +1351,6 @@ fn lower_after_prologue(
             }
             AfterTarget::Expr(expr) => lower_expr(ctx, expr, false)?,
         };
-        // Revert when the consensus time is still below the threshold.
         ctx.b.op(Instr::LtU {
             d: time,
             a: time,
@@ -1470,7 +1363,6 @@ fn lower_after_prologue(
     Ok(())
 }
 
-/// The threshold M of a `Quorum<M of N, set>` parameter, if the parameter is a quorum.
 fn quorum_spec(param: &Param) -> Option<(u64, u64, String)> {
     if param.ty.name.text != "Quorum" {
         return None;
@@ -1491,7 +1383,6 @@ fn quorum_spec(param: &Param) -> Option<(u64, u64, String)> {
 }
 
 
-/// Stores `value` to scratch memory at `base + off`, computing the address in the scratch register.
 fn store_off(ctx: &mut Ctx, base: Reg, off: u64, value: Reg) {
     ctx.b.op(Instr::Ldi {
         d: SCRATCH,
@@ -1508,7 +1399,6 @@ fn store_off(ctx: &mut Ctx, base: Reg, off: u64, value: Reg) {
     });
 }
 
-/// Copies `words` machine words from a fixed scratch offset to `base + dst_off`, so a fixed context or
 fn copy_words_to_region(
     ctx: &mut Ctx,
     src_off: u64,
@@ -1533,7 +1423,6 @@ fn copy_words_to_region(
     Ok(())
 }
 
-/// Copies `words` machine words between two fixed scratch offsets.
 fn copy_words_fixed(
     ctx: &mut Ctx,
     src_off: u64,
@@ -1557,7 +1446,6 @@ fn copy_words_fixed(
     Ok(())
 }
 
-/// The argument keys of the fields of the signed parameter the order message commits to, in first
 fn collect_signed_fields(entry: &EntryDecl, param: &str) -> Vec<String> {
     let mut out = Vec::new();
     for clause in &entry.clauses {
@@ -1625,7 +1513,6 @@ fn collect_fields_expr(expr: &Expr, param: &str, out: &mut Vec<String>) {
     }
 }
 
-/// Byte offsets of each field of the canonical order message, relative to the message start. The
 const MSG_TAG_OFF: u64 = 0;
 const MSG_CONTRACT_OFF: u64 = 8;
 const MSG_SELECTOR_OFF: u64 = 40;
@@ -1633,7 +1520,6 @@ const MSG_SIGNER_OFF: u64 = 48;
 const MSG_NONCE_OFF: u64 = 80;
 const MSG_FIELDS_OFF: u64 = 88;
 
-/// Verifies and binds one `signed by` parameter. The `signed by` name must be a `Q_Address` state
 fn lower_signed_binding(
     ctx: &mut Ctx,
     param: &Param,
@@ -1661,9 +1547,6 @@ fn lower_signed_binding(
     let span = param.span;
     let scheme_off = ctx.args.offset_of(&format!("{name}{SIG_SCHEME_SUFFIX}"));
     let ptr_off = ctx.args.offset_of(&format!("{name}{SIG_PTR_SUFFIX}"));
-    // The order fields the message commits to, each an argument offset and its width in words, so an
-    // address field commits its whole thirty two bytes rather than a leading word an attacker could
-    // vary. Allocated here so the body reads the identical bytes later.
     let field_specs: Vec<(u64, u64)> = collect_signed_fields(entry, name)
         .iter()
         .map(|key| {
@@ -1681,7 +1564,6 @@ fn lower_signed_binding(
     let slh_label = ctx.b.label();
     let done_label = ctx.b.label();
 
-    // Read the one byte scheme and branch to the matching verify, reverting on an unknown one.
     let scheme = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi {
         d: SCRATCH,
@@ -1745,7 +1627,6 @@ fn lower_signed_binding(
     Ok(())
 }
 
-/// Emits the verify and the three bindings for one signed parameter under a known scheme. The public
 #[allow(clippy::too_many_arguments)]
 fn emit_signed_binding(
     ctx: &mut Ctx,
@@ -1773,10 +1654,8 @@ fn emit_signed_binding(
     let fields_bytes: u64 = field_specs.iter().map(|(_, words)| words * WORD).sum();
     let msg_len = MSG_FIELDS_OFF + fields_bytes;
 
-    // The verify region pointer, held across the whole binding.
     let ptr = load_arg(ctx, ptr_off, span)?;
 
-    // 1. Derive the signer address from the public key at the region start into the signer scratch.
     {
         let rscheme = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
@@ -1797,7 +1676,6 @@ fn emit_signed_binding(
         ctx.regs.free(rscheme);
     }
 
-    // 2. Compute the per signer nonce slot, hash(NONCE_TAG || signer), and read the current nonce.
     {
         let rtag = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
@@ -1839,8 +1717,6 @@ fn emit_signed_binding(
         ctx.regs.free(rb);
         ctx.regs.free(ra);
     }
-    // The nonce slot is the whole thirty two byte digest, so its key pointer is the digest scratch,
-    // held to read then write the nonce.
     let slot = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi {
         d: slot,
@@ -1852,7 +1728,6 @@ fn emit_signed_binding(
         a: slot,
     });
 
-    // 3. Rebuild the canonical order message in the region just past the public key and signature.
     let dst = ctx.regs.alloc(span)?;
     {
         let k = ctx.regs.alloc(span)?;
@@ -1904,7 +1779,6 @@ fn emit_signed_binding(
         }
     }
 
-    // 4. Verify the signature over the public key, signature, and the rebuilt message.
     {
         let rlen = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
@@ -1930,8 +1804,6 @@ fn emit_signed_binding(
         ctx.regs.free(rlen);
     }
 
-    // 5. Bind the signer to the stored owner: compare all four words, revert on any mismatch. Each
-    // owner word is a scalar slot, read by its thirty two byte key.
     for i in 0..ADDR_WORDS {
         let ownv = load_slot(ctx, owner_slot + i, span)?;
         let sigv = ctx.regs.alloc(span)?;
@@ -1953,7 +1825,6 @@ fn emit_signed_binding(
         ctx.regs.free(ownv);
     }
 
-    // 6. Consume the nonce: store nonce + 1, so the same signed message cannot run a second time.
     {
         let one = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi { d: one, imm: 1 });
@@ -1978,7 +1849,6 @@ fn emit_signed_binding(
 
 fn lower_stmt(ctx: &mut Ctx, stmt: &Stmt, trap: Label) -> Result<(), CodegenError> {
     match stmt {
-        // A guard evaluates its condition and reverts by jumping to the trap when it is false.
         Stmt::Guard { expr, .. } => {
             let r = lower_expr(ctx, expr, false)?;
             ctx.b.jz(r, trap);
@@ -1991,11 +1861,8 @@ fn lower_stmt(ctx: &mut Ctx, stmt: &Stmt, trap: Label) -> Result<(), CodegenErro
             value,
             span,
         } => lower_assign(ctx, target, *op, value, *span),
-        // An emit marshals the event operands into the payload region and records the typed event the
-        // host appends to the block event trie.
         Stmt::Emit { name, args, span } => lower_emit(ctx, &name.text, args, *span),
         Stmt::Let { name, value, span } => lower_let(ctx, &name.text, value, *span),
-        // A bare call is a state mutating asset or ledger operation.
         Stmt::Expr {
             expr: Expr::Call { callee, args, span },
             ..
@@ -2007,7 +1874,6 @@ fn lower_stmt(ctx: &mut Ctx, stmt: &Stmt, trap: Label) -> Result<(), CodegenErro
     }
 }
 
-/// Lowers a call used as a statement for its side effect. A method on an asset state field or a
 fn lower_call_effect(
     ctx: &mut Ctx,
     callee: &Expr,
@@ -2026,7 +1892,6 @@ fn lower_call_effect(
             _ => {}
         }
     }
-    // A send of an asset to an account lowers to the native transfer the SEND opcode records.
     if matches!(callee, Expr::Ident(id) if id.text == "send") {
         return lower_send(ctx, args, span);
     }
@@ -2036,7 +1901,6 @@ fn lower_call_effect(
     })
 }
 
-/// Lowers a `send` of an asset to an account to the native transfer the SEND opcode records. The
 fn lower_send(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), CodegenError> {
     let (to, value) = two_args(args, span)?;
     let amount = asset_amount(ctx, value, span)?;
@@ -2062,7 +1926,6 @@ fn lower_send(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), CodegenErr
     Ok(())
 }
 
-/// Lowers an `emit` to the native event the EMIT opcode records. Each operand is marshalled into the
 fn lower_emit(ctx: &mut Ctx, name: &str, args: &[Expr], span: Span) -> Result<(), CodegenError> {
     let sig = ctx
         .events
@@ -2076,9 +1939,6 @@ fn lower_emit(ctx: &mut Ctx, name: &str, args: &[Expr], span: Span) -> Result<()
 
     let mut offset = EVENT_BASE;
     for (i, arg) in args.iter().enumerate() {
-        // The declared field width drives the marshalling: a `Q_Address` field takes its whole four
-        // words, a two word field its low then high word, and any other field a single word. When the
-        // field width is unknown the argument's own wideness decides, so an untyped emit is unchanged.
         let declared = sig.field_words.get(i).copied();
         if declared == Some(ADDR_WORDS) {
             let src_off = lower_address(ctx, arg, span)?;
@@ -2099,8 +1959,6 @@ fn lower_emit(ctx: &mut Ctx, name: &str, args: &[Expr], span: Span) -> Result<()
         }
     }
 
-    // The payload spans from the event base to the running offset. The selector rides the low four
-    // bytes of a register, matching the machine's four byte selector width.
     let len = offset - EVENT_BASE;
     let off_reg = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi {
@@ -2125,11 +1983,9 @@ fn lower_emit(ctx: &mut Ctx, name: &str, args: &[Expr], span: Span) -> Result<()
     Ok(())
 }
 
-/// The argument key an expression used as an address reads from: the caller, a parameter, or a field
 fn addr_key_of(expr: &Expr, params: &HashSet<String>) -> Option<String> {
     match expr {
         Expr::Caller { .. } => Some(CALLER_KEY.to_string()),
-        // In a genesis block `deployer` is the deploying account, injected as the caller.
         Expr::Ident(id) if id.text == "deployer" => Some(CALLER_KEY.to_string()),
         Expr::Ident(id) if params.contains(&id.text) => Some(id.text.clone()),
         Expr::Field { base, name, .. } => match base.as_ref() {
@@ -2142,7 +1998,6 @@ fn addr_key_of(expr: &Expr, params: &HashSet<String>) -> Option<String> {
     }
 }
 
-/// The scratch memory offset of a full thirty two byte address value, the caller, a parameter, or a
 fn lower_address(ctx: &mut Ctx, expr: &Expr, span: Span) -> Result<u64, CodegenError> {
     if ctx.is_genesis {
         if let Some(name) = deploy_param_name(expr) {
@@ -2158,7 +2013,6 @@ fn lower_address(ctx: &mut Ctx, expr: &Expr, span: Span) -> Result<u64, CodegenE
     }
 }
 
-/// Every argument key the entry consumes as a full address, in first appearance order across the body:
 fn collect_address_keys(
     layout: &Layout,
     params: &HashSet<String>,
@@ -2199,9 +2053,6 @@ fn address_keys_stmt(stmt: &Stmt, layout: &Layout, params: &HashSet<String>, out
 
 fn address_keys_expr(expr: &Expr, layout: &Layout, params: &HashSet<String>, out: &mut Vec<String>) {
     if let Expr::Call { callee, args, .. } = expr {
-        // A map or registry key position: credit / debit / insert / remove / contains / get / set take
-        // the key as their first argument, and a `set` on an address valued map takes the stored address
-        // as its second, so both are laid out as full addresses.
         if let Expr::Field { base, name, .. } = callee.as_ref() {
             if matches!(
                 name.text.as_str(),
@@ -2221,7 +2072,6 @@ fn address_keys_expr(expr: &Expr, layout: &Layout, params: &HashSet<String>, out
                 }
             }
         }
-        // A send recipient is the first argument of a free `send`.
         if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") {
             if let Some(to) = args.first() {
                 push_addr_key(to, params, out);
@@ -2241,7 +2091,6 @@ fn address_keys_expr(expr: &Expr, layout: &Layout, params: &HashSet<String>, out
     }
 }
 
-/// The keyed base of a `Map` or `Registry` field named as the receiver of a ledger operation.
 fn map_base_of(ctx: &Ctx, base: &Expr, span: Span) -> Result<u64, CodegenError> {
     if let Expr::Ident(id) = base {
         if let Some(b) = ctx.layout.map_base(&id.text) {
@@ -2254,7 +2103,6 @@ fn map_base_of(ctx: &Ctx, base: &Expr, span: Span) -> Result<u64, CodegenError> 
     })
 }
 
-/// The two arguments of a call, or an error when the arity is wrong.
 fn two_args(args: &[Expr], span: Span) -> Result<(&Expr, &Expr), CodegenError> {
     match args {
         [a, b] => Ok((a, b)),
@@ -2265,7 +2113,6 @@ fn two_args(args: &[Expr], span: Span) -> Result<(&Expr, &Expr), CodegenError> {
     }
 }
 
-/// Computes the thirty two byte storage key of a keyed entry into the map key scratch: SHA3 of the
 fn compute_map_key(
     ctx: &mut Ctx,
     mbase: u64,
@@ -2303,7 +2150,6 @@ fn compute_map_key(
     Ok(())
 }
 
-/// Computes the thirty two byte storage key of word `word` of an address valued entry into the map key
 fn compute_map_addr_word_key(
     ctx: &mut Ctx,
     mbase: u64,
@@ -2346,7 +2192,6 @@ fn compute_map_addr_word_key(
     Ok(())
 }
 
-/// Loads a fresh register with the map key pointer, the scratch offset of the digest `compute_map_key`
 fn map_key_ptr(ctx: &mut Ctx, span: Span) -> Result<Reg, CodegenError> {
     let key = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi {
@@ -2356,7 +2201,6 @@ fn map_key_ptr(ctx: &mut Ctx, span: Span) -> Result<Reg, CodegenError> {
     Ok(key)
 }
 
-/// Lowers a value that a ledger credit or debit moves: an asset value contributes its amount, and any
 fn ledger_amount(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<Reg, CodegenError> {
     if is_asset_value(ctx, value) {
         asset_amount(ctx, value, span)
@@ -2365,7 +2209,6 @@ fn ledger_amount(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<Reg, Codegen
     }
 }
 
-/// True when an expression denotes an asset value rather than a plain integer.
 fn is_asset_value(ctx: &Ctx, value: &Expr) -> bool {
     match value {
         Expr::Ident(id) => {
@@ -2376,7 +2219,6 @@ fn is_asset_value(ctx: &Ctx, value: &Expr) -> bool {
     }
 }
 
-/// Credits or debits a recipient's ledger balance by a checked add or subtract at the keyed slot, so
 fn lower_map_credit(
     ctx: &mut Ctx,
     base: &Expr,
@@ -2412,7 +2254,6 @@ fn lower_map_credit(
     Ok(())
 }
 
-/// Sets or clears a keyed flag, the lowering of a freeze insert or an unfreeze remove.
 fn lower_map_flag(
     ctx: &mut Ctx,
     base: &Expr,
@@ -2433,7 +2274,6 @@ fn lower_map_flag(
     Ok(())
 }
 
-/// Reads a keyed entry, the lowering of `map.contains(key)`. A non zero result means the entry is
 fn lower_map_read(
     ctx: &mut Ctx,
     base: &Expr,
@@ -2476,12 +2316,10 @@ fn lower_map_read(
     Ok(d)
 }
 
-/// Whether a map receiver names a keyed field whose value is a full address.
 fn map_name_is_value_addr(ctx: &Ctx, base: &Expr) -> bool {
     matches!(base, Expr::Ident(id) if ctx.layout.map_value_is_addr(&id.text))
 }
 
-/// Sets an address valued entry, the lowering of `map.set(key, addr)`. Each of the four words of the
 fn lower_map_set(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Result<(), CodegenError> {
     let mbase = map_base_of(ctx, base, span)?;
     let (key_expr, value_expr) = two_args(args, span)?;
@@ -2503,7 +2341,6 @@ fn lower_map_set(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Resul
     Ok(())
 }
 
-/// A `map.get(key)` on an address valued map, giving the map's keyed base and the key expression, so an
 fn addr_map_get<'e>(ctx: &Ctx, expr: &'e Expr) -> Option<(u64, &'e Expr)> {
     let Expr::Call { callee, args, .. } = expr else {
         return None;
@@ -2524,7 +2361,6 @@ fn addr_map_get<'e>(ctx: &Ctx, expr: &'e Expr) -> Option<(u64, &'e Expr)> {
     args.first().map(|key| (mbase, key))
 }
 
-/// Lowers `map.get(key) == addr` (or `!=`) as a full thirty two byte compare: the four stored words are
 fn lower_addr_map_eq(
     ctx: &mut Ctx,
     op: BinOp,
@@ -2568,7 +2404,6 @@ fn lower_addr_map_eq(
     Ok(acc)
 }
 
-/// The storage slot of an asset state field named as the receiver of an asset operation.
 fn asset_field_slot(ctx: &Ctx, base: &Expr, span: Span) -> Result<u64, CodegenError> {
     if let Expr::Ident(id) = base {
         if let Some(slot) = ctx.layout.slot(&id.text) {
@@ -2581,7 +2416,6 @@ fn asset_field_slot(ctx: &Ctx, base: &Expr, span: Span) -> Result<u64, CodegenEr
     })
 }
 
-/// The single argument of a call, or an error when the arity is wrong.
 fn one_arg(args: &[Expr], span: Span) -> Result<&Expr, CodegenError> {
     match args {
         [only] => Ok(only),
@@ -2592,7 +2426,6 @@ fn one_arg(args: &[Expr], span: Span) -> Result<&Expr, CodegenError> {
     }
 }
 
-/// Merges an asset value into an asset state field, a checked balance add that conserves supply and
 fn lower_merge(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Result<(), CodegenError> {
     let slot = asset_field_slot(ctx, base, span)?;
     let value = one_arg(args, span)?;
@@ -2630,7 +2463,6 @@ fn lower_assign(
         span,
     })?;
 
-    // A guardian set is set only at genesis, from a deploy parameter.
     if let Some((base, count)) = ctx.layout.guardian_set(name) {
         if op != AssignOp::Set {
             return Err(CodegenError::Unsupported {
@@ -2663,9 +2495,6 @@ fn lower_assign(
     }
 
     if ctx.layout.is_addr(name) {
-        // A full address field is set from an address value, the caller or a parameter, by copying its
-        // four words into the field's four slots. This is how a genesis `owner = deployer` stores the
-        // whole deploying address as the owner. Only a plain set is defined for an address field.
         if op != AssignOp::Set {
             return Err(CodegenError::Unsupported {
                 what: "an add or subtract on an address field".into(),
@@ -2749,8 +2578,6 @@ mod tests {
     use quanta_ast::{Item, Stmt};
     use std::collections::BTreeMap;
 
-    // Wrap an expression in a harness contract with state fields x and y and parameters a and b,
-    // then hand back the layout, parameter set, and the parsed expression.
     fn harness(expr_src: &str) -> (Layout, HashSet<String>, Expr) {
         let src = format!(
             "contract H {{ state {{ x: u64; y: u64; }} \
@@ -2850,7 +2677,6 @@ mod tests {
 
     #[test]
     fn wrapping_add_takes_the_modular_result() {
-        // Two words that overflow a checked add, so only the wrapping form returns a value.
         let big = u64::MAX;
         assert_eq!(eval("wrapping(a + b)", &[], &[("a", big), ("b", 1)]), 0);
     }

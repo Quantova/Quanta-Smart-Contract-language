@@ -1,14 +1,10 @@
-//! The compiler's machine readable output, in one place. One function turns Quanta source into a JSON
-
 use quanta_codegen::CompiledContract;
 
-/// The result of a compile: the JSON document and whether it succeeded, so a caller can print the
 pub struct Emit {
     pub json: String,
     pub ok: bool,
 }
 
-/// Compile Quanta source to a JSON document. On success the document carries every contract, its
 pub fn compile_json(src: &str) -> Emit {
     let program = match quanta_parser::parse(src) {
         Ok(program) => program,
@@ -23,7 +19,6 @@ pub fn compile_json(src: &str) -> Emit {
     }
 }
 
-/// The success document: every compiled contract with its container bytes as hex and the interface a
 fn contracts_json(contracts: &[CompiledContract]) -> String {
     let mut out = String::from("{\"ok\":true,\"contracts\":[");
     for (i, cc) in contracts.iter().enumerate() {
@@ -87,7 +82,6 @@ fn contracts_json(contracts: &[CompiledContract]) -> String {
     out
 }
 
-/// The failure document: the error message and its position in the source. The offset is the byte
 fn error_json(src: &str, message: &str, offset: usize) -> String {
     let (line, col) = line_col(src, offset);
     let mut out = String::from("{\"ok\":false,\"errors\":[{\"message\":");
@@ -96,7 +90,6 @@ fn error_json(src: &str, message: &str, offset: usize) -> String {
     out
 }
 
-/// Appends a JSON string literal, escaping the characters JSON requires.
 fn json_str(out: &mut String, s: &str) {
     out.push('"');
     for ch in s.chars() {
@@ -113,7 +106,6 @@ fn json_str(out: &mut String, s: &str) {
     out.push('"');
 }
 
-/// Appends bytes as a JSON string of lower case hex, the form the wire carries a container and a
 fn json_hex(out: &mut String, bytes: &[u8]) {
     out.push('"');
     for b in bytes {
@@ -122,7 +114,6 @@ fn json_hex(out: &mut String, bytes: &[u8]) {
     out.push('"');
 }
 
-/// The line and column, both one based, of a byte offset in the source.
 fn line_col(src: &str, offset: usize) -> (usize, usize) {
     let mut line = 1;
     let mut col = 1;

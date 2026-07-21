@@ -1,5 +1,3 @@
-//! Signed by binding. Authority over an entry may only come from a parameter
-
 use crate::error::TypeError;
 use crate::model::Model;
 use quanta_ast::{BinOp, Clause, EntryDecl, Expr};
@@ -65,7 +63,6 @@ fn forged(
     }
 }
 
-/// When one side reads a field of an unsigned parameter and the other names a
 fn authority_gate(
     model: &Model,
     params: &HashSet<&str>,

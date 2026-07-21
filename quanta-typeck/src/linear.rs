@@ -1,5 +1,3 @@
-//! Linearity. An asset value must be used exactly once. A linear value is an
-
 use crate::error::TypeError;
 use crate::model::{asset_inner, is_asset_param, Model};
 use quanta_ast::{Clause, EntryDecl, Expr, Stmt};
@@ -43,7 +41,6 @@ fn check_entry(entry: &EntryDecl) -> Result<(), TypeError> {
         }
     }
 
-    // A burn consumes the incoming asset of the burned kind.
     let burned: Vec<&str> = entry
         .clauses
         .iter()
@@ -102,7 +99,6 @@ fn bump(linears: &mut [Linear], name: &str) {
     }
 }
 
-/// An expression that yields a fresh linear asset value.
 fn produces_asset(value: &Expr) -> bool {
     match value {
         Expr::Call { callee, .. } => match callee.as_ref() {
@@ -114,7 +110,6 @@ fn produces_asset(value: &Expr) -> bool {
     }
 }
 
-/// Counts a consumption when a linear name is passed as a bare argument to a
 fn count_consumes(expr: &Expr, names: &HashMap<&str, usize>, counts: &mut [usize]) {
     if let Expr::Call { args, .. } = expr {
         for arg in args {

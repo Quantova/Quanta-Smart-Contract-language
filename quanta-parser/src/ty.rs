@@ -1,11 +1,8 @@
-//! Type grammar, including generic arguments and the `M of N` quorum form.
-
 use crate::error::ParseError;
 use crate::parser::Parser;
 use quanta_ast::{GenericArg, Ident, Type};
 use quanta_lexer::TokenKind;
 
-/// Parses a single type and requires that it is the whole input.
 pub fn parse_type(src: &str) -> Result<Type, ParseError> {
     let mut p = Parser::new(src)?;
     let t = p.ty()?;
@@ -22,7 +19,7 @@ impl Parser {
                 self.bump();
                 Ident { text, span }
             }
-            // Quorum is a keyword yet also heads the quorum type.
+            // also a type name
             TokenKind::Quorum => {
                 self.bump();
                 Ident {
@@ -59,7 +56,7 @@ impl Parser {
     fn generic_arg(&mut self) -> Result<GenericArg, ParseError> {
         if matches!(self.peek(), TokenKind::Int(_)) {
             let m = self.expect_int()?;
-            // `M of N` is a quorum threshold; a bare integer is a width.
+            // "of" makes it M of N
             if matches!(self.peek(), TokenKind::Ident(w) if w == "of") {
                 self.bump();
                 let n = self.expect_int()?;

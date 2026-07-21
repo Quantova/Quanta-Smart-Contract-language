@@ -1,5 +1,3 @@
-//! Command line front end. Parses a Quanta source file and prints its tree,
-
 mod tree;
 
 use std::process::exit;
@@ -94,7 +92,6 @@ fn main() {
     }
 }
 
-/// Writes each compiled contract to a container file beside the source and prints its interface.
 fn build(path: &str, contracts: &[quanta_codegen::CompiledContract]) {
     let dir = std::path::Path::new(path)
         .parent()

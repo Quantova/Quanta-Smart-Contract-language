@@ -1,11 +1,8 @@
-//! Expression grammar. Precedence climbs from `||` up to postfix field access
-
 use crate::error::ParseError;
 use crate::parser::Parser;
 use quanta_ast::{BinOp, Expr, Ident, IntLit, StrLit, UnaryOp};
 use quanta_lexer::TokenKind;
 
-/// Parses a single expression and requires that it is the whole input.
 pub fn parse_expr(src: &str) -> Result<Expr, ParseError> {
     let mut p = Parser::new(src)?;
     let e = p.expr()?;

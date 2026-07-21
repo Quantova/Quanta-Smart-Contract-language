@@ -1,5 +1,3 @@
-//! Invariant and access checks. A contract invariant ranges only over declared
-
 use crate::error::TypeError;
 use crate::model::Model;
 use quanta_ast::{Clause, EntryDecl, Expr, Item, Stmt};

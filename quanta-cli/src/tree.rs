@@ -1,5 +1,3 @@
-//! Renders a parsed program as an indented tree with source spans.
-
 use quanta_ast::*;
 use quanta_lexer::Span;
 

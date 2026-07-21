@@ -1,9 +1,6 @@
-//! Shared view of one contract, indexed for the passes. Built once per contract
-
 use quanta_ast::{Contract, EntryDecl, FieldDecl, GenericArg, Item, Param, Type};
 use std::collections::{HashMap, HashSet};
 
-/// Native assets that exist without a local `asset` declaration.
 const NATIVE_ASSETS: &[&str] = &["QTOV"];
 
 pub struct Model<'a> {
@@ -57,33 +54,27 @@ impl<'a> Model<'a> {
         self.state.contains_key(name)
     }
 
-    /// An asset name a `mints` or `burns` clause may name: it must be declared
     pub fn is_declared_asset(&self, name: &str) -> bool {
         self.declared_assets.contains(name)
     }
 
-    /// An asset name a `conserves` clause may name: a declared asset, a native
     pub fn is_known_asset(&self, name: &str) -> bool {
         self.asset_universe.contains(name)
     }
 }
 
-/// True when `ty` is `Q_Asset<..>`, the type of a linear asset value.
 pub fn is_asset_type(ty: &Type) -> bool {
     ty.name.text == "Q_Asset"
 }
 
-/// True when the parameter carries a linear asset value.
 pub fn is_asset_param(param: &Param) -> bool {
     is_asset_type(&param.ty)
 }
 
-/// True when the parameter heads a quorum authority.
 pub fn is_quorum_param(param: &Param) -> bool {
     param.ty.name.text == "Quorum"
 }
 
-/// The asset an `Q_Asset<A>` type names, if any.
 pub fn asset_inner(ty: &Type) -> Option<&str> {
     if !is_asset_type(ty) {
         return None;
@@ -94,7 +85,6 @@ pub fn asset_inner(ty: &Type) -> Option<&str> {
     }
 }
 
-/// The base numeric types the checker reasons over.
 pub fn is_integer_type(name: &str) -> bool {
     matches!(
         name,

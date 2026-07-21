@@ -1,11 +1,8 @@
-//! Statement grammar for genesis and entry bodies.
-
 use crate::error::ParseError;
 use crate::parser::Parser;
 use quanta_ast::{AssignOp, Expr, Stmt};
 use quanta_lexer::TokenKind;
 
-/// Parses a single statement and requires that it is the whole input.
 pub fn parse_stmt(src: &str) -> Result<Stmt, ParseError> {
     let mut p = Parser::new(src)?;
     let s = p.statement()?;

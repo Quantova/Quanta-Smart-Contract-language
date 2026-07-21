@@ -1,5 +1,3 @@
-//! Hand written recursive descent parser for the Quanta language.
-
 mod decl;
 pub mod error;
 mod expr;

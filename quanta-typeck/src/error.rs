@@ -1,5 +1,3 @@
-//! Checker diagnostics. Every error carries the source span it points at.
-
 use quanta_lexer::Span;
 
 #[derive(Clone, PartialEq, Eq, Debug)]

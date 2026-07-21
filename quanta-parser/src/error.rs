@@ -1,5 +1,3 @@
-//! Parser diagnostics. Every error carries the source span that provoked it.
-
 use quanta_lexer::{LexError, Span};
 
 #[derive(Clone, PartialEq, Eq, Debug)]

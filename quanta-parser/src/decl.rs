@@ -1,5 +1,3 @@
-//! Declaration grammar: contract items, parameters, and entry clauses.
-
 use crate::error::ParseError;
 use crate::parser::Parser;
 use quanta_ast::{
@@ -8,7 +6,6 @@ use quanta_ast::{
 };
 use quanta_lexer::{Span, TokenKind};
 
-/// Parses a single contract item and requires that it is the whole input.
 pub fn parse_item(src: &str) -> Result<Item, ParseError> {
     let mut p = Parser::new(src)?;
     let item = p.contract_item()?;

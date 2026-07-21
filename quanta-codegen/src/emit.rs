@@ -1,11 +1,7 @@
-//! Low level emission. A builder accumulates machine instructions and symbolic labels, then a link
-
 use qtv_vm::isa::{Instr, Reg};
 
-/// A symbolic branch target resolved during linking.
 pub type Label = u32;
 
-/// One emitted line: a plain instruction, a label position, or a branch to a label.
 enum Line {
     Op(Instr),
     Mark(Label),
@@ -14,7 +10,6 @@ enum Line {
     Jnz(Reg, Label),
 }
 
-/// Accumulates lines and hands out fresh labels.
 #[derive(Default)]
 pub struct Builder {
     lines: Vec<Line>,
@@ -32,14 +27,12 @@ impl Builder {
         Builder::default()
     }
 
-    /// A fresh label. It marks nothing until placed with `mark`.
     pub fn label(&mut self) -> Label {
         let l = self.next_label;
         self.next_label += 1;
         l
     }
 
-    /// Places a label at the current position.
     pub fn mark(&mut self, label: Label) {
         self.lines.push(Line::Mark(label));
     }
@@ -60,12 +53,10 @@ impl Builder {
         self.lines.push(Line::Jnz(cond, label));
     }
 
-    /// Resolves every label to an offset and emits the bytecode.
     pub fn link(self) -> Result<Vec<u8>, LinkError> {
         self.link_with_offsets().map(|(code, _)| code)
     }
 
-    /// Links the code and returns it with the resolved offset of every placed label, so a caller can
     pub fn link_with_offsets(self) -> Result<(Vec<u8>, Vec<Option<u32>>), LinkError> {
         let mut offsets: Vec<Option<u32>> = vec![None; self.next_label as usize];
         let mut at: u32 = 0;
@@ -144,7 +135,7 @@ mod tests {
         let skip = b.label();
         b.op(Instr::Ldi { d: 1, imm: 5 });
         b.op(Instr::Ldi { d: 2, imm: 0 });
-        b.jz(2, skip); // register two is zero, so jump over the overwrite
+        b.jz(2, skip);
         b.op(Instr::Ldi { d: 1, imm: 99 });
         b.mark(skip);
         b.op(Instr::Halt);

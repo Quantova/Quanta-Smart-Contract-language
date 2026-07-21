@@ -1,5 +1,3 @@
-//! Sealed order flow. An order that competes for a shared pool and is settled
-
 use crate::error::TypeError;
 use crate::model::{is_asset_param, is_asset_type, is_quorum_param, Model};
 use quanta_ast::{Clause, EntryDecl, Expr, Stmt};
@@ -12,7 +10,6 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
 }
 
 fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
-    // Paying out in the same call means the order is not held for settlement.
     if body_sends(entry) {
         return Ok(());
     }
@@ -54,7 +51,6 @@ fn body_sends(entry: &EntryDecl) -> bool {
     sends
 }
 
-/// True when the body merges a value into a state asset field, holding it.
 fn pools_asset(model: &Model, entry: &EntryDecl) -> bool {
     let mut pools = false;
     for stmt in &entry.body {
@@ -75,7 +71,6 @@ fn pools_asset(model: &Model, entry: &EntryDecl) -> bool {
     pools
 }
 
-/// True when a field of the named parameter is read in a guard, limits, or
 fn order_field_gates(entry: &EntryDecl, param: &str) -> bool {
     let mut gates = false;
     let mut scan = |expr: &Expr| {

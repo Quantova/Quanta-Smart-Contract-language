@@ -1,5 +1,3 @@
-//! Contract compilation. Lowers every entry of a contract into one code image, embeds the entry
-
 use crate::emit::{Builder, LinkError};
 use crate::error::CodegenError;
 use crate::layout::{Layout, ADDR_WORDS};
@@ -10,18 +8,15 @@ use qtv_vm::isa::Instr;
 use quanta_ast::{Contract, EntryDecl, EventDecl, Item, Program, Type};
 use std::collections::HashMap;
 
-/// A compiled contract: the loadable container plus the interface facts a caller needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledContract {
     pub name: String,
     pub container: Container,
     pub entries: Vec<EntryArtifact>,
     pub events: Vec<EventArtifact>,
-    /// Deploy parameters the genesis reads, in layout order. Empty when the genesis reads none.
     pub deploy_params: Vec<DeployParamArtifact>,
 }
 
-/// A `deploy_params.<name>` slot the deployer fills: its key, scratch offset, and byte width.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeployParamArtifact {
     pub key: String,
@@ -29,7 +24,6 @@ pub struct DeployParamArtifact {
     pub width: u64,
 }
 
-/// One entry of the interface, with the scratch memory layout of its arguments.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryArtifact {
     pub name: String,
@@ -38,14 +32,12 @@ pub struct EntryArtifact {
     pub args: Vec<ArgSlot>,
 }
 
-/// An argument value and the scratch memory offset it is read from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArgSlot {
     pub key: String,
     pub offset: u64,
 }
 
-/// One event of the interface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventArtifact {
     pub name: String,
@@ -53,12 +45,10 @@ pub struct EventArtifact {
     pub selector: [u8; SELECTOR_BYTES],
 }
 
-/// Compiles every contract in a program.
 pub fn compile(program: &Program) -> Result<Vec<CompiledContract>, CodegenError> {
     program.contracts.iter().map(compile_contract).collect()
 }
 
-/// The machine word width of each event field in declaration order: a `Q_Address` is four words, a two
 fn event_field_words(ev: &EventDecl) -> Vec<u64> {
     ev.params.iter().map(|p| type_words(&p.ty)).collect()
 }
@@ -71,7 +61,6 @@ fn type_words(ty: &Type) -> u64 {
     }
 }
 
-/// Compiles one contract to its container and interface. Every entry lowers into one code image, and
 pub fn compile_contract(contract: &Contract) -> Result<CompiledContract, CodegenError> {
     let entries: Vec<&EntryDecl> = contract
         .items
@@ -84,7 +73,6 @@ pub fn compile_contract(contract: &Contract) -> Result<CompiledContract, Codegen
     compile_entries(contract, &entries)
 }
 
-/// Lowers a set of entries into one code image, each beginning at its own offset, sharing the revert
 fn compile_entries(
     contract: &Contract,
     entries: &[&EntryDecl],
@@ -99,8 +87,6 @@ fn compile_entries(
         })
         .collect();
 
-    // The declared events, mapped by name, so an emit in an entry body names the event the machine
-    // records and marshals each field to its declared word width.
     let events_map: HashMap<String, EventSig> = contract
         .items
         .iter()
@@ -140,11 +126,6 @@ fn compile_entries(
         });
     }
 
-    // The genesis constructor, if the contract declares one. It lowers as a reserved entry the chain
-    // runs at deploy with the deploying account as the caller, so a genesis `owner = deployer` stores
-    // the whole deployer address into the owner field. It takes no user arguments and initializes
-    // state, so its invariant epilogue is skipped and its interface is not surfaced as a callable
-    // entry.
     if let Some(genesis) = contract.items.iter().find_map(|item| match item {
         Item::Genesis(g) => Some(g),
         _ => None,
@@ -175,16 +156,12 @@ fn compile_entries(
         placed.push((selector, qtv_vm::container::StateAccess::default(), start));
     }
 
-    // Shared revert trap. A guard or invariant that fails jumps here and the divide by zero faults,
-    // which rolls back every state change of the call.
     b.mark(trap);
     b.op(Instr::Ldi { d: 0, imm: 0 });
     b.op(Instr::Div { d: 0, a: 0, b: 0 });
 
     let (code, offsets) = b.link_with_offsets().map_err(CodegenError::Link)?;
 
-    // Each entry begins at the offset its start label resolved to, so the container the interpreter
-    // loads maps a call selector to where that entry enters.
     let mut container_entries = Vec::new();
     for (selector, access, start) in placed {
         let offset = offsets
@@ -261,9 +238,6 @@ mod tests {
     #[test]
     fn the_argument_layout_reserves_the_context_words_then_the_parameters() {
         let cc = compile_one(METER);
-        // The trusted context spans the first seventy two bytes: the thirty two byte caller address,
-        // the thirty two byte contract self address, then the eight byte consensus time. The source
-        // parameters follow after it.
         assert_eq!(
             cc.entries[0].args,
             vec![
@@ -308,8 +282,6 @@ mod tests {
     #[test]
     fn a_later_entry_begins_where_its_code_starts() {
         let cc = compile_one(TWO);
-        // The second entry begins after the first entry's code, so its offset is non zero and the
-        // selector resolves to it.
         let second = cc.container.entries[1].offset;
         assert_ne!(second, 0, "the second entry does not begin at zero");
         assert_eq!(

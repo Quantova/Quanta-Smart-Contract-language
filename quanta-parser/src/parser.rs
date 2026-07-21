@@ -1,5 +1,3 @@
-//! The token cursor and the shared expectation helpers used by every grammar
-
 use crate::error::ParseError;
 use quanta_ast::{Ident, IntLit, StrLit};
 use quanta_lexer::{tokenize, Span, Token, TokenKind};
@@ -89,7 +87,6 @@ impl Parser {
         }
     }
 
-    /// Accepts an identifier or the `Quorum` keyword, which also names an
     pub(crate) fn expect_import_name(&mut self) -> Result<Ident, ParseError> {
         let span = self.peek_span();
         match self.peek() {

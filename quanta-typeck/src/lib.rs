@@ -1,5 +1,3 @@
-//! Static checker for the Quanta language. It runs a fixed sequence of passes
-
 mod access;
 mod conserve;
 pub mod error;
@@ -15,7 +13,6 @@ pub use error::TypeError;
 use model::Model;
 use quanta_ast::Program;
 
-/// Checks a whole program. Returns the first error, or `Ok` when every contract
 pub fn check(program: &Program) -> Result<(), TypeError> {
     for contract in &program.contracts {
         let model = Model::build(contract);

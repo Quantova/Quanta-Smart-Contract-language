@@ -1,5 +1,3 @@
-//! Conservation of supply. Only an entry that declares `mints` or `burns` may
-
 use crate::error::TypeError;
 use crate::model::{is_quorum_param, Model};
 use quanta_ast::{Clause, EntryDecl, Expr, Stmt};
@@ -41,7 +39,6 @@ fn check_entry(entry: &EntryDecl) -> Result<(), TypeError> {
     Ok(())
 }
 
-/// The span of the first `mint(..)` call in a body, if any.
 fn mint_call(body: &[Stmt]) -> Option<quanta_lexer::Span> {
     let mut found = None;
     for stmt in body {

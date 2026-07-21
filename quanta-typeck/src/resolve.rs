@@ -1,5 +1,3 @@
-//! Name resolution. The structured references a contract makes, the fields it
-
 use crate::error::TypeError;
 use crate::model::Model;
 use quanta_ast::{Clause, EntryDecl, Expr, Item, Stmt};
@@ -90,7 +88,6 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     Ok(())
 }
 
-/// A synchronous external call would hand control to an external account inside
 fn check_no_external_call(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     let addresses = address_names(model, entry);
     let mut offending = None;
@@ -115,7 +112,6 @@ fn check_no_external_call(model: &Model, entry: &EntryDecl) -> Result<(), TypeEr
     Ok(())
 }
 
-/// The parameters and state fields that hold an external address.
 fn address_names<'a>(model: &'a Model, entry: &'a EntryDecl) -> HashSet<&'a str> {
     let mut set = HashSet::new();
     for (name, field) in &model.state {
@@ -131,7 +127,6 @@ fn address_names<'a>(model: &'a Model, entry: &'a EntryDecl) -> HashSet<&'a str>
     set
 }
 
-/// True when the expression denotes an external address: the caller, a named
 fn is_external_address(expr: &Expr, addresses: &HashSet<&str>) -> bool {
     match expr {
         Expr::Caller { .. } => true,
@@ -177,7 +172,6 @@ fn walk(expr: &Expr, f: &mut impl FnMut(&Expr)) {
     }
 }
 
-/// The leftmost identifier of an lvalue, if any.
 fn root_ident(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Ident(id) => Some(&id.text),
