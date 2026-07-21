@@ -1,17 +1,10 @@
 [package]
-name = "quanta-cli"
+name = "quanta-emit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "quanta-cli"
-path = "src/main.rs"
-
 [dependencies]
-quanta-lexer = { path = "../quanta-lexer" }
-quanta-ast = { path = "../quanta-ast" }
 quanta-parser = { path = "../quanta-parser" }
 quanta-typeck = { path = "../quanta-typeck" }
 quanta-codegen = { path = "../quanta-codegen" }
-quanta-emit = { path = "../quanta-emit" }

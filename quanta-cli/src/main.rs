@@ -68,25 +68,13 @@ fn main() {
                 exit(1);
             }
         },
-        "emit" => match quanta_parser::parse(&src) {
-            Ok(program) => {
-                if let Err(e) = quanta_typeck::check(&program) {
-                    emit_error(&src, &e.message, e.span.start);
-                    exit(1);
-                }
-                match quanta_codegen::compile(&program) {
-                    Ok(contracts) => emit_contracts(&contracts),
-                    Err(e) => {
-                        emit_error(&src, &e.to_string(), e.span().start);
-                        exit(1);
-                    }
-                }
-            }
-            Err(e) => {
-                emit_error(&src, &e.message, e.span.start);
+        "emit" => {
+            let emit = quanta_emit::compile_json(&src);
+            println!("{}", emit.json);
+            if !emit.ok {
                 exit(1);
             }
-        },
+        }
         "tokens" => match quanta_lexer::tokenize(&src) {
             Ok(tokens) => {
                 for t in tokens {
@@ -104,93 +92,6 @@ fn main() {
             exit(2);
         }
     }
-}
-
-/// Prints every compiled contract as one JSON document on stdout: the container bytes as
-fn emit_contracts(contracts: &[quanta_codegen::CompiledContract]) {
-    let mut out = String::from("{\"ok\":true,\"contracts\":[");
-    for (i, cc) in contracts.iter().enumerate() {
-        if i > 0 {
-            out.push(',');
-        }
-        out.push_str("{\"name\":");
-        json_str(&mut out, &cc.name);
-        out.push_str(",\"container\":");
-        json_hex(&mut out, &cc.container.canonical_bytes());
-        out.push_str(",\"entries\":[");
-        for (j, entry) in cc.entries.iter().enumerate() {
-            if j > 0 {
-                out.push(',');
-            }
-            out.push_str("{\"name\":");
-            json_str(&mut out, &entry.name);
-            out.push_str(",\"signature\":");
-            json_str(&mut out, &entry.signature);
-            out.push_str(",\"selector\":");
-            json_hex(&mut out, &entry.selector);
-            out.push_str(",\"args\":[");
-            for (k, arg) in entry.args.iter().enumerate() {
-                if k > 0 {
-                    out.push(',');
-                }
-                out.push_str("{\"key\":");
-                json_str(&mut out, &arg.key);
-                out.push_str(&format!(",\"offset\":{}}}", arg.offset));
-            }
-            out.push_str("]}");
-        }
-        out.push_str("],\"events\":[");
-        for (j, event) in cc.events.iter().enumerate() {
-            if j > 0 {
-                out.push(',');
-            }
-            out.push_str("{\"name\":");
-            json_str(&mut out, &event.name);
-            out.push_str(",\"signature\":");
-            json_str(&mut out, &event.signature);
-            out.push_str(",\"selector\":");
-            json_hex(&mut out, &event.selector);
-            out.push('}');
-        }
-        out.push_str("]}");
-    }
-    out.push_str("]}");
-    println!("{out}");
-}
-
-/// Prints a compile failure as the same JSON shape emit uses, so a driving tool reads one
-fn emit_error(src: &str, message: &str, offset: usize) {
-    let (line, col) = line_col(src, offset);
-    let mut out = String::from("{\"ok\":false,\"errors\":[{\"message\":");
-    json_str(&mut out, message);
-    out.push_str(&format!(",\"line\":{line},\"col\":{col},\"offset\":{offset}}}]}}"));
-    println!("{out}");
-}
-
-/// Appends a JSON string literal, escaping the characters JSON requires.
-fn json_str(out: &mut String, s: &str) {
-    out.push('"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-}
-
-/// Appends bytes as a JSON string of lower case hex, the form the wire carries a container
-fn json_hex(out: &mut String, bytes: &[u8]) {
-    out.push('"');
-    for b in bytes {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out.push('"');
 }
 
 /// Writes each compiled contract to a container file beside the source and prints its interface.

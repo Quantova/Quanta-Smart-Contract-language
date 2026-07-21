@@ -6,6 +6,8 @@ members = [
     "quanta-parser",
     "quanta-typeck",
     "quanta-codegen",
+    "quanta-emit",
+    "quanta-web",
     "quanta-cli",
 ]
 
