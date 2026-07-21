@@ -182,6 +182,10 @@ impl Parser {
                 self.bump();
                 Ok(Expr::Caller { span })
             }
+            TokenKind::Now => {
+                self.bump();
+                Ok(Expr::Now { span })
+            }
             TokenKind::LParen => {
                 self.bump();
                 let inner = self.expr()?;
@@ -270,6 +274,17 @@ mod tests {
     #[test]
     fn caller_is_an_expression() {
         assert!(matches!(parse_expr("caller").unwrap(), Expr::Caller { .. }));
+    }
+
+    #[test]
+    fn now_is_an_expression() {
+        assert!(matches!(parse_expr("now").unwrap(), Expr::Now { .. }));
+        match parse_expr("now > deadline").unwrap() {
+            Expr::Binary { op: BinOp::Gt, left, .. } => {
+                assert!(matches!(*left, Expr::Now { .. }));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

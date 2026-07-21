@@ -39,6 +39,7 @@ pub enum TokenKind {
     Guard,
     Genesis,
     Caller,
+    Now,
     State,
     Invariant,
     Event,
@@ -111,6 +112,7 @@ impl TokenKind {
             TokenKind::Guard => "guard",
             TokenKind::Genesis => "genesis",
             TokenKind::Caller => "caller",
+            TokenKind::Now => "now",
             TokenKind::State => "state",
             TokenKind::Invariant => "invariant",
             TokenKind::Event => "event",
@@ -202,6 +204,7 @@ pub fn keyword_kind(word: &str) -> Option<TokenKind> {
         "guard" => TokenKind::Guard,
         "genesis" => TokenKind::Genesis,
         "caller" => TokenKind::Caller,
+        "now" => TokenKind::Now,
         "state" => TokenKind::State,
         "invariant" => TokenKind::Invariant,
         "event" => TokenKind::Event,
@@ -239,6 +242,7 @@ mod tests {
         assert_eq!(keyword_kind("Quorum"), Some(TokenKind::Quorum));
         assert_eq!(keyword_kind("checked"), Some(TokenKind::Checked));
         assert_eq!(keyword_kind("wrapping"), Some(TokenKind::Wrapping));
+        assert_eq!(keyword_kind("now"), Some(TokenKind::Now));
         assert_eq!(keyword_kind("owner"), None);
         assert_eq!(keyword_kind("mint"), None);
     }

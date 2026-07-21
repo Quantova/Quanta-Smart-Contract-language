@@ -86,6 +86,7 @@ impl<'a> Env<'a> {
             Expr::Date { .. } => Ok(Ty::Time),
             Expr::Str(_) => Ok(Ty::Str),
             Expr::Caller { .. } => Ok(Ty::Address),
+            Expr::Now { .. } => Ok(Ty::Int),
             Expr::Ident(id) => Ok(self.ty_of_ident(&id.text)),
             Expr::Unary { op, expr, .. } => self.ty_of_unary(*op, expr),
             Expr::Binary {

@@ -249,6 +249,10 @@ pub fn lower_expr(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<Reg, Cod
             let off = ctx.args.offset_of(CALLER_KEY);
             load_arg(ctx, off, *span)
         }
+        Expr::Now { span } => {
+            let off = ctx.args.offset_of(TIME_KEY);
+            load_arg(ctx, off, *span)
+        }
         Expr::Str(s) => Err(CodegenError::Unsupported {
             what: "a string literal".into(),
             span: s.span,

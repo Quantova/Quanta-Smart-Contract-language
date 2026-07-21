@@ -87,7 +87,7 @@ fn walk(expr: &Expr, f: &mut impl FnMut(&Expr)) {
             }
         }
         Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => walk(expr, f),
-        Expr::Int(_) | Expr::Date { .. } | Expr::Str(_) | Expr::Ident(_) | Expr::Caller { .. } => {}
+        Expr::Int(_) | Expr::Date { .. } | Expr::Str(_) | Expr::Ident(_) | Expr::Caller { .. } | Expr::Now { .. } => {}
     }
 }
 

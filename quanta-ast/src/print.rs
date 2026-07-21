@@ -244,6 +244,7 @@ fn expr_str(e: &Expr, min_prec: u8) -> String {
         Expr::Str(v) => (format!("\"{}\"", v.value), PREC_PRIMARY),
         Expr::Ident(v) => (v.text.clone(), PREC_PRIMARY),
         Expr::Caller { .. } => ("caller".to_string(), PREC_PRIMARY),
+        Expr::Now { .. } => ("now".to_string(), PREC_PRIMARY),
         Expr::Unary { op, expr, .. } => {
             let sym = match op {
                 UnaryOp::Not => "!",
