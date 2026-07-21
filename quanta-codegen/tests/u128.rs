@@ -4,6 +4,9 @@ use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 use std::collections::BTreeMap;
 
+mod common;
+use common::slot_key;
+
 const GAS: u64 = 2_000_000;
 /// Matches the code generator's high word offset for a two word scalar field.
 const HI: u64 = 1 << 56;
@@ -28,9 +31,9 @@ fn put_arg(mem: &mut [u8], e: &EntryArtifact, key: &str, value: u64) {
 fn run(
     cc: &CompiledContract,
     e: &EntryArtifact,
-    storage: BTreeMap<u64, u64>,
+    storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
-) -> Result<BTreeMap<u64, u64>, Fault> {
+) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
     Interpreter::for_entry(&cc.container, e.selector, GAS)?
         .with_storage(storage)
         .with_memory(mem)
@@ -59,8 +62,8 @@ fn a_wide_literal_stores_across_both_words() {
     let mem = vec![0u8; 4096];
     // Twenty quintillion is above one machine word, so it splits into a low and a high word.
     let out = run(&cc, set, BTreeMap::new(), &mem).expect("the set halts");
-    assert_eq!(out.get(&0), Some(&1_553_255_926_290_448_384));
-    assert_eq!(out.get(&HI), Some(&1));
+    assert_eq!(out.get(&slot_key(0)), Some(&1_553_255_926_290_448_384));
+    assert_eq!(out.get(&slot_key(HI)), Some(&1));
 }
 
 #[test]
@@ -72,11 +75,11 @@ fn a_low_word_add_carries_into_the_high_word() {
     let mut storage = BTreeMap::new();
     // The low word is at its maximum, so adding five carries into the high word. The cap is far above
     // in the high word so the limits clause passes.
-    storage.insert(0, u64::MAX);
-    storage.insert(1 | HI, 100);
+    storage.insert(slot_key(0), u64::MAX);
+    storage.insert(slot_key(1 | HI), 100);
     let out = run(&cc, add, storage, &mem).expect("the add halts");
-    assert_eq!(out.get(&0), Some(&4), "the low word wraps to four");
-    assert_eq!(out.get(&HI), Some(&1), "the carry lands in the high word");
+    assert_eq!(out.get(&slot_key(0)), Some(&4), "the low word wraps to four");
+    assert_eq!(out.get(&slot_key(HI)), Some(&1), "the carry lands in the high word");
 }
 
 #[test]
@@ -87,11 +90,11 @@ fn a_low_word_sub_borrows_from_the_high_word() {
     put_arg(&mut mem, take, "amount", 5);
     let mut storage = BTreeMap::new();
     // The value is one in the high word and zero in the low, so subtracting five borrows down.
-    storage.insert(0, 0);
-    storage.insert(HI, 1);
+    storage.insert(slot_key(0), 0);
+    storage.insert(slot_key(HI), 1);
     let out = run(&cc, take, storage, &mem).expect("the subtract halts");
-    assert_eq!(out.get(&0), Some(&(u64::MAX - 4)), "the low word borrows down");
-    assert_eq!(out.get(&HI).copied().unwrap_or(0), 0, "the high word is spent");
+    assert_eq!(out.get(&slot_key(0)), Some(&(u64::MAX - 4)), "the low word borrows down");
+    assert_eq!(out.get(&slot_key(HI)).copied().unwrap_or(0), 0, "the high word is spent");
 }
 
 #[test]
@@ -103,10 +106,10 @@ fn a_checked_overflow_reverts() {
     let mut storage = BTreeMap::new();
     // The whole two word value is at its maximum, so the wide sum in the limits clause overflows and
     // reverts rather than wrapping.
-    storage.insert(0, u64::MAX);
-    storage.insert(HI, u64::MAX);
-    storage.insert(1, u64::MAX);
-    storage.insert(1 | HI, u64::MAX);
+    storage.insert(slot_key(0), u64::MAX);
+    storage.insert(slot_key(HI), u64::MAX);
+    storage.insert(slot_key(1), u64::MAX);
+    storage.insert(slot_key(1 | HI), u64::MAX);
     assert!(
         run(&cc, add, storage, &mem).is_err(),
         "a wide overflow reverts rather than wrapping"
@@ -126,11 +129,11 @@ fn a_wrapping_multiply_stays_in_the_low_word() {
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, e, "factor", 6);
     let mut storage = BTreeMap::new();
-    storage.insert(0, 7);
+    storage.insert(slot_key(0), 7);
     let out = run(&cc, e, storage, &mem).expect("the multiply halts");
-    assert_eq!(out.get(&0), Some(&42), "seven times six is forty two");
+    assert_eq!(out.get(&slot_key(0)), Some(&42), "seven times six is forty two");
     assert_eq!(
-        out.get(&HI).copied().unwrap_or(0),
+        out.get(&slot_key(HI)).copied().unwrap_or(0),
         0,
         "no carry into the high word"
     );
@@ -144,14 +147,14 @@ fn a_wrapping_multiply_carries_into_the_high_word() {
     put_arg(&mut mem, e, "factor", 4);
     let mut storage = BTreeMap::new();
     // Two to the sixty third times four is two to the sixty fifth, which is two in the high word.
-    storage.insert(0, 1u64 << 63);
+    storage.insert(slot_key(0), 1u64 << 63);
     let out = run(&cc, e, storage, &mem).expect("the multiply halts");
     assert_eq!(
-        out.get(&0).copied().unwrap_or(0),
+        out.get(&slot_key(0)).copied().unwrap_or(0),
         0,
         "the low word product is zero"
     );
-    assert_eq!(out.get(&HI), Some(&2), "the product lands two in the high word");
+    assert_eq!(out.get(&slot_key(HI)), Some(&2), "the product lands two in the high word");
 }
 
 #[test]
@@ -161,11 +164,11 @@ fn a_checked_multiply_without_overflow_passes() {
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, e, "factor", 5);
     let mut storage = BTreeMap::new();
-    storage.insert(0, 3);
+    storage.insert(slot_key(0), 3);
     let out = run(&cc, e, storage, &mem).expect("the checked multiply halts");
-    assert_eq!(out.get(&0), Some(&15), "three times five is fifteen");
+    assert_eq!(out.get(&slot_key(0)), Some(&15), "three times five is fifteen");
     assert_eq!(
-        out.get(&HI).copied().unwrap_or(0),
+        out.get(&slot_key(HI)).copied().unwrap_or(0),
         0,
         "no high word"
     );
@@ -180,7 +183,7 @@ fn a_checked_multiply_overflow_reverts() {
     let mut storage = BTreeMap::new();
     // Two in the high word is two to the sixty fifth; times two to the sixty third is two to the one
     // hundred twenty eighth, which is above the wide range and reverts rather than wrapping.
-    storage.insert(HI, 2);
+    storage.insert(slot_key(HI), 2);
     assert!(
         run(&cc, e, storage, &mem).is_err(),
         "a product at or above two to the one hundred twenty eighth reverts"
@@ -197,8 +200,8 @@ fn a_two_word_limit_orders_the_full_value() {
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, add, "amount", 10);
     let mut storage = BTreeMap::new();
-    storage.insert(0, 100);
-    storage.insert(1 | HI, 1);
+    storage.insert(slot_key(0), 100);
+    storage.insert(slot_key(1 | HI), 1);
     assert!(
         run(&cc, add, storage, &mem).is_ok(),
         "a total below the wide cap passes"
@@ -209,8 +212,8 @@ fn a_two_word_limit_orders_the_full_value() {
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, add, "amount", 10);
     let mut storage = BTreeMap::new();
-    storage.insert(HI, 1);
-    storage.insert(1, u64::MAX);
+    storage.insert(slot_key(HI), 1);
+    storage.insert(slot_key(1), u64::MAX);
     assert!(
         run(&cc, add, storage, &mem).is_err(),
         "a total above the cap in the high word reverts"

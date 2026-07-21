@@ -6,6 +6,9 @@ use qtv_crypto::{ml_dsa, slh_dsa};
 use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
 
+mod common;
+use common::slot_key;
+
 const BOARD: &str = "contract Board {\n\
   state { board: GuardianSet<3>; counter: u64; }\n\
   entry act(approvals: Quorum<2 of 3, board>) writes(counter) {\n\
@@ -65,12 +68,12 @@ fn scratch(cc: &CompiledContract, members: &[(u64, Vec<u8>)]) -> Vec<u8> {
 
 fn run(cc: &CompiledContract, mem: &[u8]) -> Result<u64, Fault> {
     let mut storage = BTreeMap::new();
-    storage.insert(1u64, 10u64); // the counter slot
+    storage.insert(slot_key(1), 10u64); // the counter slot
     Interpreter::new(&cc.container.code, &cc.container.consts, 3_000_000)
         .with_storage(storage)
         .with_memory(mem)
         .run()
-        .map(|out| *out.storage.get(&1).expect("counter slot"))
+        .map(|out| *out.storage.get(&slot_key(1)).expect("counter slot"))
 }
 
 #[test]

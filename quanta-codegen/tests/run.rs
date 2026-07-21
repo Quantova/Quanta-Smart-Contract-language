@@ -1,6 +1,9 @@
 //! The milestone. Compile the simplest contract, load its container into the interpreter, run the
 
 use std::collections::BTreeMap;
+
+mod common;
+use common::slot_key;
 use std::path::PathBuf;
 
 use qtv_vm::interp::{Fault, Interpreter};
@@ -40,7 +43,7 @@ fn meter_advance_runs_metered_and_writes_state() {
 
     // The reading state field is slot zero. Seed it to five and advance it by seven.
     let mut storage = BTreeMap::new();
-    storage.insert(0u64, 5u64);
+    storage.insert(slot_key(0), 5u64);
     let mem = memory_with(&cc, 0, &[("step", 7)]);
 
     let out = Interpreter::new(&cc.container.code, &cc.container.consts, 100_000)
@@ -49,10 +52,12 @@ fn meter_advance_runs_metered_and_writes_state() {
         .run()
         .expect("clean halt");
 
-    assert_eq!(out.storage.get(&0), Some(&12), "reading must become twelve");
+    assert_eq!(out.storage.get(&slot_key(0)), Some(&12), "reading must become twelve");
     // The advance guards the step, adds it into the reading, and emits the Advanced event, which
     // marshals the operand into the payload region and records the event through the EMIT opcode.
-    assert_eq!(out.gas_used, 924, "metered gas cost of the advance entry");
+    // The advance reads and writes the reading field, each now materializing a thirty two byte slot
+    // key before the storage opcode, on top of the guard, the add, and the emit.
+    assert_eq!(out.gas_used, 939, "metered gas cost of the advance entry");
 }
 
 #[test]
@@ -61,7 +66,7 @@ fn a_failing_guard_reverts_and_keeps_state() {
 
     // A step of zero fails the guard, so the entry must fault and roll back.
     let mut persistent = BTreeMap::new();
-    persistent.insert(0u64, 5u64);
+    persistent.insert(slot_key(0), 5u64);
     let mem = memory_with(&cc, 0, &[("step", 0)]);
 
     let result = Interpreter::new(&cc.container.code, &cc.container.consts, 100_000)
@@ -71,7 +76,7 @@ fn a_failing_guard_reverts_and_keeps_state() {
 
     assert_eq!(result, Err(Fault::DivByZero), "the guard trap must fault");
     assert_eq!(
-        persistent.get(&0),
+        persistent.get(&slot_key(0)),
         Some(&5),
         "state is unchanged after a revert"
     );

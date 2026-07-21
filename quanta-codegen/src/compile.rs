@@ -113,6 +113,32 @@ fn compile_entries(
         });
     }
 
+    // The genesis constructor, if the contract declares one. It lowers as a reserved entry the chain
+    // runs at deploy with the deploying account as the caller, so a genesis `owner = deployer` stores
+    // the whole deployer address into the owner field. It takes no user arguments and initializes
+    // state, so its invariant epilogue is skipped and its interface is not surfaced as a callable
+    // entry.
+    if let Some(genesis) = contract.items.iter().find_map(|item| match item {
+        Item::Genesis(g) => Some(g),
+        _ => None,
+    }) {
+        let synthetic = EntryDecl {
+            name: quanta_ast::Ident {
+                text: "@genesis".to_string(),
+                span: genesis.span,
+            },
+            params: Vec::new(),
+            clauses: Vec::new(),
+            body: genesis.body.clone(),
+            span: genesis.span,
+        };
+        let start = b.label();
+        b.mark(start);
+        lower_entry(&layout, &synthetic, &[], &events_map, &mut b, trap)?;
+        let selector = qtv_vm::container::selector(qtv_vm::container::GENESIS_SIGNATURE);
+        placed.push((selector, qtv_vm::container::StateAccess::default(), start));
+    }
+
     // Shared revert trap. A guard or invariant that fails jumps here and the divide by zero faults,
     // which rolls back every state change of the call.
     b.mark(trap);

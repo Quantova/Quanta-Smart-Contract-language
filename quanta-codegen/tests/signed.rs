@@ -3,9 +3,11 @@
 use std::collections::BTreeMap;
 
 use qtv_crypto::ml_dsa;
-use qtv_crypto::sha3::sha3_256;
 use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
+
+mod common;
+use common::{nonce_key, put_addr_slots, signer_address, slot_key};
 
 const COUNTER: &str = "contract Counter {\n\
   state { owner: Q_Address; count: u64; }\n\
@@ -45,20 +47,6 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
     mem[off..off + 8].copy_from_slice(&value.to_be_bytes());
 }
 
-// The signer address the ADDR opcode and the chain both derive: sha3_256(scheme_byte || public_key).
-fn signer_address(scheme: u8, pk: &[u8]) -> [u8; 32] {
-    let mut input = vec![scheme];
-    input.extend_from_slice(pk);
-    sha3_256(&input)
-}
-
-// The per signer nonce slot: the leading eight bytes of sha3_256(NONCE_TAG || signer).
-fn nonce_slot(signer: &[u8; 32]) -> u64 {
-    let mut input = b"QTVNONCE".to_vec();
-    input.extend_from_slice(signer);
-    u64::from_be_bytes(sha3_256(&input)[..8].try_into().unwrap())
-}
-
 // The canonical order message the compiler rebuilds and verifies over: the domain tag, the contract
 // self address, the entry selector word, the signer address, the per signer nonce, then the fields.
 fn canonical_message(
@@ -78,13 +66,6 @@ fn canonical_message(
         msg.extend_from_slice(&f.to_be_bytes());
     }
     msg
-}
-
-fn put_addr_slots(storage: &mut BTreeMap<u64, u64>, base: u64, addr: &[u8; 32]) {
-    for i in 0..4usize {
-        let w = u64::from_be_bytes(addr[i * 8..i * 8 + 8].try_into().unwrap());
-        storage.insert(base + i as u64, w);
-    }
 }
 
 // Build the scratch memory for a bump call, signing the canonical message over `signed_step` and the
@@ -116,14 +97,14 @@ fn bump_memory(
     mem
 }
 
-fn owned_storage(owner: &[u8; 32], count: u64) -> BTreeMap<u64, u64> {
+fn owned_storage(owner: &[u8; 32], count: u64) -> BTreeMap<[u8; 32], u64> {
     let mut storage = BTreeMap::new();
     put_addr_slots(&mut storage, OWNER_SLOT, owner);
-    storage.insert(COUNT_SLOT, count);
+    storage.insert(slot_key(COUNT_SLOT), count);
     storage
 }
 
-fn run(cc: &CompiledContract, storage: BTreeMap<u64, u64>, mem: &[u8]) -> Result<BTreeMap<u64, u64>, Fault> {
+fn run(cc: &CompiledContract, storage: BTreeMap<[u8; 32], u64>, mem: &[u8]) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
     Interpreter::new(&cc.container.code, &cc.container.consts, 400_000)
         .with_storage(storage)
         .with_memory(mem)
@@ -149,8 +130,8 @@ fn the_owner_signature_admits_the_body_and_bumps_the_count() {
 
     let mem = bump_memory(&cc, &pk, &sk, 4, 4, 0);
     let out = run(&cc, owned_storage(&owner, 10), &mem).expect("the owner's signature is accepted");
-    assert_eq!(out.get(&COUNT_SLOT), Some(&14), "count advances by the step");
-    assert_eq!(out.get(&nonce_slot(&owner)), Some(&1), "the nonce is consumed");
+    assert_eq!(out.get(&slot_key(COUNT_SLOT)), Some(&14), "count advances by the step");
+    assert_eq!(out.get(&nonce_key(&owner)), Some(&1), "the nonce is consumed");
 }
 
 #[test]
@@ -169,7 +150,7 @@ fn a_strangers_own_valid_signature_is_refused() {
         Err(Fault::DivByZero),
         "a valid signature by a non owner is refused"
     );
-    assert_eq!(storage.get(&COUNT_SLOT), Some(&10), "state is unchanged");
+    assert_eq!(storage.get(&slot_key(COUNT_SLOT)), Some(&10), "state is unchanged");
 }
 
 #[test]
@@ -215,7 +196,7 @@ fn a_replayed_message_is_refused_after_the_nonce_advances() {
     // First call, signed against nonce zero, is accepted and advances the nonce.
     let mem = bump_memory(&cc, &pk, &sk, 4, 4, 0);
     let after_first = run(&cc, owned_storage(&owner, 10), &mem).expect("first call accepted");
-    assert_eq!(after_first.get(&COUNT_SLOT), Some(&14));
+    assert_eq!(after_first.get(&slot_key(COUNT_SLOT)), Some(&14));
 
     // Replaying the exact same memory now reverts, because the entry rebuilds the message with the
     // advanced nonce and the captured signature was over the old one.
@@ -230,7 +211,7 @@ fn a_replayed_message_is_refused_after_the_nonce_advances() {
     let after_second =
         run(&cc, after_first, &mem2).expect("second call with the new nonce accepted");
     assert_eq!(
-        after_second.get(&COUNT_SLOT),
+        after_second.get(&slot_key(COUNT_SLOT)),
         Some(&18),
         "the owner acts again with a fresh nonce"
     );
@@ -252,5 +233,5 @@ fn a_forged_signature_reverts() {
         Err(Fault::DivByZero),
         "a forged signature must revert"
     );
-    assert_eq!(storage.get(&COUNT_SLOT), Some(&10), "state is unchanged");
+    assert_eq!(storage.get(&slot_key(COUNT_SLOT)), Some(&10), "state is unchanged");
 }

@@ -4,6 +4,9 @@ use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 use std::collections::BTreeMap;
 
+mod common;
+use common::slot_key;
+
 const GAS: u64 = 2_000_000;
 
 fn compile(src: &str) -> CompiledContract {
@@ -26,9 +29,9 @@ fn put_arg(mem: &mut [u8], e: &EntryArtifact, key: &str, value: u64) {
 fn run(
     cc: &CompiledContract,
     e: &EntryArtifact,
-    storage: BTreeMap<u64, u64>,
+    storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
-) -> Result<BTreeMap<u64, u64>, Fault> {
+) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
     Interpreter::for_entry(&cc.container, e.selector, GAS)?
         .with_storage(storage)
         .with_memory(mem)
@@ -46,7 +49,7 @@ fn an_after_guard_reverts_before_its_window_and_passes_after() {
     let cc = compile(TIMED);
     let act = entry(&cc, "act");
     let mut storage = BTreeMap::new();
-    storage.insert(0, 100); // opened at second 100, so the window opens at 3700.
+    storage.insert(slot_key(0), 100); // opened at second 100, so the window opens at 3700.
 
     // One second early: the guard reverts.
     let mut mem = vec![0u8; 4096];
@@ -60,5 +63,5 @@ fn an_after_guard_reverts_before_its_window_and_passes_after() {
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, act, "@time", 3700);
     let out = run(&cc, act, storage, &mem).expect("the entry halts at the window");
-    assert_eq!(out.get(&1), Some(&1), "the body ran once the window opened");
+    assert_eq!(out.get(&slot_key(1)), Some(&1), "the body ran once the window opened");
 }

@@ -2,6 +2,9 @@
 
 use std::collections::BTreeMap;
 
+mod common;
+use common::slot_key;
+
 use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::compile_contract;
 
@@ -37,13 +40,13 @@ fn run(src: &str, total: u64, amount: u64) -> Result<u64, Fault> {
     mem[at..at + 8].copy_from_slice(&amount.to_be_bytes());
 
     let mut storage = BTreeMap::new();
-    storage.insert(0u64, total);
+    storage.insert(slot_key(0), total);
 
     Interpreter::new(&cc.container.code, &cc.container.consts, 100_000)
         .with_storage(storage)
         .with_memory(&mem)
         .run()
-        .map(|out| *out.storage.get(&0).expect("total slot"))
+        .map(|out| *out.storage.get(&slot_key(0)).expect("total slot"))
 }
 
 #[test]

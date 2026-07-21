@@ -2,11 +2,13 @@
 
 use std::collections::BTreeMap;
 
-use qtv_crypto::sha3::sha3_256;
 use qtv_crypto::{ml_dsa, slh_dsa};
 use qtv_vm::interp::{Fault, Interpreter};
 use qtv_vm::isa::{decode, OpCode};
 use quanta_codegen::{compile_contract, CompiledContract};
+
+mod common;
+use common::{put_addr_slots, signer_address, slot_key};
 
 const COUNTER: &str = "contract Counter {\n\
   state { owner: Q_Address; count: u64; }\n\
@@ -43,12 +45,6 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
     mem[off..off + 8].copy_from_slice(&value.to_be_bytes());
 }
 
-fn signer_address(scheme: u8, pk: &[u8]) -> [u8; 32] {
-    let mut input = vec![scheme];
-    input.extend_from_slice(pk);
-    sha3_256(&input)
-}
-
 fn canonical_message(selector: [u8; 4], signer: &[u8; 32], nonce: u64, step: u64) -> Vec<u8> {
     let mut msg = Vec::new();
     msg.extend_from_slice(b"QTVSGN01");
@@ -58,13 +54,6 @@ fn canonical_message(selector: [u8; 4], signer: &[u8; 32], nonce: u64, step: u64
     msg.extend_from_slice(&nonce.to_be_bytes());
     msg.extend_from_slice(&step.to_be_bytes());
     msg
-}
-
-fn put_addr_slots(storage: &mut BTreeMap<u64, u64>, base: u64, addr: &[u8; 32]) {
-    for i in 0..4usize {
-        let w = u64::from_be_bytes(addr[i * 8..i * 8 + 8].try_into().unwrap());
-        storage.insert(base + i as u64, w);
-    }
 }
 
 fn opcodes(code: &[u8]) -> Vec<OpCode> {
@@ -118,12 +107,12 @@ fn run(cc: &CompiledContract, owner: Option<[u8; 32]>, mem: &[u8]) -> Result<u64
     if let Some(owner) = owner {
         put_addr_slots(&mut storage, OWNER_SLOT, &owner);
     }
-    storage.insert(COUNT_SLOT, 10);
+    storage.insert(slot_key(COUNT_SLOT), 10);
     Interpreter::new(&cc.container.code, &cc.container.consts, 500_000)
         .with_storage(storage)
         .with_memory(mem)
         .run()
-        .map(|out| *out.storage.get(&COUNT_SLOT).expect("count slot"))
+        .map(|out| *out.storage.get(&slot_key(COUNT_SLOT)).expect("count slot"))
 }
 
 #[test]

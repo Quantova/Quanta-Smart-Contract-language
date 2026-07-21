@@ -5,6 +5,9 @@ use qtv_vm::interp::{Effect, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 use std::collections::BTreeMap;
 
+mod common;
+use common::slot_key;
+
 const GAS: u64 = 2_000_000;
 /// Matches the code generator's high word offset for a two word scalar field.
 const HI: u64 = 1 << 56;
@@ -29,7 +32,7 @@ fn put_arg(mem: &mut [u8], e: &EntryArtifact, key: &str, value: u64) {
 fn effects(
     cc: &CompiledContract,
     e: &EntryArtifact,
-    storage: BTreeMap<u64, u64>,
+    storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
 ) -> Vec<Effect> {
     Interpreter::for_entry(&cc.container, e.selector, GAS)

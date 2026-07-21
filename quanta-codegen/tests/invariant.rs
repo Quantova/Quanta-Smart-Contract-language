@@ -2,6 +2,9 @@
 
 use std::collections::BTreeMap;
 
+mod common;
+use common::slot_key;
+
 use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
 
@@ -35,9 +38,9 @@ fn memory_with(cc: &CompiledContract, values: &[(&str, u64)]) -> Vec<u8> {
     mem
 }
 
-fn run(cc: &CompiledContract, total: u64, amount: u64) -> (Result<(), Fault>, BTreeMap<u64, u64>) {
+fn run(cc: &CompiledContract, total: u64, amount: u64) -> (Result<(), Fault>, BTreeMap<[u8; 32], u64>) {
     let mut storage = BTreeMap::new();
-    storage.insert(0u64, total);
+    storage.insert(slot_key(0), total);
     let mem = memory_with(cc, &[("amount", amount)]);
     let outcome = Interpreter::new(&cc.container.code, &cc.container.consts, 100_000)
         .with_storage(storage.clone())
@@ -54,7 +57,7 @@ fn a_call_within_the_invariant_commits() {
     let cc = compile(CAPPED);
     let (result, storage) = run(&cc, 10, 5);
     assert!(result.is_ok(), "the invariant holds so the call commits");
-    assert_eq!(storage.get(&0), Some(&15), "total is written");
+    assert_eq!(storage.get(&slot_key(0)), Some(&15), "total is written");
 }
 
 #[test]
@@ -68,7 +71,7 @@ fn a_call_that_breaks_the_invariant_reverts() {
         "the broken invariant reverts"
     );
     assert_eq!(
-        storage.get(&0),
+        storage.get(&slot_key(0)),
         Some(&90),
         "state is unchanged after a revert"
     );

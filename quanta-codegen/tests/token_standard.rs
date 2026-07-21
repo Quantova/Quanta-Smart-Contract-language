@@ -9,17 +9,25 @@ use qtv_vm::interp::{Fault, Interpreter};
 use quanta_ast::Contract;
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 
+mod common;
+use common::{addr, map_key, slot_key};
+
 // State slots follow declaration order: guardians, total_supply, max_supply, paused, then the keyed
 // balances and frozen fields.
 const SLOT_SUPPLY: u64 = 1;
 const SLOT_MAX: u64 = 2;
-// Keyed bases, matching the code generator's layout of the first two keyed fields.
+// The keyed base of the balances map, the first keyed field, matching the code generator's layout.
 const BAL_BASE: u64 = 1 << 40;
-// Two demonstration accounts, reduced to their representative address words.
-const ACCOUNT_A: u64 = 1;
-const ACCOUNT_B: u64 = 2;
 const CEILING: u64 = 1_000_000_000;
 const GAS: u64 = 6_000_000;
+
+// Two demonstration accounts as whole thirty two byte addresses.
+fn account_a() -> [u8; 32] {
+    addr(0xA1)
+}
+fn account_b() -> [u8; 32] {
+    addr(0xB2)
+}
 
 fn token_standard() -> Contract {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -56,6 +64,13 @@ fn put_arg(mem: &mut [u8], entry: &EntryArtifact, key: &str, value: u64) {
     }
 }
 
+fn put_addr(mem: &mut [u8], entry: &EntryArtifact, key: &str, address: &[u8; 32]) {
+    if let Some(slot) = entry.args.iter().find(|s| s.key == key) {
+        let at = slot.offset as usize;
+        mem[at..at + 32].copy_from_slice(address);
+    }
+}
+
 // Place each quorum member's signature region and its scheme, pointer, and length words.
 fn put_quorum(mem: &mut [u8], entry: &EntryArtifact, name: &str, members: &[(u64, Vec<u8>)]) {
     let mut cursor = 20000usize;
@@ -72,9 +87,9 @@ fn put_quorum(mem: &mut [u8], entry: &EntryArtifact, name: &str, members: &[(u64
 fn run(
     cc: &CompiledContract,
     entry: [u8; SELECTOR_BYTES],
-    storage: BTreeMap<u64, u64>,
+    storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
-) -> Result<BTreeMap<u64, u64>, Fault> {
+) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
     Interpreter::for_entry(&cc.container, entry, GAS)?
         .with_storage(storage)
         .with_memory(mem)
@@ -97,20 +112,20 @@ fn a_quorum_gated_mint_creates_supply_and_credits_the_recipient() {
     let members = vec![(1, ml_region(1)), (1, ml_region(2)), (1, ml_region(3))];
     let mut mem = vec![0u8; 65536];
     put_arg(&mut mem, mint, "order.amount", 500);
-    put_arg(&mut mem, mint, "order.to", ACCOUNT_A);
+    put_addr(&mut mem, mint, "order.to", &account_a());
     put_quorum(&mut mem, mint, "approvals", &members);
 
     let mut storage = BTreeMap::new();
-    storage.insert(SLOT_MAX, CEILING);
+    storage.insert(slot_key(SLOT_MAX), CEILING);
 
     let out = run(&cc, mint.selector, storage, &mem).expect("the mint halts under a met quorum");
     assert_eq!(
-        out.get(&SLOT_SUPPLY),
+        out.get(&slot_key(SLOT_SUPPLY)),
         Some(&500),
         "supply grows under the quorum"
     );
     assert_eq!(
-        out.get(&(BAL_BASE + ACCOUNT_A)),
+        out.get(&map_key(BAL_BASE, &account_a())),
         Some(&500),
         "the recipient balance is credited"
     );
@@ -123,22 +138,22 @@ fn a_transfer_moves_ledger_balance_between_accounts() {
 
     let mut mem = vec![0u8; 65536];
     put_arg(&mut mem, transfer, "funds", 200);
-    put_arg(&mut mem, transfer, "to", ACCOUNT_B);
-    put_arg(&mut mem, transfer, "@caller", ACCOUNT_A);
+    put_addr(&mut mem, transfer, "to", &account_b());
+    put_addr(&mut mem, transfer, "@caller", &account_a());
 
     let mut storage = BTreeMap::new();
-    storage.insert(BAL_BASE + ACCOUNT_A, 500);
-    storage.insert(SLOT_SUPPLY, 500);
-    storage.insert(SLOT_MAX, CEILING);
+    storage.insert(map_key(BAL_BASE, &account_a()), 500);
+    storage.insert(slot_key(SLOT_SUPPLY), 500);
+    storage.insert(slot_key(SLOT_MAX), CEILING);
 
     let out = run(&cc, transfer.selector, storage, &mem).expect("the transfer halts");
     assert_eq!(
-        out.get(&(BAL_BASE + ACCOUNT_A)),
+        out.get(&map_key(BAL_BASE, &account_a())),
         Some(&300),
         "the sender balance falls"
     );
     assert_eq!(
-        out.get(&(BAL_BASE + ACCOUNT_B)),
+        out.get(&map_key(BAL_BASE, &account_b())),
         Some(&200),
         "the recipient balance rises by the same amount"
     );
@@ -158,11 +173,11 @@ fn a_mint_with_an_unmet_quorum_is_refused() {
 
     let mut mem = vec![0u8; 65536];
     put_arg(&mut mem, mint, "order.amount", 500);
-    put_arg(&mut mem, mint, "order.to", ACCOUNT_A);
+    put_addr(&mut mem, mint, "order.to", &account_a());
     put_quorum(&mut mem, mint, "approvals", &members);
 
     let mut storage = BTreeMap::new();
-    storage.insert(SLOT_MAX, CEILING);
+    storage.insert(slot_key(SLOT_MAX), CEILING);
 
     assert_eq!(
         run(&cc, mint.selector, storage, &mem),

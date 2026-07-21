@@ -25,6 +25,8 @@ pub struct Layout {
     map_bases: HashMap<String, u64>,
     wide: HashSet<String>,
     addr: HashSet<String>,
+    /// Keyed fields whose key type is `Q_Address`, so a key expression handed to one is read as a full
+    map_key_addr: HashSet<String>,
 }
 
 impl Layout {
@@ -34,6 +36,7 @@ impl Layout {
         let mut map_bases = HashMap::new();
         let mut wide = HashSet::new();
         let mut addr = HashSet::new();
+        let mut map_key_addr = HashSet::new();
         let mut next = 0u64;
         let mut keyed = 0u64;
         for item in &contract.items {
@@ -48,6 +51,13 @@ impl Layout {
                         map_bases
                             .insert(field.name.text.clone(), KEYED_BASE + keyed * KEYED_STRIDE);
                         keyed += 1;
+                        // A keyed field whose first type argument is `Q_Address` keys on a full address.
+                        if matches!(
+                            field.ty.args.first(),
+                            Some(quanta_ast::GenericArg::Type(t)) if t.name.text == ADDR_TYPE
+                        ) {
+                            map_key_addr.insert(field.name.text.clone());
+                        }
                         next += 1;
                     } else if ty == WIDE_TYPE {
                         wide.insert(field.name.text.clone());
@@ -68,7 +78,13 @@ impl Layout {
             map_bases,
             wide,
             addr,
+            map_key_addr,
         }
+    }
+
+    /// Whether a keyed field keys on a full `Q_Address`, so a key expression handed to it is a whole
+    pub fn map_key_is_addr(&self, name: &str) -> bool {
+        self.map_key_addr.contains(name)
     }
 
     /// The slot of a state field, if the name is one.
