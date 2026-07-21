@@ -51,7 +51,7 @@ impl Parser {
     }
 
     fn comparison(&mut self) -> Result<Expr, ParseError> {
-        let mut left = self.additive()?;
+        let mut left = self.shift()?;
         loop {
             let op = match self.peek() {
                 TokenKind::Lt => BinOp::Lt,
@@ -61,8 +61,18 @@ impl Parser {
                 _ => break,
             };
             self.bump();
-            let right = self.additive()?;
+            let right = self.shift()?;
             left = fold(op, left, right);
+        }
+        Ok(left)
+    }
+
+    fn shift(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.additive()?;
+        while self.check(&TokenKind::Shr) {
+            self.bump();
+            let right = self.additive()?;
+            left = fold(BinOp::Shr, left, right);
         }
         Ok(left)
     }
@@ -243,6 +253,24 @@ mod tests {
                 right,
                 ..
             } => assert!(matches!(*right, Expr::Binary { op: BinOp::Mul, .. })),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shift_binds_looser_than_addition_and_tighter_than_comparison() {
+        // a + b >> c parses as (a + b) >> c.
+        match parse_expr("a + b >> c").unwrap() {
+            Expr::Binary { op: BinOp::Shr, left, .. } => {
+                assert!(matches!(*left, Expr::Binary { op: BinOp::Add, .. }));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // a >> b < c parses as (a >> b) < c.
+        match parse_expr("a >> b < c").unwrap() {
+            Expr::Binary { op: BinOp::Lt, left, .. } => {
+                assert!(matches!(*left, Expr::Binary { op: BinOp::Shr, .. }));
+            }
             other => panic!("unexpected {other:?}"),
         }
     }

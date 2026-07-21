@@ -278,5 +278,6 @@ fn bin_sym(op: BinOp) -> &'static str {
         BinOp::Mul => "*",
         BinOp::Div => "/",
         BinOp::Rem => "%",
+        BinOp::Shr => ">>",
     }
 }

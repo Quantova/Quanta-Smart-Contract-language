@@ -209,8 +209,9 @@ fn bin_prec(op: BinOp) -> u8 {
         BinOp::And => 2,
         BinOp::Eq | BinOp::Ne => 3,
         BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => 4,
-        BinOp::Add | BinOp::Sub => 5,
-        BinOp::Mul | BinOp::Div | BinOp::Rem => 6,
+        BinOp::Shr => 5,
+        BinOp::Add | BinOp::Sub => 6,
+        BinOp::Mul | BinOp::Div | BinOp::Rem => 7,
     }
 }
 
@@ -229,12 +230,13 @@ fn bin_sym(op: BinOp) -> &'static str {
         BinOp::Mul => "*",
         BinOp::Div => "/",
         BinOp::Rem => "%",
+        BinOp::Shr => ">>",
     }
 }
 
-const PREC_UNARY: u8 = 7;
-const PREC_POSTFIX: u8 = 8;
-const PREC_PRIMARY: u8 = 9;
+const PREC_UNARY: u8 = 8;
+const PREC_POSTFIX: u8 = 9;
+const PREC_PRIMARY: u8 = 10;
 
 /// Renders an expression, wrapping in parentheses only where a lower precedence
 fn expr_str(e: &Expr, min_prec: u8) -> String {

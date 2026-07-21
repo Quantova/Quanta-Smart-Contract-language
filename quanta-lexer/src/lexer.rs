@@ -169,6 +169,7 @@ impl<'a> Lexer<'a> {
             (b'-', Some(b'=')) => (TokenKind::MinusEq, 2),
             (b'<', Some(b'=')) => (TokenKind::Le, 2),
             (b'>', Some(b'=')) => (TokenKind::Ge, 2),
+            (b'>', Some(b'>')) => (TokenKind::Shr, 2),
             (b'=', Some(b'=')) => (TokenKind::EqEq, 2),
             (b'!', Some(b'=')) => (TokenKind::Ne, 2),
             (b'&', Some(b'&')) => (TokenKind::AndAnd, 2),
@@ -285,6 +286,23 @@ mod tests {
                 TokenKind::MinusEq,
                 TokenKind::AndAnd,
                 TokenKind::OrOr,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn shift_is_distinct_from_greater_than_and_greater_equal() {
+        assert_eq!(
+            kinds("a >> 2 > b >= c"),
+            vec![
+                TokenKind::Ident("a".to_string()),
+                TokenKind::Shr,
+                TokenKind::Int("2".to_string()),
+                TokenKind::Gt,
+                TokenKind::Ident("b".to_string()),
+                TokenKind::Ge,
+                TokenKind::Ident("c".to_string()),
                 TokenKind::Eof,
             ]
         );

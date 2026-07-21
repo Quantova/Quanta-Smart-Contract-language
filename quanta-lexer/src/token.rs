@@ -88,6 +88,7 @@ pub enum TokenKind {
     Bang,
     AndAnd,
     OrOr,
+    Shr,
 
     Eof,
 }
@@ -160,6 +161,7 @@ impl TokenKind {
             TokenKind::Bang => "!",
             TokenKind::AndAnd => "&&",
             TokenKind::OrOr => "||",
+            TokenKind::Shr => ">>",
             _ => "",
         }
     }

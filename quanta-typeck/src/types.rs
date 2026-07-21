@@ -153,7 +153,7 @@ impl<'a> Env<'a> {
                 expect_numeric_or(r, Ty::Bool, right, "a logical operand must be boolean")?;
                 Ok(Ty::Bool)
             }
-            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem => {
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem | BinOp::Shr => {
                 expect_numeric_or(l, Ty::Int, left, "arithmetic needs a number")?;
                 expect_numeric_or(r, Ty::Int, right, "arithmetic needs a number")?;
                 Ok(Ty::Int)

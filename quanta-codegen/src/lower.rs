@@ -488,6 +488,7 @@ fn lower_binary(
         BinOp::Mul => ctx.b.op(Instr::Mul { d: l, a: l, b: r }),
         BinOp::Div => ctx.b.op(Instr::Div { d: l, a: l, b: r }),
         BinOp::Rem => ctx.b.op(Instr::Rem { d: l, a: l, b: r }),
+        BinOp::Shr => ctx.b.op(Instr::Shr { d: l, a: l, b: r }),
         BinOp::And => ctx.b.op(Instr::And { d: l, a: l, b: r }),
         BinOp::Or => ctx.b.op(Instr::Or { d: l, a: l, b: r }),
         BinOp::Eq => ctx.b.op(Instr::Eq { d: l, a: l, b: r }),
@@ -2683,5 +2684,20 @@ mod tests {
     fn wrapping_add_takes_the_modular_result() {
         let big = u64::MAX;
         assert_eq!(eval("wrapping(a + b)", &[], &[("a", big), ("b", 1)]), 0);
+    }
+
+    #[test]
+    fn shift_right_computes_in_vm() {
+        assert_eq!(eval("a >> b", &[], &[("a", 256), ("b", 2)]), 64);
+        assert_eq!(eval("a >> b", &[], &[("a", 5), ("b", 1)]), 2);
+        assert_eq!(eval("a >> b", &[], &[("a", 1), ("b", 0)]), 1);
+        assert_eq!(eval("a >> b", &[], &[("a", u64::MAX), ("b", 63)]), 1);
+        assert_eq!(eval("a >> b", &[], &[("a", 0xFF00), ("b", 8)]), 0xFF);
+    }
+
+    #[test]
+    fn shift_binds_looser_than_addition_in_vm() {
+        // (x + a) >> b, so 6 + 2 = 8, then 8 >> 1 = 4.
+        assert_eq!(eval("x + a >> b", &[("x", 6)], &[("a", 2), ("b", 1)]), 4);
     }
 }
