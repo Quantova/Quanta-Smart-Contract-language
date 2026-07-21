@@ -96,6 +96,7 @@ impl<'a> Env<'a> {
                 "amount" => Ty::Int,
                 "digest" => Ty::Hash,
                 "first" => Ty::Time,
+                "len" => Ty::Int,
                 _ => Ty::Unknown,
             }),
             Expr::Call { callee, args, .. } => {

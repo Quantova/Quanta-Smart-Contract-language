@@ -39,6 +39,11 @@ const NONCE_DIGEST_SCRATCH: u64 = 41216;
 const SCALAR_KEY_SCRATCH: u64 = 41344;
 const MAP_PREIMAGE_SCRATCH: u64 = 41408;
 const MAP_KEY_SCRATCH: u64 = 41472;
+const NAME_KEY_SCRATCH_BASE: u64 = 41536;
+
+const NAME_TYPE: &str = "Q_Name";
+const NAME_WINDOW: u64 = 32;
+const NAME_LEN_SUFFIX: &str = "#len";
 
 const ADDR_WORDS: u64 = ADDR_BYTES / WORD;
 
@@ -182,6 +187,8 @@ pub struct Ctx<'a> {
     entry_mints: bool,
     is_genesis: bool,
     address_keys: HashSet<String>,
+    name_params: HashSet<String>,
+    name_keys: HashMap<String, u64>,
     trap: Label,
     b: &'a mut Builder,
     regs: &'a mut Regs,
@@ -206,6 +213,8 @@ impl<'a> Ctx<'a> {
             params,
             asset_params,
             address_keys: HashSet::new(),
+            name_params: HashSet::new(),
+            name_keys: HashMap::new(),
             asset_locals: HashMap::new(),
             next_asset_local: ASSET_LOCAL_BASE,
             entry_mints: false,
@@ -321,6 +330,10 @@ fn lower_field(ctx: &mut Ctx, base: &Expr, field: &str, span: Span) -> Result<Re
             if let Some(off) = ctx.asset_locals.get(&id.text).copied() {
                 return load_arg(ctx, off, span);
             }
+        }
+        if field == "len" && ctx.name_params.contains(&id.text) {
+            let off = ctx.args.offset_of(&format!("{}{NAME_LEN_SUFFIX}", id.text));
+            return load_arg(ctx, off, span);
         }
         if ctx.params.contains(&id.text) {
             let key = format!("{}.{}", id.text, field);
@@ -839,6 +852,12 @@ pub fn lower_entry(
         ctx.is_genesis = is_genesis;
         let address_key_list = collect_address_keys(layout, &params, entry);
         ctx.address_keys = address_key_list.iter().cloned().collect();
+        ctx.name_params = entry
+            .params
+            .iter()
+            .filter(|p| p.ty.name.text == NAME_TYPE)
+            .map(|p| p.name.text.clone())
+            .collect();
         ctx.args.offset_of_width(CALLER_KEY, ADDR_BYTES);
         ctx.args.offset_of_width(CONTRACT_KEY, ADDR_BYTES);
         ctx.args.offset_of_width(TIME_KEY, WORD);
@@ -847,6 +866,7 @@ pub fn lower_entry(
                 ctx.args.offset_of_width(key, ADDR_BYTES);
             }
         }
+        lower_name_prologue(&mut ctx, entry, trap)?;
         lower_signed_prologue(&mut ctx, entry, trap)?;
         lower_quorum_prologue(&mut ctx, entry, trap)?;
         lower_after_prologue(&mut ctx, entry, trap)?;
@@ -1364,6 +1384,62 @@ fn lower_after_prologue(
         ctx.b.jnz(time, trap);
         ctx.regs.free(threshold);
         ctx.regs.free(time);
+    }
+    Ok(())
+}
+
+fn lower_name_prologue(
+    ctx: &mut Ctx,
+    entry: &EntryDecl,
+    trap: Label,
+) -> Result<(), CodegenError> {
+    let names: Vec<(String, Span)> = entry
+        .params
+        .iter()
+        .filter(|p| p.ty.name.text == NAME_TYPE)
+        .map(|p| (p.name.text.clone(), p.span))
+        .collect();
+    for (i, (name, span)) in names.iter().enumerate() {
+        let window_off = ctx.args.offset_of_width(name, NAME_WINDOW);
+        let len_off = ctx.args.offset_of(&format!("{name}{NAME_LEN_SUFFIX}"));
+        let scratch = NAME_KEY_SCRATCH_BASE + (i as u64) * ADDR_BYTES;
+
+        let len = load_arg(ctx, len_off, *span)?;
+        let bound = ctx.regs.alloc(*span)?;
+        ctx.b.op(Instr::Ldi {
+            d: bound,
+            imm: NAME_WINDOW,
+        });
+        let over = ctx.regs.alloc(*span)?;
+        ctx.b.op(Instr::GtU {
+            d: over,
+            a: len,
+            b: bound,
+        });
+        ctx.b.jnz(over, trap);
+        ctx.regs.free(over);
+        ctx.regs.free(bound);
+
+        let rptr = ctx.regs.alloc(*span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rptr,
+            imm: window_off,
+        });
+        let rout = ctx.regs.alloc(*span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rout,
+            imm: scratch,
+        });
+        ctx.b.op(Instr::Hash {
+            a: rptr,
+            b: len,
+            c: rout,
+        });
+        ctx.regs.free(rout);
+        ctx.regs.free(rptr);
+        ctx.regs.free(len);
+
+        ctx.name_keys.insert(name.clone(), scratch);
     }
     Ok(())
 }
@@ -2096,6 +2172,15 @@ fn address_keys_expr(expr: &Expr, layout: &Layout, params: &HashSet<String>, out
     }
 }
 
+fn map_key_source(ctx: &mut Ctx, key_expr: &Expr, span: Span) -> Result<u64, CodegenError> {
+    if let Expr::Ident(id) = key_expr {
+        if let Some(off) = ctx.name_keys.get(&id.text).copied() {
+            return Ok(off);
+        }
+    }
+    lower_address(ctx, key_expr, span)
+}
+
 fn map_base_of(ctx: &Ctx, base: &Expr, span: Span) -> Result<u64, CodegenError> {
     if let Expr::Ident(id) = base {
         if let Some(b) = ctx.layout.map_base(&id.text) {
@@ -2234,7 +2319,7 @@ fn lower_map_credit(
     let mbase = map_base_of(ctx, base, span)?;
     let (key_expr, value_expr) = two_args(args, span)?;
     let value = ledger_amount(ctx, value_expr, span)?;
-    let addr_off = lower_address(ctx, key_expr, span)?;
+    let addr_off = map_key_source(ctx, key_expr, span)?;
     compute_map_key(ctx, mbase, addr_off, span)?;
     let cur = ctx.regs.alloc(span)?;
     let key = map_key_ptr(ctx, span)?;
@@ -2268,7 +2353,7 @@ fn lower_map_flag(
 ) -> Result<(), CodegenError> {
     let mbase = map_base_of(ctx, base, span)?;
     let key_expr = one_arg(args, span)?;
-    let addr_off = lower_address(ctx, key_expr, span)?;
+    let addr_off = map_key_source(ctx, key_expr, span)?;
     compute_map_key(ctx, mbase, addr_off, span)?;
     let v = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi { d: v, imm: flag });
@@ -2287,7 +2372,7 @@ fn lower_map_read(
 ) -> Result<Reg, CodegenError> {
     let mbase = map_base_of(ctx, base, span)?;
     let key_expr = one_arg(args, span)?;
-    let addr_off = lower_address(ctx, key_expr, span)?;
+    let addr_off = map_key_source(ctx, key_expr, span)?;
     if map_name_is_value_addr(ctx, base) {
         let acc = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi { d: acc, imm: 0 });
@@ -2328,7 +2413,7 @@ fn map_name_is_value_addr(ctx: &Ctx, base: &Expr) -> bool {
 fn lower_map_set(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Result<(), CodegenError> {
     let mbase = map_base_of(ctx, base, span)?;
     let (key_expr, value_expr) = two_args(args, span)?;
-    let key_off = lower_address(ctx, key_expr, span)?;
+    let key_off = map_key_source(ctx, key_expr, span)?;
     if map_name_is_value_addr(ctx, base) {
         let val_off = lower_address(ctx, value_expr, span)?;
         for i in 0..ADDR_WORDS {
