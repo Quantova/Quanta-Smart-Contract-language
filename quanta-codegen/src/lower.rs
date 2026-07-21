@@ -34,6 +34,12 @@ const SIG_SCHEME_SUFFIX: &str = "#scheme";
 /// Argument key suffix for the pointer to a signed parameter's verify region.
 const SIG_PTR_SUFFIX: &str = "#ptr";
 
+/// Reserved name a genesis block reads deploy arguments through. Genesis only.
+const DEPLOY_PARAMS: &str = "deploy_params";
+
+/// Sentinel word past the deploy parameters. A short or missing parameter region reads a zero here and
+const GENESIS_PARAM_SENTINEL: u64 = u64::from_be_bytes(*b"QGENSNTL");
+
 /// Argument key of the caller context word. It is not a source level parameter, so its key uses the
 const CALLER_KEY: &str = "@caller";
 
@@ -63,6 +69,17 @@ const ADDR_WORDS: u64 = ADDR_BYTES / WORD;
 const SIGNED_MSG_TAG: u64 = u64::from_be_bytes(*b"QTVSGN01");
 /// Domain tag of the per signer nonce slot preimage, separating nonce slots from any other hashed slot.
 const NONCE_TAG: u64 = u64::from_be_bytes(*b"QTVNONCE");
+
+fn deploy_param_name(expr: &Expr) -> Option<&str> {
+    if let Expr::Field { base, name, .. } = expr {
+        if let Expr::Ident(id) = base.as_ref() {
+            if id.text == DEPLOY_PARAMS {
+                return Some(&name.text);
+            }
+        }
+    }
+    None
+}
 
 /// Seconds in each duration unit an `after` clause can name.
 fn unit_seconds(unit: &str) -> Option<u64> {
@@ -113,12 +130,20 @@ impl Default for Regs {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployParamSlot {
+    pub key: String,
+    pub offset: u64,
+    pub width: u64,
+}
+
 /// The scratch memory offset each argument value loads from. An argument is a scalar parameter named
 #[derive(Default)]
 pub struct Args {
     offsets: HashMap<String, u64>,
     order: Vec<String>,
     next: u64,
+    deploy_params: Vec<DeployParamSlot>,
 }
 
 impl Args {
@@ -142,6 +167,28 @@ impl Args {
         self.offset_of_width(key, WORD)
     }
 
+    fn deploy_param_offset(&mut self, name: &str, width: u64) -> u64 {
+        let key = format!("{DEPLOY_PARAMS}.{name}");
+        let existed = self.offsets.contains_key(&key);
+        let off = self.offset_of_width(&key, width);
+        if !existed {
+            self.deploy_params.push(DeployParamSlot {
+                key,
+                offset: off,
+                width,
+            });
+        }
+        off
+    }
+
+    fn end(&self) -> u64 {
+        ARG_BASE + self.next
+    }
+
+    pub fn deploy_params(&self) -> &[DeployParamSlot] {
+        &self.deploy_params
+    }
+
     /// The argument words in assignment order, each a key and its memory offset.
     pub fn layout(&self) -> Vec<(String, u64)> {
         self.order
@@ -163,6 +210,7 @@ pub struct Ctx<'a> {
     next_asset_local: u64,
     /// Whether the entry declares `mints`, which is the only place a `mint(..)` may create supply.
     entry_mints: bool,
+    is_genesis: bool,
     /// The argument keys the entry consumes as a full address, a map key of a `Q_Address` keyed field,
     address_keys: HashSet<String>,
     /// The shared trap a checked overflow jumps to, so a two word arithmetic that carries past the
@@ -194,6 +242,7 @@ impl<'a> Ctx<'a> {
             asset_locals: HashMap::new(),
             next_asset_local: ASSET_LOCAL_BASE,
             entry_mints: false,
+            is_genesis: false,
             trap,
             b,
             regs,
@@ -289,6 +338,14 @@ fn lower_ident(ctx: &mut Ctx, name: &str, span: Span) -> Result<Reg, CodegenErro
 }
 
 fn lower_field(ctx: &mut Ctx, base: &Expr, field: &str, span: Span) -> Result<Reg, CodegenError> {
+    if ctx.is_genesis {
+        if let Expr::Ident(id) = base {
+            if id.text == DEPLOY_PARAMS {
+                let off = ctx.args.deploy_param_offset(field, WORD);
+                return load_arg(ctx, off, span);
+            }
+        }
+    }
     if let Expr::Ident(id) = base {
         // The amount of an asset value is its one canonical word, so `funds.amount` reads the same
         // word as the bare `funds`, and the two spellings never diverge.
@@ -536,6 +593,12 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
                 _ => two_word_mul(ctx, llo, lhi, rlo, rhi, wrapping, *span)?,
             }
             Ok((llo, lhi))
+        }
+        Expr::Field { name, .. } if ctx.is_genesis && deploy_param_name(expr).is_some() => {
+            let off = ctx.args.deploy_param_offset(&name.text, 2 * WORD);
+            let lo = load_arg(ctx, off, name.span)?;
+            let hi = load_arg(ctx, off + WORD, name.span)?;
+            Ok((lo, hi))
         }
         _ => {
             let lo = lower_expr(ctx, expr, wrapping)?;
@@ -792,6 +855,7 @@ fn refuse_sealed(entry: &EntryDecl) -> Result<(), CodegenError> {
 }
 
 /// Lowers the body of one entry into the builder and appends the clean halt. A fresh register stack
+#[allow(clippy::too_many_arguments)]
 pub fn lower_entry(
     layout: &Layout,
     entry: &EntryDecl,
@@ -799,6 +863,7 @@ pub fn lower_entry(
     events: &HashMap<String, u32>,
     b: &mut Builder,
     trap: Label,
+    is_genesis: bool,
 ) -> Result<Args, CodegenError> {
     refuse_sealed(entry)?;
     let params: HashSet<String> = entry.params.iter().map(|p| p.name.text.clone()).collect();
@@ -827,6 +892,7 @@ pub fn lower_entry(
             &mut args,
         );
         ctx.entry_mints = entry_mints;
+        ctx.is_genesis = is_genesis;
         let address_key_list = collect_address_keys(layout, &params, entry);
         ctx.address_keys = address_key_list.iter().cloned().collect();
         // Reserve the trusted context at fixed offsets for every entry, whether or not it reads them,
@@ -851,6 +917,24 @@ pub fn lower_entry(
         lower_after_prologue(&mut ctx, entry, trap)?;
         for stmt in &entry.body {
             lower_stmt(&mut ctx, stmt, trap)?;
+        }
+        // Require the sentinel past the deploy parameters.
+        if ctx.is_genesis && !ctx.args.deploy_params().is_empty() {
+            let sentinel_off = ctx.args.end();
+            let got = load_arg(&mut ctx, sentinel_off, entry.span)?;
+            let want = ctx.regs.alloc(entry.span)?;
+            ctx.b.op(Instr::Ldi {
+                d: want,
+                imm: GENESIS_PARAM_SENTINEL,
+            });
+            ctx.b.op(Instr::Eq {
+                d: got,
+                a: got,
+                b: want,
+            });
+            ctx.b.jz(got, trap);
+            ctx.regs.free(want);
+            ctx.regs.free(got);
         }
         if writes_state {
             for inv in invariants {
@@ -2032,6 +2116,11 @@ fn addr_key_of(expr: &Expr, params: &HashSet<String>) -> Option<String> {
 
 /// The scratch memory offset of a full thirty two byte address value, the caller, a parameter, or a
 fn lower_address(ctx: &mut Ctx, expr: &Expr, span: Span) -> Result<u64, CodegenError> {
+    if ctx.is_genesis {
+        if let Some(name) = deploy_param_name(expr) {
+            return Ok(ctx.args.deploy_param_offset(name, ADDR_BYTES));
+        }
+    }
     match addr_key_of(expr, ctx.params) {
         Some(key) => Ok(ctx.args.offset_of_width(&key, ADDR_BYTES)),
         None => Err(CodegenError::Unsupported {
@@ -2345,6 +2434,38 @@ fn lower_assign(
         what: "an assignment target that is not a state field".into(),
         span,
     })?;
+
+    // A guardian set is set only at genesis, from a deploy parameter.
+    if let Some((base, count)) = ctx.layout.guardian_set(name) {
+        if op != AssignOp::Set {
+            return Err(CodegenError::Unsupported {
+                what: "an add or subtract on a guardian set field".into(),
+                span,
+            });
+        }
+        let pname = match (ctx.is_genesis, deploy_param_name(value)) {
+            (true, Some(pname)) => pname,
+            _ => {
+                return Err(CodegenError::Unsupported {
+                    what: "a guardian set set from anything but a genesis deploy parameter".into(),
+                    span,
+                })
+            }
+        };
+        let words = count * ADDR_WORDS;
+        let src_off = ctx.args.deploy_param_offset(pname, words * WORD);
+        for w in 0..words {
+            let r = ctx.regs.alloc(span)?;
+            ctx.b.op(Instr::Ldi {
+                d: SCRATCH,
+                imm: src_off + w * WORD,
+            });
+            ctx.b.op(Instr::MLoad { d: r, a: SCRATCH });
+            store_slot(ctx, base + w, r, span)?;
+            ctx.regs.free(r);
+        }
+        return Ok(());
+    }
 
     if ctx.layout.is_addr(name) {
         // A full address field is set from an address value, the caller or a parameter, by copying its

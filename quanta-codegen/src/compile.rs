@@ -17,6 +17,16 @@ pub struct CompiledContract {
     pub container: Container,
     pub entries: Vec<EntryArtifact>,
     pub events: Vec<EventArtifact>,
+    /// Deploy parameters the genesis reads, in layout order. Empty when the genesis reads none.
+    pub deploy_params: Vec<DeployParamArtifact>,
+}
+
+/// A `deploy_params.<name>` slot the deployer fills: its key, scratch offset, and byte width.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeployParamArtifact {
+    pub key: String,
+    pub offset: u64,
+    pub width: u64,
 }
 
 /// One entry of the interface, with the scratch memory layout of its arguments.
@@ -95,10 +105,11 @@ fn compile_entries(
 
     let mut artifacts = Vec::new();
     let mut placed = Vec::new();
+    let mut deploy_params = Vec::new();
     for entry in entries {
         let start = b.label();
         b.mark(start);
-        let args = lower_entry(&layout, entry, &invariants, &events_map, &mut b, trap)?;
+        let args = lower_entry(&layout, entry, &invariants, &events_map, &mut b, trap, false)?;
         let selector = entry_selector(entry);
         placed.push((selector, layout.access(entry), start));
         artifacts.push(EntryArtifact {
@@ -134,7 +145,16 @@ fn compile_entries(
         };
         let start = b.label();
         b.mark(start);
-        lower_entry(&layout, &synthetic, &[], &events_map, &mut b, trap)?;
+        let genesis_args = lower_entry(&layout, &synthetic, &[], &events_map, &mut b, trap, true)?;
+        deploy_params = genesis_args
+            .deploy_params()
+            .iter()
+            .map(|slot| DeployParamArtifact {
+                key: slot.key.clone(),
+                offset: slot.offset,
+                width: slot.width,
+            })
+            .collect();
         let selector = qtv_vm::container::selector(qtv_vm::container::GENESIS_SIGNATURE);
         placed.push((selector, qtv_vm::container::StateAccess::default(), start));
     }
@@ -181,6 +201,7 @@ fn compile_entries(
         container: Container::new(code, Vec::new(), container_entries),
         entries: artifacts,
         events,
+        deploy_params,
     })
 }
 

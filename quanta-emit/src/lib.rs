@@ -69,6 +69,18 @@ fn contracts_json(contracts: &[CompiledContract]) -> String {
             json_hex(&mut out, &event.selector);
             out.push('}');
         }
+        out.push_str("],\"deploy_params\":[");
+        for (j, param) in cc.deploy_params.iter().enumerate() {
+            if j > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"key\":");
+            json_str(&mut out, &param.key);
+            out.push_str(&format!(
+                ",\"offset\":{},\"width\":{}}}",
+                param.offset, param.width
+            ));
+        }
         out.push_str("]}");
     }
     out.push_str("]}");
