@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use qtv_crypto::ml_dsa;
+use qtv_crypto::sha3::sha3_256;
 use qtv_vm::interp::{Effect, Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
 
@@ -112,18 +113,48 @@ const MINT: &str = "contract Minter {\n\
   }\n\
 }\n";
 
-// Seed the argument words and a valid module lattice signature region for the `issue` entry.
-fn signed_mint_memory(cc: &CompiledContract, amount: u64) -> Vec<u8> {
+// The owner spans the first four slots; the vault and the supply low word follow it.
+const MINT_VAULT_SLOT: u64 = 4;
+const MINT_SUPPLY_SLOT: u64 = 5;
+const MINT_CONTRACT: [u8; 32] = [0x55; 32];
+
+fn signer_address(scheme: u8, pk: &[u8]) -> [u8; 32] {
+    let mut input = vec![scheme];
+    input.extend_from_slice(pk);
+    sha3_256(&input)
+}
+
+fn put_addr_slots(storage: &mut BTreeMap<u64, u64>, base: u64, addr: &[u8; 32]) {
+    for i in 0..4usize {
+        let w = u64::from_be_bytes(addr[i * 8..i * 8 + 8].try_into().unwrap());
+        storage.insert(base + i as u64, w);
+    }
+}
+
+// Seed the argument words and a bound owner signature region for the `issue` entry, signing the
+// canonical order message the compiler rebuilds. Returns the memory and the owner address.
+fn signed_mint_memory(cc: &CompiledContract, amount: u64) -> (Vec<u8>, [u8; 32]) {
     let region_off = 8192usize;
     let (pk, sk) = ml_dsa::keygen(&[7u8; 32]);
-    let payload = b"mint order";
-    let sig = ml_dsa::sign(&sk, payload, &[], &[0u8; 32]).expect("sign");
+    let signer = signer_address(1, &pk);
+
+    let selector = cc.container.entries[0].selector;
+    let mut msg = Vec::new();
+    msg.extend_from_slice(b"QTVSGN01");
+    msg.extend_from_slice(&MINT_CONTRACT);
+    msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
+    msg.extend_from_slice(&signer);
+    msg.extend_from_slice(&0u64.to_be_bytes()); // nonce zero
+    msg.extend_from_slice(&amount.to_be_bytes());
+    let sig = ml_dsa::sign(&sk, &msg, &[], &[0u8; 32]).expect("sign");
+
     let mut region = Vec::new();
     region.extend_from_slice(&pk);
     region.extend_from_slice(&sig);
-    region.extend_from_slice(payload);
+    region.extend_from_slice(&msg);
 
     let mut mem = vec![0u8; region_off + region.len()];
+    mem[32..64].copy_from_slice(&MINT_CONTRACT);
     let mut put = |key: &str, value: u64| {
         if let Some(slot) = cc.entries[0].args.iter().find(|s| s.key == key) {
             let at = slot.offset as usize;
@@ -132,23 +163,27 @@ fn signed_mint_memory(cc: &CompiledContract, amount: u64) -> Vec<u8> {
     };
     put("order#scheme", 1);
     put("order#ptr", region_off as u64);
-    put("order#len", region.len() as u64);
     put("order.amount", amount);
     mem[region_off..].copy_from_slice(&region);
-    mem
+    (mem, signer)
 }
 
 #[test]
 fn a_signed_mint_creates_supply_and_credits_the_vault() {
     let cc = compile(MINT);
-    let mem = signed_mint_memory(&cc, 500);
+    let (mem, owner) = signed_mint_memory(&cc, 500);
     let mut storage = BTreeMap::new();
-    storage.insert(1u64, 0u64); // vault
-    storage.insert(2u64, 0u64); // supply
+    put_addr_slots(&mut storage, 0, &owner);
+    storage.insert(MINT_VAULT_SLOT, 0);
+    storage.insert(MINT_SUPPLY_SLOT, 0);
     let out = run(&cc, storage, &mem).expect("clean halt");
-    assert_eq!(out.get(&2), Some(&500), "supply grows by the minted amount");
     assert_eq!(
-        out.get(&1),
+        out.get(&MINT_SUPPLY_SLOT),
+        Some(&500),
+        "supply grows by the minted amount"
+    );
+    assert_eq!(
+        out.get(&MINT_VAULT_SLOT),
         Some(&500),
         "the vault receives the minted asset"
     );

@@ -198,6 +198,9 @@ mod tests {
     #[test]
     fn the_argument_layout_reserves_the_context_words_then_the_parameters() {
         let cc = compile_one(METER);
+        // The trusted context spans the first seventy two bytes: the thirty two byte caller address,
+        // the thirty two byte contract self address, then the eight byte consensus time. The source
+        // parameters follow after it.
         assert_eq!(
             cc.entries[0].args,
             vec![
@@ -206,12 +209,16 @@ mod tests {
                     offset: 0,
                 },
                 ArgSlot {
+                    key: "@contract".to_string(),
+                    offset: 32,
+                },
+                ArgSlot {
                     key: "@time".to_string(),
-                    offset: 8,
+                    offset: 64,
                 },
                 ArgSlot {
                     key: "step".to_string(),
-                    offset: 16,
+                    offset: 72,
                 },
             ]
         );

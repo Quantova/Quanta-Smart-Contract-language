@@ -1,8 +1,9 @@
-//! A `signed by` parameter lowers to a module lattice signature verify before the body runs. A
+//! A `signed by owner` parameter is bound three ways, not merely verified. The signer's address is
 
 use std::collections::BTreeMap;
 
 use qtv_crypto::ml_dsa;
+use qtv_crypto::sha3::sha3_256;
 use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
 
@@ -15,6 +16,15 @@ const COUNTER: &str = "contract Counter {\n\
   }\n\
   event Bumped(value: u64);\n\
 }\n";
+
+// The owner occupies the first four state slots and count follows it. A `Q_Address` field is the whole
+// thirty two byte address, four machine words, so a check against it binds all thirty two bytes.
+const OWNER_SLOT: u64 = 0;
+const COUNT_SLOT: u64 = 4;
+const CONTRACT_CTX_OFF: usize = 32;
+const REGION_OFF: u64 = 8192;
+const SCHEME_ML: u8 = 1;
+const CONTRACT: [u8; 32] = [0x33; 32];
 
 fn compile(src: &str) -> CompiledContract {
     let program = quanta_parser::parse(src).expect("parse");
@@ -35,76 +45,212 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
     mem[off..off + 8].copy_from_slice(&value.to_be_bytes());
 }
 
-// Build the scratch memory: the scheme identifier, the verify region for the order, and the plain
-// argument words. Scheme one is ML DSA.
-fn scratch(cc: &CompiledContract, region: &[u8], step: u64) -> Vec<u8> {
-    let region_off = 8192usize;
-    let mut mem = vec![0u8; region_off + region.len()];
-    put_word(&mut mem, arg_offset(cc, "order#scheme"), 1);
-    put_word(&mut mem, arg_offset(cc, "order#ptr"), region_off as u64);
-    put_word(&mut mem, arg_offset(cc, "order#len"), region.len() as u64);
-    put_word(&mut mem, arg_offset(cc, "order.step"), step);
-    mem[region_off..].copy_from_slice(region);
+// The signer address the ADDR opcode and the chain both derive: sha3_256(scheme_byte || public_key).
+fn signer_address(scheme: u8, pk: &[u8]) -> [u8; 32] {
+    let mut input = vec![scheme];
+    input.extend_from_slice(pk);
+    sha3_256(&input)
+}
+
+// The per signer nonce slot: the leading eight bytes of sha3_256(NONCE_TAG || signer).
+fn nonce_slot(signer: &[u8; 32]) -> u64 {
+    let mut input = b"QTVNONCE".to_vec();
+    input.extend_from_slice(signer);
+    u64::from_be_bytes(sha3_256(&input)[..8].try_into().unwrap())
+}
+
+// The canonical order message the compiler rebuilds and verifies over: the domain tag, the contract
+// self address, the entry selector word, the signer address, the per signer nonce, then the fields.
+fn canonical_message(
+    contract: &[u8; 32],
+    selector: [u8; 4],
+    signer: &[u8; 32],
+    nonce: u64,
+    fields: &[u64],
+) -> Vec<u8> {
+    let mut msg = Vec::new();
+    msg.extend_from_slice(b"QTVSGN01");
+    msg.extend_from_slice(contract);
+    msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
+    msg.extend_from_slice(signer);
+    msg.extend_from_slice(&nonce.to_be_bytes());
+    for f in fields {
+        msg.extend_from_slice(&f.to_be_bytes());
+    }
+    msg
+}
+
+fn put_addr_slots(storage: &mut BTreeMap<u64, u64>, base: u64, addr: &[u8; 32]) {
+    for i in 0..4usize {
+        let w = u64::from_be_bytes(addr[i * 8..i * 8 + 8].try_into().unwrap());
+        storage.insert(base + i as u64, w);
+    }
+}
+
+// Build the scratch memory for a bump call, signing the canonical message over `signed_step` and the
+// given nonce with `sk`, while the plain argument word carries `arg_step`.
+fn bump_memory(
+    cc: &CompiledContract,
+    pk: &[u8],
+    sk: &ml_dsa::SecretKey,
+    signed_step: u64,
+    arg_step: u64,
+    nonce: u64,
+) -> Vec<u8> {
+    let signer = signer_address(SCHEME_ML, pk);
+    let selector = cc.container.entries[0].selector;
+    let msg = canonical_message(&CONTRACT, selector, &signer, nonce, &[signed_step]);
+    let sig = ml_dsa::sign(sk, &msg, &[], &[0u8; 32]).expect("sign");
+
+    let mut region = Vec::new();
+    region.extend_from_slice(pk);
+    region.extend_from_slice(&sig);
+    region.extend_from_slice(&msg);
+
+    let mut mem = vec![0u8; REGION_OFF as usize + region.len()];
+    mem[CONTRACT_CTX_OFF..CONTRACT_CTX_OFF + 32].copy_from_slice(&CONTRACT);
+    put_word(&mut mem, arg_offset(cc, "order#scheme"), SCHEME_ML as u64);
+    put_word(&mut mem, arg_offset(cc, "order#ptr"), REGION_OFF);
+    put_word(&mut mem, arg_offset(cc, "order.step"), arg_step);
+    mem[REGION_OFF as usize..].copy_from_slice(&region);
     mem
 }
 
-fn verify_region(sig: &[u8], pk: &[u8], payload: &[u8]) -> Vec<u8> {
-    let mut region = Vec::new();
-    region.extend_from_slice(pk);
-    region.extend_from_slice(sig);
-    region.extend_from_slice(payload);
-    region
+fn owned_storage(owner: &[u8; 32], count: u64) -> BTreeMap<u64, u64> {
+    let mut storage = BTreeMap::new();
+    put_addr_slots(&mut storage, OWNER_SLOT, owner);
+    storage.insert(COUNT_SLOT, count);
+    storage
+}
+
+fn run(cc: &CompiledContract, storage: BTreeMap<u64, u64>, mem: &[u8]) -> Result<BTreeMap<u64, u64>, Fault> {
+    Interpreter::new(&cc.container.code, &cc.container.consts, 400_000)
+        .with_storage(storage)
+        .with_memory(mem)
+        .run()
+        .map(|out| out.storage)
 }
 
 #[test]
-fn a_valid_signature_admits_the_body() {
+fn the_owner_field_spans_four_slots_and_count_follows_it() {
     let cc = compile(COUNTER);
-    // The count field is state slot one, owner is slot zero.
-    assert_eq!(cc.container.entries[0].access.writes, vec![1]);
+    assert_eq!(
+        cc.container.entries[0].access.writes,
+        vec![COUNT_SLOT],
+        "count is the fifth slot, past the four word owner address"
+    );
+}
 
+#[test]
+fn the_owner_signature_admits_the_body_and_bumps_the_count() {
+    let cc = compile(COUNTER);
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
-    let payload = b"bump order canonical bytes";
-    let sig = ml_dsa::sign(&sk, payload, &[], &[0u8; 32]).expect("sign");
-    let region = verify_region(&sig, &pk, payload);
-    let mem = scratch(&cc, &region, 4);
+    let owner = signer_address(SCHEME_ML, &pk);
 
-    let mut storage = BTreeMap::new();
-    storage.insert(1u64, 10u64);
+    let mem = bump_memory(&cc, &pk, &sk, 4, 4, 0);
+    let out = run(&cc, owned_storage(&owner, 10), &mem).expect("the owner's signature is accepted");
+    assert_eq!(out.get(&COUNT_SLOT), Some(&14), "count advances by the step");
+    assert_eq!(out.get(&nonce_slot(&owner)), Some(&1), "the nonce is consumed");
+}
 
-    let out = Interpreter::new(&cc.container.code, &cc.container.consts, 200_000)
-        .with_storage(storage)
-        .with_memory(&mem)
-        .run()
-        .expect("clean halt");
+#[test]
+fn a_strangers_own_valid_signature_is_refused() {
+    let cc = compile(COUNTER);
+    // The owner is one key; a stranger signs a perfectly valid message under their own key. The verify
+    // passes, but the signer address is the stranger's, not the owner's, so the binding reverts.
+    let (owner_pk, _owner_sk) = ml_dsa::keygen(&[3u8; 32]);
+    let owner = signer_address(SCHEME_ML, &owner_pk);
+    let (pk, sk) = ml_dsa::keygen(&[9u8; 32]);
 
-    assert_eq!(out.storage.get(&1), Some(&14), "count advances by the step");
+    let storage = owned_storage(&owner, 10);
+    let mem = bump_memory(&cc, &pk, &sk, 4, 4, 0);
+    assert_eq!(
+        run(&cc, storage.clone(), &mem),
+        Err(Fault::DivByZero),
+        "a valid signature by a non owner is refused"
+    );
+    assert_eq!(storage.get(&COUNT_SLOT), Some(&10), "state is unchanged");
+}
+
+#[test]
+fn an_address_that_only_collides_in_a_leading_word_is_refused() {
+    let cc = compile(COUNTER);
+    // The stored owner shares its first word with the signer but differs past it. Under the old sixty
+    // four bit reduction this forged ownership; the four word check refuses it.
+    let (pk, sk) = ml_dsa::keygen(&[9u8; 32]);
+    let signer = signer_address(SCHEME_ML, &pk);
+    let mut owner = signer;
+    owner[8] ^= 0xFF; // identical leading word, different second word
+
+    let mem = bump_memory(&cc, &pk, &sk, 4, 4, 0);
+    assert_eq!(
+        run(&cc, owned_storage(&owner, 10), &mem),
+        Err(Fault::DivByZero),
+        "a leading word collision does not forge ownership"
+    );
+}
+
+#[test]
+fn a_tampered_order_field_is_refused() {
+    let cc = compile(COUNTER);
+    // The signature commits to step four, but the plain argument word carries five. The compiler
+    // rebuilds the message from the argument, so the verify runs over step five and fails.
+    let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
+    let owner = signer_address(SCHEME_ML, &pk);
+
+    let mem = bump_memory(&cc, &pk, &sk, 4, 5, 0);
+    assert_eq!(
+        run(&cc, owned_storage(&owner, 10), &mem),
+        Err(Fault::DivByZero),
+        "a signature does not carry to a changed field value"
+    );
+}
+
+#[test]
+fn a_replayed_message_is_refused_after_the_nonce_advances() {
+    let cc = compile(COUNTER);
+    let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
+    let owner = signer_address(SCHEME_ML, &pk);
+
+    // First call, signed against nonce zero, is accepted and advances the nonce.
+    let mem = bump_memory(&cc, &pk, &sk, 4, 4, 0);
+    let after_first = run(&cc, owned_storage(&owner, 10), &mem).expect("first call accepted");
+    assert_eq!(after_first.get(&COUNT_SLOT), Some(&14));
+
+    // Replaying the exact same memory now reverts, because the entry rebuilds the message with the
+    // advanced nonce and the captured signature was over the old one.
+    assert_eq!(
+        run(&cc, after_first.clone(), &mem),
+        Err(Fault::DivByZero),
+        "the captured signature cannot be replayed"
+    );
+
+    // A fresh signature over nonce one is accepted, so the owner can still act.
+    let mem2 = bump_memory(&cc, &pk, &sk, 4, 4, 1);
+    let after_second =
+        run(&cc, after_first, &mem2).expect("second call with the new nonce accepted");
+    assert_eq!(
+        after_second.get(&COUNT_SLOT),
+        Some(&18),
+        "the owner acts again with a fresh nonce"
+    );
 }
 
 #[test]
 fn a_forged_signature_reverts() {
     let cc = compile(COUNTER);
-
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
-    let payload = b"bump order canonical bytes";
-    let sig = ml_dsa::sign(&sk, payload, &[], &[0u8; 32]).expect("sign");
-    let mut region = verify_region(&sig, &pk, payload);
-    // Flip one byte of the signature so the verify fails.
-    let sig_start = ml_dsa::PUBLIC_KEY_BYTES;
-    region[sig_start] ^= 1;
-    let mem = scratch(&cc, &region, 4);
+    let owner = signer_address(SCHEME_ML, &pk);
+    let mut mem = bump_memory(&cc, &pk, &sk, 4, 4, 0);
+    // Flip one byte of the signature so the verify itself fails.
+    let sig_start = REGION_OFF as usize + ml_dsa::PUBLIC_KEY_BYTES;
+    mem[sig_start] ^= 1;
 
-    let mut persistent = BTreeMap::new();
-    persistent.insert(1u64, 10u64);
-
-    let result = Interpreter::new(&cc.container.code, &cc.container.consts, 200_000)
-        .with_storage(persistent.clone())
-        .with_memory(&mem)
-        .run();
-
+    let storage = owned_storage(&owner, 10);
     assert_eq!(
-        result,
+        run(&cc, storage.clone(), &mem),
         Err(Fault::DivByZero),
         "a forged signature must revert"
     );
-    assert_eq!(persistent.get(&1), Some(&10), "state is unchanged");
+    assert_eq!(storage.get(&COUNT_SLOT), Some(&10), "state is unchanged");
 }

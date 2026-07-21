@@ -12,6 +12,10 @@ const KEYED_BASE: u64 = 1 << 40;
 const KEYED_STRIDE: u64 = 1 << 32;
 /// The wide type that needs two machine words to hold. Its low word lives in the field's slot and its
 const WIDE_TYPE: &str = "u128";
+/// The address type, the full thirty two byte account address. It occupies four consecutive slots, so
+const ADDR_TYPE: &str = "Q_Address";
+/// The number of machine words a `Q_Address` field spans.
+pub const ADDR_WORDS: u64 = 4;
 /// The offset that separates the high word of a two word scalar field from its low word. It sits far
 const HI_OFFSET: u64 = 1 << 56;
 
@@ -20,6 +24,7 @@ pub struct Layout {
     slots: HashMap<String, u64>,
     map_bases: HashMap<String, u64>,
     wide: HashSet<String>,
+    addr: HashSet<String>,
 }
 
 impl Layout {
@@ -28,21 +33,32 @@ impl Layout {
         let mut slots = HashMap::new();
         let mut map_bases = HashMap::new();
         let mut wide = HashSet::new();
+        let mut addr = HashSet::new();
         let mut next = 0u64;
         let mut keyed = 0u64;
         for item in &contract.items {
             if let Item::State(block) = item {
                 for field in &block.fields {
-                    if !slots.contains_key(&field.name.text) {
-                        slots.insert(field.name.text.clone(), next);
+                    if slots.contains_key(&field.name.text) {
+                        continue;
+                    }
+                    let ty = field.ty.name.text.as_str();
+                    slots.insert(field.name.text.clone(), next);
+                    if KEYED_TYPES.contains(&ty) {
+                        map_bases
+                            .insert(field.name.text.clone(), KEYED_BASE + keyed * KEYED_STRIDE);
+                        keyed += 1;
                         next += 1;
-                        if KEYED_TYPES.contains(&field.ty.name.text.as_str()) {
-                            map_bases
-                                .insert(field.name.text.clone(), KEYED_BASE + keyed * KEYED_STRIDE);
-                            keyed += 1;
-                        } else if field.ty.name.text == WIDE_TYPE {
-                            wide.insert(field.name.text.clone());
-                        }
+                    } else if ty == WIDE_TYPE {
+                        wide.insert(field.name.text.clone());
+                        next += 1;
+                    } else if ty == ADDR_TYPE {
+                        // A full address occupies four consecutive slots, so the field after it starts
+                        // past its four words and never overlaps them.
+                        addr.insert(field.name.text.clone());
+                        next += ADDR_WORDS;
+                    } else {
+                        next += 1;
                     }
                 }
             }
@@ -51,6 +67,7 @@ impl Layout {
             slots,
             map_bases,
             wide,
+            addr,
         }
     }
 
@@ -69,12 +86,44 @@ impl Layout {
         self.wide.contains(name)
     }
 
+    /// Whether a state field is a full address field, held across four consecutive machine words.
+    pub fn is_addr(&self, name: &str) -> bool {
+        self.addr.contains(name)
+    }
+
+    /// The slot holding word `word` of a `Q_Address` field, if the name is one. Word zero is the
+    pub fn addr_slot(&self, name: &str, word: u64) -> Option<u64> {
+        if self.is_addr(name) && word < ADDR_WORDS {
+            self.slot(name).map(|slot| slot + word)
+        } else {
+            None
+        }
+    }
+
     /// The storage slot of the high word of a two word field, if the name is a two word field. The low
     pub fn hi_slot(&self, name: &str) -> Option<u64> {
         if self.is_wide(name) {
             self.slot(name).map(|slot| slot | HI_OFFSET)
         } else {
             None
+        }
+    }
+
+    /// Appends every storage slot a named field occupies to `out`: a plain field its one slot, a two
+    fn field_slots(&self, name: &str, out: &mut Vec<u64>) {
+        let slot = match self.slot(name) {
+            Some(slot) => slot,
+            None => return,
+        };
+        if self.is_addr(name) {
+            for word in 0..ADDR_WORDS {
+                out.push(slot + word);
+            }
+        } else {
+            out.push(slot);
+            if let Some(hi) = self.hi_slot(name) {
+                out.push(hi);
+            }
         }
     }
 
@@ -86,22 +135,12 @@ impl Layout {
             match clause {
                 Clause::Reads { names, .. } => {
                     for name in names {
-                        if let Some(slot) = self.slot(&name.text) {
-                            reads.push(slot);
-                        }
-                        if let Some(hi) = self.hi_slot(&name.text) {
-                            reads.push(hi);
-                        }
+                        self.field_slots(&name.text, &mut reads);
                     }
                 }
                 Clause::Writes { names, .. } => {
                     for name in names {
-                        if let Some(slot) = self.slot(&name.text) {
-                            writes.push(slot);
-                        }
-                        if let Some(hi) = self.hi_slot(&name.text) {
-                            writes.push(hi);
-                        }
+                        self.field_slots(&name.text, &mut writes);
                     }
                 }
                 _ => {}

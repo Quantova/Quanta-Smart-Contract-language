@@ -30,6 +30,7 @@ fn is_post_quantum_crypto(op: OpCode) -> bool {
             | OpCode::MerkleVerify
             | OpCode::VrfVerify
             | OpCode::Kem
+            | OpCode::Addr
     )
 }
 
@@ -41,7 +42,8 @@ fn is_cryptographic(op: OpCode) -> bool {
         | OpCode::VerifySlh
         | OpCode::MerkleVerify
         | OpCode::VrfVerify
-        | OpCode::Kem => true,
+        | OpCode::Kem
+        | OpCode::Addr => true,
         OpCode::Halt
         | OpCode::Nop
         | OpCode::Mov
@@ -111,12 +113,12 @@ fn the_machine_exposes_only_post_quantum_crypto_opcodes() {
     for op in &crypto {
         assert!(is_post_quantum_crypto(*op), "{op:?} is not post quantum");
     }
-    // Exactly the six post quantum cryptographic opcodes exist. There is no classical signature
-    // verify and no ecrecover style recovery opcode to emit.
+    // Exactly the seven post quantum cryptographic opcodes exist, the six primitives plus the address
+    // derivation. There is no classical signature verify and no ecrecover style recovery opcode.
     assert_eq!(
         crypto.len(),
-        6,
-        "the crypto opcode set must be the post quantum six"
+        7,
+        "the crypto opcode set must be the post quantum seven"
     );
 }
 
@@ -137,8 +139,9 @@ fn the_code_generator_emits_only_post_quantum_crypto() {
 #[test]
 fn a_signature_lowering_only_ever_verifies_and_never_recovers() {
     // The only signature opcodes the corpus emits are verify opcodes, which consume a public key and
-    // return a boolean. None recovers a key or an address from a signature, so there is no ecrecover
-    // equivalent in the emitted code.
+    // return a boolean. The address opcode the binding also emits derives an address from the public
+    // key that is presented, never from a signature alone, so there is still no ecrecover equivalent:
+    // nothing recovers a key or an address out of a signature.
     let signature_ops: Vec<OpCode> = emitted_opcodes(COUNTER)
         .into_iter()
         .filter(|op| matches!(op, OpCode::VerifyMl | OpCode::VerifySlh))

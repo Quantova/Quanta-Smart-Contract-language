@@ -3,6 +3,7 @@
 use crate::emit::{Builder, Label};
 use crate::error::CodegenError;
 use crate::layout::Layout;
+use crate::selector::entry_selector;
 use qtv_vm::isa::{Instr, Reg, NUM_REGS};
 use quanta_ast::{
     AfterTarget, AssignOp, BinOp, Clause, EntryDecl, Expr, GenericArg, Param, Stmt, UnaryOp,
@@ -19,6 +20,8 @@ const FIRST_TEMP: Reg = 1;
 pub const ARG_BASE: u64 = 0;
 /// Width of one argument word.
 const WORD: u64 = 8;
+/// Byte width of a full account address, four machine words.
+const ADDR_BYTES: u64 = 32;
 
 /// Base offset of the asset local region in scratch memory. A `let` bound asset value keeps its
 const ASSET_LOCAL_BASE: u64 = 4096;
@@ -36,8 +39,23 @@ const SIG_LEN_SUFFIX: &str = "#len";
 /// Argument key of the caller context word. It is not a source level parameter, so its key uses the
 const CALLER_KEY: &str = "@caller";
 
+/// Argument key of the contract self address context block, the thirty two byte address of the
+const CONTRACT_KEY: &str = "@contract";
+
 /// Argument key of the consensus time context word, the host supplied time an `after` guard measures
 const TIME_KEY: &str = "@time";
+
+/// Scratch region holding the thirty two byte signer address the ADDR opcode derives from a verify
+const SIGNER_ADDR_SCRATCH: u64 = 40960;
+/// Scratch region assembling the per signer nonce slot preimage, the nonce domain tag then the signer
+const NONCE_PREIMAGE_SCRATCH: u64 = 41088;
+/// Scratch region receiving the nonce slot digest.
+const NONCE_DIGEST_SCRATCH: u64 = 41216;
+
+/// Domain tag of the canonical signed order message, packed big endian into one machine word, so a
+const SIGNED_MSG_TAG: u64 = u64::from_be_bytes(*b"QTVSGN01");
+/// Domain tag of the per signer nonce slot preimage, separating nonce slots from any other hashed slot.
+const NONCE_TAG: u64 = u64::from_be_bytes(*b"QTVNONCE");
 
 /// Seconds in each duration unit an `after` clause can name.
 fn unit_seconds(unit: &str) -> Option<u64> {
@@ -763,12 +781,15 @@ pub fn lower_entry(
             &mut args,
         );
         ctx.entry_mints = entry_mints;
-        // Reserve the caller word at argument offset zero and the consensus time word at offset eight
-        // for every entry, whether or not it reads them, so a host injects the two trusted context
-        // words at fixed offsets and a caller can never place them itself. The source parameters
-        // follow after, and an entry that does not read a context word simply leaves its slot unused.
-        ctx.args.offset_of(CALLER_KEY);
-        ctx.args.offset_of(TIME_KEY);
+        // Reserve the trusted context at fixed offsets for every entry, whether or not it reads them,
+        // so the host injects them and a caller can never place them itself: the full thirty two byte
+        // caller address at offset zero, the full thirty two byte contract self address at offset
+        // thirty two, and the consensus time word at offset sixty four. The source parameters follow
+        // after, and an entry that does not read a context value simply leaves its slot unused. The
+        // caller is a full address, so an owner check the entry runs binds all thirty two bytes.
+        ctx.args.offset_of_width(CALLER_KEY, ADDR_BYTES);
+        ctx.args.offset_of_width(CONTRACT_KEY, ADDR_BYTES);
+        ctx.args.offset_of_width(TIME_KEY, WORD);
         lower_signed_prologue(&mut ctx, entry, trap)?;
         lower_quorum_prologue(&mut ctx, entry, trap)?;
         lower_after_prologue(&mut ctx, entry, trap)?;
@@ -793,7 +814,7 @@ enum VerifyOp {
     Slh,
 }
 
-/// Verifies each `signed by` parameter before the body runs, dispatching on the one byte scheme
+/// Verifies and binds each `signed by` parameter before the body runs. The dispatch on the one byte
 fn lower_signed_prologue(
     ctx: &mut Ctx,
     entry: &EntryDecl,
@@ -803,12 +824,7 @@ fn lower_signed_prologue(
         if param.signed_by.is_none() {
             continue;
         }
-        let name = &param.name.text;
-        let span = param.span;
-        let scheme_off = ctx.args.offset_of(&format!("{name}{SIG_SCHEME_SUFFIX}"));
-        let ptr_off = ctx.args.offset_of(&format!("{name}{SIG_PTR_SUFFIX}"));
-        let len_off = ctx.args.offset_of(&format!("{name}{SIG_LEN_SUFFIX}"));
-        dispatch_verify(ctx, scheme_off, ptr_off, len_off, trap, span)?;
+        lower_signed_binding(ctx, param, entry, trap)?;
     }
     Ok(())
 }
@@ -1020,6 +1036,482 @@ fn emit_verify(
     ctx.regs.free(rok);
     ctx.regs.free(rlen);
     ctx.regs.free(rptr);
+    Ok(())
+}
+
+/// Stores `value` to scratch memory at `base + off`, computing the address in the scratch register.
+fn store_off(ctx: &mut Ctx, base: Reg, off: u64, value: Reg) {
+    ctx.b.op(Instr::Ldi {
+        d: SCRATCH,
+        imm: off,
+    });
+    ctx.b.op(Instr::AddW {
+        d: SCRATCH,
+        a: base,
+        b: SCRATCH,
+    });
+    ctx.b.op(Instr::MStore {
+        a: SCRATCH,
+        b: value,
+    });
+}
+
+/// Copies `words` machine words from a fixed scratch offset to `base + dst_off`, so a fixed context or
+fn copy_words_to_region(
+    ctx: &mut Ctx,
+    src_off: u64,
+    base: Reg,
+    dst_off: u64,
+    words: u64,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let tmp = ctx.regs.alloc(span)?;
+    for i in 0..words {
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: src_off + i * WORD,
+        });
+        ctx.b.op(Instr::MLoad {
+            d: tmp,
+            a: SCRATCH,
+        });
+        store_off(ctx, base, dst_off + i * WORD, tmp);
+    }
+    ctx.regs.free(tmp);
+    Ok(())
+}
+
+/// Copies `words` machine words between two fixed scratch offsets.
+fn copy_words_fixed(
+    ctx: &mut Ctx,
+    src_off: u64,
+    dst_off: u64,
+    words: u64,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let tmp = ctx.regs.alloc(span)?;
+    for i in 0..words {
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: src_off + i * WORD,
+        });
+        ctx.b.op(Instr::MLoad {
+            d: tmp,
+            a: SCRATCH,
+        });
+        store_mem_word(ctx, dst_off + i * WORD, tmp);
+    }
+    ctx.regs.free(tmp);
+    Ok(())
+}
+
+/// The argument keys of the fields of the signed parameter the order message commits to, in first
+fn collect_signed_fields(entry: &EntryDecl, param: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => {
+                collect_fields_expr(expr, param, &mut out)
+            }
+            Clause::After {
+                from: Some(expr), ..
+            } => collect_fields_expr(expr, param, &mut out),
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        collect_fields_stmt(stmt, param, &mut out);
+    }
+    out
+}
+
+fn collect_fields_stmt(stmt: &Stmt, param: &str, out: &mut Vec<String>) {
+    match stmt {
+        Stmt::Guard { expr, .. } => collect_fields_expr(expr, param, out),
+        Stmt::Let { value, .. } => collect_fields_expr(value, param, out),
+        Stmt::Emit { args, .. } => {
+            for arg in args {
+                collect_fields_expr(arg, param, out);
+            }
+        }
+        Stmt::Assign { target, value, .. } => {
+            collect_fields_expr(target, param, out);
+            collect_fields_expr(value, param, out);
+        }
+        Stmt::Expr { expr, .. } => collect_fields_expr(expr, param, out),
+    }
+}
+
+fn collect_fields_expr(expr: &Expr, param: &str, out: &mut Vec<String>) {
+    match expr {
+        Expr::Field { base, name, .. } => {
+            if let Expr::Ident(id) = base.as_ref() {
+                if id.text == param {
+                    let key = format!("{param}.{}", name.text);
+                    if !out.contains(&key) {
+                        out.push(key);
+                    }
+                    return;
+                }
+            }
+            collect_fields_expr(base, param, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            collect_fields_expr(expr, param, out)
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_fields_expr(left, param, out);
+            collect_fields_expr(right, param, out);
+        }
+        Expr::Call { callee, args, .. } => {
+            collect_fields_expr(callee, param, out);
+            for arg in args {
+                collect_fields_expr(arg, param, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Byte offsets of each field of the canonical order message, relative to the message start. The
+const MSG_TAG_OFF: u64 = 0;
+const MSG_CONTRACT_OFF: u64 = 8;
+const MSG_SELECTOR_OFF: u64 = 40;
+const MSG_SIGNER_OFF: u64 = 48;
+const MSG_NONCE_OFF: u64 = 80;
+const MSG_FIELDS_OFF: u64 = 88;
+
+/// Verifies and binds one `signed by` parameter. The `signed by` name must be a `Q_Address` state
+fn lower_signed_binding(
+    ctx: &mut Ctx,
+    param: &Param,
+    entry: &EntryDecl,
+    trap: Label,
+) -> Result<(), CodegenError> {
+    let owner = param
+        .signed_by
+        .as_ref()
+        .expect("a signed parameter names its signer");
+    let owner_slot = match ctx.layout.slot(&owner.text) {
+        Some(slot) if ctx.layout.is_addr(&owner.text) => slot,
+        _ => {
+            return Err(CodegenError::Unsupported {
+                what: format!(
+                    "`signed by {}`, which must name a Q_Address state field to bind the signer to",
+                    owner.text
+                ),
+                span: param.span,
+            })
+        }
+    };
+
+    let name = &param.name.text;
+    let span = param.span;
+    let scheme_off = ctx.args.offset_of(&format!("{name}{SIG_SCHEME_SUFFIX}"));
+    let ptr_off = ctx.args.offset_of(&format!("{name}{SIG_PTR_SUFFIX}"));
+    // The order fields the message commits to, and their argument offsets, allocated here so the body
+    // reads the identical words later.
+    let field_offs: Vec<u64> = collect_signed_fields(entry, name)
+        .iter()
+        .map(|key| ctx.args.offset_of(key))
+        .collect();
+    let selector_word = u32::from_be_bytes(entry_selector(entry)) as u64;
+
+    let ml_label = ctx.b.label();
+    let slh_label = ctx.b.label();
+    let done_label = ctx.b.label();
+
+    // Read the one byte scheme and branch to the matching verify, reverting on an unknown one.
+    let scheme = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: SCRATCH,
+        imm: scheme_off,
+    });
+    ctx.b.op(Instr::MLoad {
+        d: scheme,
+        a: SCRATCH,
+    });
+    let test = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: SCRATCH,
+        imm: SCHEME_ML,
+    });
+    ctx.b.op(Instr::Eq {
+        d: test,
+        a: scheme,
+        b: SCRATCH,
+    });
+    ctx.b.jnz(test, ml_label);
+    ctx.b.op(Instr::Ldi {
+        d: SCRATCH,
+        imm: SCHEME_SLH,
+    });
+    ctx.b.op(Instr::Eq {
+        d: test,
+        a: scheme,
+        b: SCRATCH,
+    });
+    ctx.b.jnz(test, slh_label);
+    ctx.b.jmp(trap);
+    ctx.regs.free(test);
+    ctx.regs.free(scheme);
+
+    ctx.b.mark(ml_label);
+    emit_signed_binding(
+        ctx,
+        VerifyOp::Ml,
+        ptr_off,
+        owner_slot,
+        selector_word,
+        &field_offs,
+        trap,
+        span,
+    )?;
+    ctx.b.jmp(done_label);
+
+    ctx.b.mark(slh_label);
+    emit_signed_binding(
+        ctx,
+        VerifyOp::Slh,
+        ptr_off,
+        owner_slot,
+        selector_word,
+        &field_offs,
+        trap,
+        span,
+    )?;
+
+    ctx.b.mark(done_label);
+    Ok(())
+}
+
+/// Emits the verify and the three bindings for one signed parameter under a known scheme. The public
+#[allow(clippy::too_many_arguments)]
+fn emit_signed_binding(
+    ctx: &mut Ctx,
+    op: VerifyOp,
+    ptr_off: u64,
+    owner_slot: u64,
+    selector_word: u64,
+    field_offs: &[u64],
+    trap: Label,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let (pk, sig, scheme_id) = match op {
+        VerifyOp::Ml => (
+            qtv_vm::abi::ML_DSA_PUBLIC_KEY_BYTES as u64,
+            qtv_vm::abi::ML_DSA_SIGNATURE_BYTES as u64,
+            SCHEME_ML,
+        ),
+        VerifyOp::Slh => (
+            qtv_vm::abi::SLH_DSA_PUBLIC_KEY_BYTES as u64,
+            qtv_vm::abi::SLH_DSA_SIGNATURE_BYTES as u64,
+            SCHEME_SLH,
+        ),
+    };
+    let msg_start = pk + sig;
+    let msg_len = MSG_FIELDS_OFF + WORD * field_offs.len() as u64;
+
+    // The verify region pointer, held across the whole binding.
+    let ptr = load_arg(ctx, ptr_off, span)?;
+
+    // 1. Derive the signer address from the public key at the region start into the signer scratch.
+    {
+        let rscheme = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rscheme,
+            imm: scheme_id,
+        });
+        let rout = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rout,
+            imm: SIGNER_ADDR_SCRATCH,
+        });
+        ctx.b.op(Instr::Addr {
+            a: ptr,
+            b: rscheme,
+            c: rout,
+        });
+        ctx.regs.free(rout);
+        ctx.regs.free(rscheme);
+    }
+
+    // 2. Compute the per signer nonce slot, hash(NONCE_TAG || signer), and read the current nonce.
+    {
+        let rtag = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rtag,
+            imm: NONCE_TAG,
+        });
+        store_mem_word(ctx, NONCE_PREIMAGE_SCRATCH, rtag);
+        ctx.regs.free(rtag);
+    }
+    copy_words_fixed(
+        ctx,
+        SIGNER_ADDR_SCRATCH,
+        NONCE_PREIMAGE_SCRATCH + WORD,
+        ADDR_BYTES / WORD,
+        span,
+    )?;
+    {
+        let ra = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: ra,
+            imm: NONCE_PREIMAGE_SCRATCH,
+        });
+        let rb = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rb,
+            imm: WORD + ADDR_BYTES,
+        });
+        let rc = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rc,
+            imm: NONCE_DIGEST_SCRATCH,
+        });
+        ctx.b.op(Instr::Hash {
+            a: ra,
+            b: rb,
+            c: rc,
+        });
+        ctx.regs.free(rc);
+        ctx.regs.free(rb);
+        ctx.regs.free(ra);
+    }
+    // The nonce slot is the first word of the digest, held to read then write the nonce.
+    let slot = load_arg(ctx, NONCE_DIGEST_SCRATCH, span)?;
+    let nonce = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::SLoad {
+        d: nonce,
+        a: slot,
+    });
+
+    // 3. Rebuild the canonical order message in the region just past the public key and signature.
+    let dst = ctx.regs.alloc(span)?;
+    {
+        let k = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: k,
+            imm: msg_start,
+        });
+        ctx.b.op(Instr::AddW {
+            d: dst,
+            a: ptr,
+            b: k,
+        });
+        ctx.regs.free(k);
+    }
+    {
+        let r = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: r,
+            imm: SIGNED_MSG_TAG,
+        });
+        store_off(ctx, dst, MSG_TAG_OFF, r);
+        ctx.regs.free(r);
+    }
+    let contract_off = ctx.args.offset_of(CONTRACT_KEY);
+    copy_words_to_region(ctx, contract_off, dst, MSG_CONTRACT_OFF, ADDR_BYTES / WORD, span)?;
+    {
+        let r = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: r,
+            imm: selector_word,
+        });
+        store_off(ctx, dst, MSG_SELECTOR_OFF, r);
+        ctx.regs.free(r);
+    }
+    copy_words_to_region(
+        ctx,
+        SIGNER_ADDR_SCRATCH,
+        dst,
+        MSG_SIGNER_OFF,
+        ADDR_BYTES / WORD,
+        span,
+    )?;
+    store_off(ctx, dst, MSG_NONCE_OFF, nonce);
+    for (i, field_off) in field_offs.iter().enumerate() {
+        let r = load_arg(ctx, *field_off, span)?;
+        store_off(ctx, dst, MSG_FIELDS_OFF + WORD * i as u64, r);
+        ctx.regs.free(r);
+    }
+
+    // 4. Verify the signature over the public key, signature, and the rebuilt message.
+    {
+        let rlen = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rlen,
+            imm: msg_start + msg_len,
+        });
+        let rok = ctx.regs.alloc(span)?;
+        let instr = match op {
+            VerifyOp::Ml => Instr::VerifyMl {
+                a: ptr,
+                b: rlen,
+                c: rok,
+            },
+            VerifyOp::Slh => Instr::VerifySlh {
+                a: ptr,
+                b: rlen,
+                c: rok,
+            },
+        };
+        ctx.b.op(instr);
+        ctx.b.jz(rok, trap);
+        ctx.regs.free(rok);
+        ctx.regs.free(rlen);
+    }
+
+    // 5. Bind the signer to the stored owner: compare all four words, revert on any mismatch.
+    for i in 0..ADDR_BYTES / WORD {
+        let ownv = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: owner_slot + i,
+        });
+        ctx.b.op(Instr::SLoad {
+            d: ownv,
+            a: SCRATCH,
+        });
+        let sigv = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: SIGNER_ADDR_SCRATCH + i * WORD,
+        });
+        ctx.b.op(Instr::MLoad {
+            d: sigv,
+            a: SCRATCH,
+        });
+        ctx.b.op(Instr::Eq {
+            d: ownv,
+            a: ownv,
+            b: sigv,
+        });
+        ctx.b.jz(ownv, trap);
+        ctx.regs.free(sigv);
+        ctx.regs.free(ownv);
+    }
+
+    // 6. Consume the nonce: store nonce + 1, so the same signed message cannot run a second time.
+    {
+        let one = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi { d: one, imm: 1 });
+        ctx.b.op(Instr::AddW {
+            d: nonce,
+            a: nonce,
+            b: one,
+        });
+        ctx.b.op(Instr::SStore {
+            a: slot,
+            b: nonce,
+        });
+        ctx.regs.free(one);
+    }
+
+    ctx.regs.free(dst);
+    ctx.regs.free(nonce);
+    ctx.regs.free(slot);
+    ctx.regs.free(ptr);
     Ok(())
 }
 
