@@ -1,4 +1,4 @@
-//! The whole example corpus must satisfy the checker.
+//! Every example in the corpus lowers to a container. The value handling contracts, a token issuer, a
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,19 +21,24 @@ fn qs_files(dir: &Path) -> Vec<PathBuf> {
 }
 
 #[test]
-fn every_example_checks_clean() {
+fn every_example_lowers_to_a_container() {
     let files = qs_files(&examples_dir());
-    assert_eq!(files.len(), 22);
+    assert_eq!(files.len(), 22, "the example corpus has twenty two contracts");
     for file in files {
         let src = fs::read_to_string(&file).unwrap();
         let program = quanta_parser::parse(&src)
             .unwrap_or_else(|e| panic!("{}: parse error: {}", file.display(), e.message));
-        quanta_typeck::check(&program).unwrap_or_else(|e| {
-            panic!(
-                "{}: checker rejected a valid contract: {}",
+        quanta_typeck::check(&program)
+            .unwrap_or_else(|e| panic!("{}: the checker rejected it: {}", file.display(), e));
+        let contracts = quanta_codegen::compile(&program)
+            .unwrap_or_else(|e| panic!("{}: code generation failed: {}", file.display(), e));
+        for cc in &contracts {
+            assert!(
+                !cc.container.code.is_empty(),
+                "{}: {} produced an empty container",
                 file.display(),
-                e
-            )
-        });
+                cc.name
+            );
+        }
     }
 }
