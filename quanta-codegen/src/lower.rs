@@ -43,6 +43,7 @@ const MAP_PREIMAGE_SCRATCH: u64 = 41408;
 const MAP_KEY_SCRATCH: u64 = 41472;
 const NAME_KEY_SCRATCH_BASE: u64 = 41536;
 const ID_KEY_SCRATCH: u64 = 42048;
+const STATE_ADDR_SCRATCH_BASE: u64 = 42112;
 
 const NAME_TYPE: &str = "Q_Name";
 const NAME_WINDOW: u64 = 32;
@@ -195,6 +196,8 @@ pub struct Ctx<'a> {
     name_params: HashSet<String>,
     addr_params: HashSet<String>,
     name_keys: HashMap<String, u64>,
+    state_addr_scratch: HashMap<String, u64>,
+    next_state_addr_scratch: u64,
     trap: Label,
     b: &'a mut Builder,
     regs: &'a mut Regs,
@@ -222,6 +225,8 @@ impl<'a> Ctx<'a> {
             name_params: HashSet::new(),
             addr_params: HashSet::new(),
             name_keys: HashMap::new(),
+            state_addr_scratch: HashMap::new(),
+            next_state_addr_scratch: STATE_ADDR_SCRATCH_BASE,
             asset_locals: HashMap::new(),
             next_asset_local: ASSET_LOCAL_BASE,
             entry_mints: false,
@@ -338,6 +343,11 @@ fn lower_field(ctx: &mut Ctx, base: &Expr, field: &str, span: Span) -> Result<Re
                 return load_arg(ctx, off, span);
             }
         }
+        if field == "amount" {
+            if let Some(slot) = state_asset_slot(ctx, &id.text) {
+                return load_slot(ctx, slot, span);
+            }
+        }
         if field == "len" && ctx.name_params.contains(&id.text) {
             let off = ctx.args.offset_of(&format!("{}{NAME_LEN_SUFFIX}", id.text));
             return load_arg(ctx, off, span);
@@ -352,6 +362,19 @@ fn lower_field(ctx: &mut Ctx, base: &Expr, field: &str, span: Span) -> Result<Re
         what: "a field access outside a parameter".into(),
         span,
     })
+}
+
+/// The storage slot of a state asset field. An asset holds its amount in a single scalar slot, so
+fn state_asset_slot(ctx: &Ctx, name: &str) -> Option<u64> {
+    let slot = ctx.layout.slot(name)?;
+    if ctx.layout.map_base(name).is_some()
+        || ctx.layout.is_addr(name)
+        || ctx.layout.is_wide(name)
+        || ctx.layout.guardian_set(name).is_some()
+    {
+        return None;
+    }
+    Some(slot)
 }
 
 fn asset_amount(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<Reg, CodegenError> {
@@ -2140,6 +2163,11 @@ fn lower_address(ctx: &mut Ctx, expr: &Expr, span: Span) -> Result<u64, CodegenE
             return Ok(ctx.args.deploy_param_offset(name, ADDR_BYTES));
         }
     }
+    if let Expr::Ident(id) = expr {
+        if ctx.layout.is_addr(&id.text) {
+            return materialize_state_addr(ctx, &id.text.clone(), span);
+        }
+    }
     match addr_key_of(expr, ctx.params) {
         Some(key) => Ok(ctx.args.offset_of_width(&key, ADDR_BYTES)),
         None => Err(CodegenError::Unsupported {
@@ -2147,6 +2175,29 @@ fn lower_address(ctx: &mut Ctx, expr: &Expr, span: Span) -> Result<u64, CodegenE
             span,
         }),
     }
+}
+
+/// A state `Q_Address` field lives in four storage slots, but `send`, an emitted address argument,
+fn materialize_state_addr(ctx: &mut Ctx, name: &str, span: Span) -> Result<u64, CodegenError> {
+    let slot = ctx
+        .layout
+        .slot(name)
+        .expect("a state address field has a slot");
+    let off = match ctx.state_addr_scratch.get(name).copied() {
+        Some(off) => off,
+        None => {
+            let off = ctx.next_state_addr_scratch;
+            ctx.next_state_addr_scratch += ADDR_BYTES;
+            ctx.state_addr_scratch.insert(name.to_string(), off);
+            off
+        }
+    };
+    for i in 0..ADDR_WORDS {
+        let w = load_slot(ctx, slot + i, span)?;
+        store_mem_word(ctx, off + i * WORD, w);
+        ctx.regs.free(w);
+    }
+    Ok(off)
 }
 
 fn collect_address_keys(
@@ -2406,6 +2457,14 @@ fn map_key_ptr(ctx: &mut Ctx, span: Span) -> Result<Reg, CodegenError> {
 fn ledger_amount(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<Reg, CodegenError> {
     if is_asset_value(ctx, value) {
         asset_amount(ctx, value, span)
+    } else if is_wide_expr(ctx, value) {
+        // A keyed ledger value is one machine word, so a wide amount that carries a high word cannot
+        // be held. Rather than truncate it, which would grow a two word total_supply by more than the
+        // credited balance and desync the two, evaluate it wide and trap on a nonzero high word.
+        let (lo, hi) = eval_wide(ctx, value, false)?;
+        ctx.b.jnz(hi, ctx.trap);
+        ctx.regs.free(hi);
+        Ok(lo)
     } else {
         lower_expr(ctx, value, false)
     }
