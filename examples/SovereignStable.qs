@@ -36,4 +36,6 @@ contract SovereignStable {
     issuance_board = new_set;
     emit BoardRotated(approvals.digest);
   }
+  event Issued(amount: u128, digest: Q_Hash);
+  event BoardRotated(digest: Q_Hash);
 }

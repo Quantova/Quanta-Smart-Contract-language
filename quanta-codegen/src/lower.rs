@@ -2815,17 +2815,21 @@ fn lower_assign(
                 span,
             });
         }
-        let pname = match (ctx.is_genesis, deploy_param_name(value)) {
-            (true, Some(pname)) => pname,
+        let words = count * ADDR_WORDS;
+        let src_off = match (ctx.is_genesis, deploy_param_name(value), value) {
+            (true, Some(pname), _) => ctx.args.deploy_param_offset(pname, words * WORD),
+            (_, _, Expr::Ident(id)) if ctx.params.contains(&id.text) => {
+                ctx.args.offset_of_width(&id.text, words * WORD)
+            }
             _ => {
                 return Err(CodegenError::Unsupported {
-                    what: "a guardian set set from anything but a genesis deploy parameter".into(),
+                    what: "a guardian set set from anything but a genesis deploy parameter or a \
+                           guardian set parameter"
+                        .into(),
                     span,
                 })
             }
         };
-        let words = count * ADDR_WORDS;
-        let src_off = ctx.args.deploy_param_offset(pname, words * WORD);
         for w in 0..words {
             let r = ctx.regs.alloc(span)?;
             ctx.b.op(Instr::Ldi {

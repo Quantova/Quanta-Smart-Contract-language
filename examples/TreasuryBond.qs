@@ -3,6 +3,8 @@ contract TreasuryBond {
   state {
     registrar: Q_Address;
     holders: Registry<Q_Address>;
+    treasury: Q_Asset<QSGD>;
+    face_value: u64 = 1_000;
     maturity: Time = 2036-07-01;
     coupon_bps: u16 = 425;
   }
@@ -10,6 +12,7 @@ contract TreasuryBond {
                   payment: sealed Q_Asset<QSGD>)
     conserves QSGD
     mints BOND_2036
+    writes(treasury)
     denies !holders.contains(order.investor)
   {
     treasury.merge(payment);
@@ -19,6 +22,7 @@ contract TreasuryBond {
   entry redeem(units: Q_Asset<BOND_2036>)
     burns BOND_2036
     conserves QSGD
+    writes(treasury)
     after maturity
   {
     guard treasury.amount >= units.amount * face_value;
@@ -26,4 +30,6 @@ contract TreasuryBond {
     send(caller, principal);
     emit Redeemed(caller, units.amount);
   }
+  event Subscribed(investor: Q_Address, units: u128);
+  event Redeemed(holder: Q_Address, units: u128);
 }
