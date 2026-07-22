@@ -7,6 +7,7 @@ const KEYED_BASE: u64 = 1 << 40;
 const KEYED_STRIDE: u64 = 1 << 32;
 const WIDE_TYPE: &str = "u128";
 const ADDR_TYPE: &str = "Q_Address";
+const ID_TYPE: &str = "Q_Id";
 pub const ADDR_WORDS: u64 = 4;
 const GUARDIAN_SET_TYPE: &str = "GuardianSet";
 const HI_OFFSET: u64 = 1 << 56;
@@ -17,6 +18,7 @@ pub struct Layout {
     wide: HashSet<String>,
     addr: HashSet<String>,
     map_key_addr: HashSet<String>,
+    map_key_id: HashSet<String>,
     map_value_addr: HashSet<String>,
     guardian_sets: HashMap<String, u64>,
 }
@@ -28,6 +30,7 @@ impl Layout {
         let mut wide = HashSet::new();
         let mut addr = HashSet::new();
         let mut map_key_addr = HashSet::new();
+        let mut map_key_id = HashSet::new();
         let mut map_value_addr = HashSet::new();
         let mut guardian_sets = HashMap::new();
         let mut next = 0u64;
@@ -49,6 +52,12 @@ impl Layout {
                             Some(quanta_ast::GenericArg::Type(t)) if t.name.text == ADDR_TYPE
                         ) {
                             map_key_addr.insert(field.name.text.clone());
+                        }
+                        if matches!(
+                            field.ty.args.first(),
+                            Some(quanta_ast::GenericArg::Type(t)) if t.name.text == ID_TYPE
+                        ) {
+                            map_key_id.insert(field.name.text.clone());
                         }
                         if matches!(
                             field.ty.args.get(1),
@@ -84,6 +93,7 @@ impl Layout {
             wide,
             addr,
             map_key_addr,
+            map_key_id,
             map_value_addr,
             guardian_sets,
         }
@@ -97,6 +107,10 @@ impl Layout {
 
     pub fn map_key_is_addr(&self, name: &str) -> bool {
         self.map_key_addr.contains(name)
+    }
+
+    pub fn map_key_is_id(&self, name: &str) -> bool {
+        self.map_key_id.contains(name)
     }
 
     pub fn map_value_is_addr(&self, name: &str) -> bool {
@@ -244,6 +258,19 @@ mod tests {
         assert!(!layout.map_value_is_addr("expiry_of"));
         assert!(layout.map_value_is_addr("owner_of"));
         assert!(layout.map_key_is_addr("owner_of"));
+    }
+
+    #[test]
+    fn a_token_id_key_is_marked_and_carries_a_full_address_value() {
+        let c = contract(
+            "contract C { state { owner_of: Map<Q_Id, Q_Address>; holdings: Map<Q_Address, u64>; } }",
+        );
+        let layout = Layout::build(&c);
+        assert!(layout.map_key_is_id("owner_of"));
+        assert!(!layout.map_key_is_addr("owner_of"));
+        assert!(layout.map_value_is_addr("owner_of"));
+        assert!(!layout.map_key_is_id("holdings"));
+        assert!(layout.map_key_is_addr("holdings"));
     }
 
     #[test]

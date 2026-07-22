@@ -40,6 +40,7 @@ const SCALAR_KEY_SCRATCH: u64 = 41344;
 const MAP_PREIMAGE_SCRATCH: u64 = 41408;
 const MAP_KEY_SCRATCH: u64 = 41472;
 const NAME_KEY_SCRATCH_BASE: u64 = 41536;
+const ID_KEY_SCRATCH: u64 = 42048;
 
 const NAME_TYPE: &str = "Q_Name";
 const NAME_WINDOW: u64 = 32;
@@ -474,11 +475,13 @@ fn lower_binary(
     wrapping: bool,
 ) -> Result<Reg, CodegenError> {
     if matches!(op, BinOp::Eq | BinOp::Ne) {
-        if let Some((mbase, key)) = addr_map_get(ctx, left) {
-            return lower_addr_map_eq(ctx, op, mbase, key, right, left.span());
+        if let Some((name, mbase, key)) = addr_map_get(ctx, left) {
+            let name = name.to_string();
+            return lower_addr_map_eq(ctx, op, &name, mbase, key, right, left.span());
         }
-        if let Some((mbase, key)) = addr_map_get(ctx, right) {
-            return lower_addr_map_eq(ctx, op, mbase, key, left, right.span());
+        if let Some((name, mbase, key)) = addr_map_get(ctx, right) {
+            let name = name.to_string();
+            return lower_addr_map_eq(ctx, op, &name, mbase, key, left, right.span());
         }
     }
     if matches!(
@@ -2188,6 +2191,63 @@ fn map_key_source(ctx: &mut Ctx, key_expr: &Expr, span: Span) -> Result<u64, Cod
     lower_address(ctx, key_expr, span)
 }
 
+fn map_key_region(
+    ctx: &mut Ctx,
+    base: &Expr,
+    key_expr: &Expr,
+    span: Span,
+) -> Result<u64, CodegenError> {
+    if let Expr::Ident(id) = base {
+        return map_key_region_named(ctx, &id.text.clone(), key_expr, span);
+    }
+    map_key_source(ctx, key_expr, span)
+}
+
+fn map_key_region_named(
+    ctx: &mut Ctx,
+    map_name: &str,
+    key_expr: &Expr,
+    span: Span,
+) -> Result<u64, CodegenError> {
+    if ctx.layout.map_key_is_id(map_name) {
+        let id_off = id_word_offset(ctx, key_expr, span)?;
+        return promote_id_key(ctx, id_off, span);
+    }
+    map_key_source(ctx, key_expr, span)
+}
+
+fn id_word_offset(ctx: &mut Ctx, key_expr: &Expr, span: Span) -> Result<u64, CodegenError> {
+    match key_expr {
+        Expr::Ident(id) if ctx.params.contains(&id.text) => Ok(ctx.args.offset_of(&id.text)),
+        Expr::Field { base, name, .. } => match base.as_ref() {
+            Expr::Ident(id) if ctx.params.contains(&id.text) => {
+                Ok(ctx.args.offset_of(&format!("{}.{}", id.text, name.text)))
+            }
+            _ => Err(CodegenError::Unsupported {
+                what: "a token id key that is not a parameter or a parameter field".into(),
+                span,
+            }),
+        },
+        _ => Err(CodegenError::Unsupported {
+            what: "a token id key that is not a parameter or a parameter field".into(),
+            span,
+        }),
+    }
+}
+
+fn promote_id_key(ctx: &mut Ctx, id_off: u64, span: Span) -> Result<u64, CodegenError> {
+    let w = load_arg(ctx, id_off, span)?;
+    store_mem_word(ctx, ID_KEY_SCRATCH, w);
+    ctx.regs.free(w);
+    let zero = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: zero, imm: 0 });
+    for i in 1..ADDR_WORDS {
+        store_mem_word(ctx, ID_KEY_SCRATCH + i * WORD, zero);
+    }
+    ctx.regs.free(zero);
+    Ok(ID_KEY_SCRATCH)
+}
+
 fn map_base_of(ctx: &Ctx, base: &Expr, span: Span) -> Result<u64, CodegenError> {
     if let Expr::Ident(id) = base {
         if let Some(b) = ctx.layout.map_base(&id.text) {
@@ -2326,7 +2386,7 @@ fn lower_map_credit(
     let mbase = map_base_of(ctx, base, span)?;
     let (key_expr, value_expr) = two_args(args, span)?;
     let value = ledger_amount(ctx, value_expr, span)?;
-    let addr_off = map_key_source(ctx, key_expr, span)?;
+    let addr_off = map_key_region(ctx, base, key_expr, span)?;
     compute_map_key(ctx, mbase, addr_off, span)?;
     let cur = ctx.regs.alloc(span)?;
     let key = map_key_ptr(ctx, span)?;
@@ -2360,7 +2420,7 @@ fn lower_map_flag(
 ) -> Result<(), CodegenError> {
     let mbase = map_base_of(ctx, base, span)?;
     let key_expr = one_arg(args, span)?;
-    let addr_off = map_key_source(ctx, key_expr, span)?;
+    let addr_off = map_key_region(ctx, base, key_expr, span)?;
     compute_map_key(ctx, mbase, addr_off, span)?;
     let v = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi { d: v, imm: flag });
@@ -2379,7 +2439,7 @@ fn lower_map_read(
 ) -> Result<Reg, CodegenError> {
     let mbase = map_base_of(ctx, base, span)?;
     let key_expr = one_arg(args, span)?;
-    let addr_off = map_key_source(ctx, key_expr, span)?;
+    let addr_off = map_key_region(ctx, base, key_expr, span)?;
     if map_name_is_value_addr(ctx, base) {
         let acc = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi { d: acc, imm: 0 });
@@ -2420,7 +2480,7 @@ fn map_name_is_value_addr(ctx: &Ctx, base: &Expr) -> bool {
 fn lower_map_set(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Result<(), CodegenError> {
     let mbase = map_base_of(ctx, base, span)?;
     let (key_expr, value_expr) = two_args(args, span)?;
-    let key_off = map_key_source(ctx, key_expr, span)?;
+    let key_off = map_key_region(ctx, base, key_expr, span)?;
     if map_name_is_value_addr(ctx, base) {
         let val_off = lower_address(ctx, value_expr, span)?;
         for i in 0..ADDR_WORDS {
@@ -2447,7 +2507,7 @@ fn lower_map_set(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Resul
     Ok(())
 }
 
-fn addr_map_get<'e>(ctx: &Ctx, expr: &'e Expr) -> Option<(u64, &'e Expr)> {
+fn addr_map_get<'e>(ctx: &Ctx, expr: &'e Expr) -> Option<(&'e str, u64, &'e Expr)> {
     let Expr::Call { callee, args, .. } = expr else {
         return None;
     };
@@ -2464,18 +2524,19 @@ fn addr_map_get<'e>(ctx: &Ctx, expr: &'e Expr) -> Option<(u64, &'e Expr)> {
         return None;
     }
     let mbase = ctx.layout.map_base(&id.text)?;
-    args.first().map(|key| (mbase, key))
+    args.first().map(|key| (id.text.as_str(), mbase, key))
 }
 
 fn lower_addr_map_eq(
     ctx: &mut Ctx,
     op: BinOp,
+    map_name: &str,
     mbase: u64,
     key_expr: &Expr,
     other: &Expr,
     span: Span,
 ) -> Result<Reg, CodegenError> {
-    let key_off = map_key_source(ctx, key_expr, span)?;
+    let key_off = map_key_region_named(ctx, map_name, key_expr, span)?;
     let other_off = lower_address(ctx, other, span)?;
     let acc = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi { d: acc, imm: 1 });
