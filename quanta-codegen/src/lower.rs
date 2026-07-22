@@ -861,6 +861,13 @@ pub fn lower_entry(
         ctx.args.offset_of_width(CALLER_KEY, ADDR_BYTES);
         ctx.args.offset_of_width(CONTRACT_KEY, ADDR_BYTES);
         ctx.args.offset_of_width(TIME_KEY, WORD);
+        for param in &entry.params {
+            if param.ty.name.text == NAME_TYPE {
+                ctx.args.offset_of_width(&param.name.text, NAME_WINDOW);
+                ctx.args
+                    .offset_of(&format!("{}{NAME_LEN_SUFFIX}", param.name.text));
+            }
+        }
         for key in &address_key_list {
             if key != CALLER_KEY {
                 ctx.args.offset_of_width(key, ADDR_BYTES);
@@ -2468,7 +2475,7 @@ fn lower_addr_map_eq(
     other: &Expr,
     span: Span,
 ) -> Result<Reg, CodegenError> {
-    let key_off = lower_address(ctx, key_expr, span)?;
+    let key_off = map_key_source(ctx, key_expr, span)?;
     let other_off = lower_address(ctx, other, span)?;
     let acc = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi { d: acc, imm: 1 });
