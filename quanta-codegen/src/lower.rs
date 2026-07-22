@@ -27,6 +27,8 @@ const DEPLOY_PARAMS: &str = "deploy_params";
 
 const GENESIS_PARAM_SENTINEL: u64 = u64::from_be_bytes(*b"QGENSNTL");
 
+const GENESIS_INIT_GUARD_SLOT: u64 = u64::from_be_bytes(*b"QGINIT01");
+
 const CALLER_KEY: &str = "@caller";
 
 const CONTRACT_KEY: &str = "@contract";
@@ -814,22 +816,6 @@ fn store_slot(ctx: &mut Ctx, slot: u64, value: Reg, span: Span) -> Result<(), Co
     Ok(())
 }
 
-fn refuse_sealed(entry: &EntryDecl) -> Result<(), CodegenError> {
-    for param in &entry.params {
-        if param.sealed {
-            return Err(CodegenError::Unsupported {
-                what: format!(
-                    "opening the sealed parameter `{}`, which needs a decapsulation opcode absent \
-                     from qtv-vm v0.2.0",
-                    param.name.text
-                ),
-                span: param.span,
-            });
-        }
-    }
-    Ok(())
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn lower_entry(
     layout: &Layout,
@@ -840,7 +826,6 @@ pub fn lower_entry(
     trap: Label,
     is_genesis: bool,
 ) -> Result<Args, CodegenError> {
-    refuse_sealed(entry)?;
     let params: HashSet<String> = entry.params.iter().map(|p| p.name.text.clone()).collect();
     let asset_params: HashSet<String> = entry
         .params
@@ -901,6 +886,10 @@ pub fn lower_entry(
         lower_signed_prologue(&mut ctx, entry, trap)?;
         lower_quorum_prologue(&mut ctx, entry, trap)?;
         lower_after_prologue(&mut ctx, entry, trap)?;
+        lower_bounds_prologue(&mut ctx, entry, trap)?;
+        if ctx.is_genesis {
+            lower_genesis_guard(&mut ctx, entry.span)?;
+        }
         for stmt in &entry.body {
             lower_stmt(&mut ctx, stmt, trap)?;
         }
@@ -931,6 +920,17 @@ pub fn lower_entry(
     }
     b.op(Instr::Halt);
     Ok(args)
+}
+
+fn lower_genesis_guard(ctx: &mut Ctx, span: Span) -> Result<(), CodegenError> {
+    let seen = load_slot(ctx, GENESIS_INIT_GUARD_SLOT, span)?;
+    ctx.b.jnz(seen, ctx.trap);
+    ctx.regs.free(seen);
+    let one = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: one, imm: 1 });
+    store_slot(ctx, GENESIS_INIT_GUARD_SLOT, one, span)?;
+    ctx.regs.free(one);
+    Ok(())
 }
 
 enum VerifyOp {
@@ -1415,6 +1415,30 @@ fn lower_after_prologue(
         ctx.b.jnz(time, trap);
         ctx.regs.free(threshold);
         ctx.regs.free(time);
+    }
+    Ok(())
+}
+
+/// A `limits` clause states a bound that must hold, and a `denies` clause states a condition that
+fn lower_bounds_prologue(
+    ctx: &mut Ctx,
+    entry: &EntryDecl,
+    trap: Label,
+) -> Result<(), CodegenError> {
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } => {
+                let r = lower_expr(ctx, expr, false)?;
+                ctx.b.jz(r, trap);
+                ctx.regs.free(r);
+            }
+            Clause::Denies { expr, .. } => {
+                let r = lower_expr(ctx, expr, false)?;
+                ctx.b.jnz(r, trap);
+                ctx.regs.free(r);
+            }
+            _ => {}
+        }
     }
     Ok(())
 }

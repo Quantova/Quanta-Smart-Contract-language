@@ -30,6 +30,8 @@ pub struct EntryArtifact {
     pub signature: String,
     pub selector: [u8; SELECTOR_BYTES],
     pub args: Vec<ArgSlot>,
+    /// Names of the parameters declared `sealed`. Their bytes travel under key encapsulation and are
+    pub sealed_params: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +124,12 @@ fn compile_entries(
                 .layout()
                 .into_iter()
                 .map(|(key, offset)| ArgSlot { key, offset })
+                .collect(),
+            sealed_params: entry
+                .params
+                .iter()
+                .filter(|p| p.sealed)
+                .map(|p| p.name.text.clone())
                 .collect(),
         });
     }

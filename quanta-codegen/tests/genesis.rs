@@ -1,7 +1,7 @@
 //! The genesis constructor. A contract's genesis block lowers to a reserved entry the chain runs at
 
 use qtv_vm::container::{selector, GENESIS_SIGNATURE};
-use qtv_vm::interp::Interpreter;
+use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
 
 mod common;
@@ -89,4 +89,42 @@ fn a_bump_after_genesis_is_gated_by_the_stored_owner() {
         .map(|i: usize| u64::from_be_bytes(deployer[i * 8..i * 8 + 8].try_into().unwrap()))
         .collect();
     assert_eq!(owner, expected, "the stored owner is the whole deployer address");
+}
+
+#[test]
+fn genesis_run_a_second_time_on_initialized_storage_reverts_and_keeps_the_owner() {
+    let cc = compile(COUNTER);
+    let gsel = selector(GENESIS_SIGNATURE);
+
+    let deployer = [0x7Eu8; 32];
+    let mut mem = vec![0u8; 4096];
+    mem[0..32].copy_from_slice(&deployer);
+    let first = Interpreter::for_entry(&cc.container, gsel, 200_000)
+        .expect("genesis resolves")
+        .with_memory(&mem)
+        .run()
+        .expect("the first genesis halts");
+
+    let stranger = [0xAAu8; 32];
+    let mut stranger_mem = vec![0u8; 4096];
+    stranger_mem[0..32].copy_from_slice(&stranger);
+    let second = Interpreter::for_entry(&cc.container, gsel, 200_000)
+        .expect("genesis resolves")
+        .with_storage(first.storage.clone())
+        .with_memory(&stranger_mem)
+        .run();
+    assert_eq!(
+        second.map(|out| out.storage),
+        Err(Fault::DivByZero),
+        "a second genesis run on initialized storage reverts"
+    );
+
+    for i in 0..4u64 {
+        let word = u64::from_be_bytes(deployer[i as usize * 8..i as usize * 8 + 8].try_into().unwrap());
+        assert_eq!(
+            first.storage.get(&slot_key(i)),
+            Some(&word),
+            "the owner the first genesis stored is unchanged"
+        );
+    }
 }
