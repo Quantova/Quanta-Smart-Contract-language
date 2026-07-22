@@ -48,6 +48,8 @@ const NAME_LEN_SUFFIX: &str = "#len";
 
 const ADDR_WORDS: u64 = ADDR_BYTES / WORD;
 
+const ADDR_TYPE: &str = "Q_Address";
+
 const SIGNED_MSG_TAG: u64 = u64::from_be_bytes(*b"QTVSGN01");
 const NONCE_TAG: u64 = u64::from_be_bytes(*b"QTVNONCE");
 
@@ -189,6 +191,7 @@ pub struct Ctx<'a> {
     is_genesis: bool,
     address_keys: HashSet<String>,
     name_params: HashSet<String>,
+    addr_params: HashSet<String>,
     name_keys: HashMap<String, u64>,
     trap: Label,
     b: &'a mut Builder,
@@ -215,6 +218,7 @@ impl<'a> Ctx<'a> {
             asset_params,
             address_keys: HashSet::new(),
             name_params: HashSet::new(),
+            addr_params: HashSet::new(),
             name_keys: HashMap::new(),
             asset_locals: HashMap::new(),
             next_asset_local: ASSET_LOCAL_BASE,
@@ -482,6 +486,17 @@ fn lower_binary(
         if let Some((name, mbase, key)) = addr_map_get(ctx, right) {
             let name = name.to_string();
             return lower_addr_map_eq(ctx, op, &name, mbase, key, left, right.span());
+        }
+        let laddr = is_scalar_addr(ctx, left);
+        let raddr = is_scalar_addr(ctx, right);
+        if laddr || raddr {
+            if laddr != raddr {
+                return Err(CodegenError::Unsupported {
+                    what: "comparing a Q_Address to a value that is not an address".into(),
+                    span: left.span(),
+                });
+            }
+            return lower_scalar_addr_eq(ctx, op, left, right, left.span());
         }
     }
     if matches!(
@@ -859,6 +874,12 @@ pub fn lower_entry(
             .params
             .iter()
             .filter(|p| p.ty.name.text == NAME_TYPE)
+            .map(|p| p.name.text.clone())
+            .collect();
+        ctx.addr_params = entry
+            .params
+            .iter()
+            .filter(|p| p.ty.name.text == ADDR_TYPE)
             .map(|p| p.name.text.clone())
             .collect();
         ctx.args.offset_of_width(CALLER_KEY, ADDR_BYTES);
@@ -2564,6 +2585,80 @@ fn lower_addr_map_eq(
         });
         ctx.regs.free(ow);
         ctx.regs.free(stored);
+    }
+    if op == BinOp::Ne {
+        logical_not(ctx, acc);
+    }
+    Ok(acc)
+}
+
+enum AddrLoc {
+    State(u64),
+    Mem(u64),
+}
+
+fn is_scalar_addr(ctx: &Ctx, expr: &Expr) -> bool {
+    match expr {
+        Expr::Caller { .. } => true,
+        Expr::Ident(id) => {
+            ctx.layout.is_addr(&id.text)
+                || id.text == "deployer"
+                || ctx.addr_params.contains(&id.text)
+        }
+        _ => false,
+    }
+}
+
+fn scalar_addr_loc(ctx: &mut Ctx, expr: &Expr, span: Span) -> Result<AddrLoc, CodegenError> {
+    if let Expr::Ident(id) = expr {
+        if ctx.layout.is_addr(&id.text) {
+            let slot = ctx
+                .layout
+                .slot(&id.text)
+                .expect("an address field has a slot");
+            return Ok(AddrLoc::State(slot));
+        }
+    }
+    Ok(AddrLoc::Mem(lower_address(ctx, expr, span)?))
+}
+
+fn load_addr_word(ctx: &mut Ctx, loc: &AddrLoc, word: u64, span: Span) -> Result<Reg, CodegenError> {
+    match loc {
+        AddrLoc::State(slot) => load_slot(ctx, slot + word, span),
+        AddrLoc::Mem(off) => {
+            let d = ctx.regs.alloc(span)?;
+            ctx.b.op(Instr::Ldi {
+                d: SCRATCH,
+                imm: off + word * WORD,
+            });
+            ctx.b.op(Instr::MLoad { d, a: SCRATCH });
+            Ok(d)
+        }
+    }
+}
+
+fn lower_scalar_addr_eq(
+    ctx: &mut Ctx,
+    op: BinOp,
+    left: &Expr,
+    right: &Expr,
+    span: Span,
+) -> Result<Reg, CodegenError> {
+    let lhs = scalar_addr_loc(ctx, left, span)?;
+    let rhs = scalar_addr_loc(ctx, right, span)?;
+    let acc = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: acc, imm: 1 });
+    for i in 0..ADDR_WORDS {
+        let lw = load_addr_word(ctx, &lhs, i, span)?;
+        let rw = load_addr_word(ctx, &rhs, i, span)?;
+        ctx.b.op(Instr::Eq { d: lw, a: lw, b: rw });
+        ctx.b.op(Instr::And {
+            d: acc,
+            a: acc,
+            b: lw,
+        });
+        ctx.regs.free(rw);
+        ctx.regs.free(lw);
     }
     if op == BinOp::Ne {
         logical_not(ctx, acc);
