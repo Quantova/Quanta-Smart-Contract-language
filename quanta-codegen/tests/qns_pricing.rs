@@ -12,14 +12,17 @@ use common::{map_key, slot_key};
 
 const SRC: &str = include_str!("../../examples/QNS.qs");
 
-const BASE3_SLOT: u64 = 4;
-const BASE4_SLOT: u64 = 5;
-const BASE5_SLOT: u64 = 6;
-const GRACE_SLOT: u64 = 7;
-const AUCTION_SLOT: u64 = 8;
-const START_PREMIUM_SLOT: u64 = 9;
-const INTERVAL_SLOT: u64 = 10;
-const VAULT_SLOT: u64 = 11;
+// The scalar fields follow the guardian set, which occupies the first twenty eight scalar slots
+// (seven members of four words), so the pricing fields begin at slot twenty eight and the vault
+// lands at slot thirty five.
+const BASE3_SLOT: u64 = 28;
+const BASE4_SLOT: u64 = 29;
+const BASE5_SLOT: u64 = 30;
+const GRACE_SLOT: u64 = 31;
+const AUCTION_SLOT: u64 = 32;
+const START_PREMIUM_SLOT: u64 = 33;
+const INTERVAL_SLOT: u64 = 34;
+const VAULT_SLOT: u64 = 35;
 
 const EXPIRY_BASE: u64 = 1 << 40;
 const OWNER_BASE: u64 = (1 << 40) + (1 << 32);
@@ -88,6 +91,22 @@ fn run(
     len: u64,
     years: u64,
 ) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
+    run_paid(cc, name, storage, caller, time, label, len, years, 0)
+}
+
+/// Same drive as `run` with the sealed payment asset amount written at the entry's `payment`
+#[allow(clippy::too_many_arguments)]
+fn run_paid(
+    cc: &CompiledContract,
+    name: &str,
+    storage: BTreeMap<[u8; 32], u64>,
+    caller: &[u8; 32],
+    time: u64,
+    label: &[u8],
+    len: u64,
+    years: u64,
+    payment: u64,
+) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
     let sel: [u8; SELECTOR_BYTES] = entry(cc, name).selector;
     let mut mem = vec![0u8; 4096];
     mem[0..32].copy_from_slice(caller);
@@ -99,6 +118,8 @@ fn run(
     mem[lo..lo + 8].copy_from_slice(&len.to_be_bytes());
     let yo = arg_off(cc, name, "years");
     mem[yo..yo + 8].copy_from_slice(&years.to_be_bytes());
+    let po = arg_off(cc, name, "payment");
+    mem[po..po + 8].copy_from_slice(&payment.to_be_bytes());
     Interpreter::for_entry(&cc.container, sel, GAS)?
         .with_storage(storage)
         .with_memory(&mem)
@@ -144,7 +165,7 @@ fn tier_selection_charges_base_by_label_length() {
         (b"alice".as_slice(), 5, 100),
         (b"satoshi".as_slice(), 7, 100),
     ] {
-        let s = run(&cc, "register", seed(&base_params()), &caller, 0, label, len, 1)
+        let s = run_paid(&cc, "register", seed(&base_params()), &caller, 0, label, len, 1, tier)
             .expect("register halts");
         assert_eq!(vault(&s), tier, "a {len} character label is charged its tier for one year");
         // Owner and expiry landed under the label-derived key.
@@ -161,7 +182,7 @@ fn tier_selection_charges_base_by_label_length() {
 fn a_multi_year_registration_charges_the_tier_per_year() {
     let cc = compiled();
     let caller = [0xC0u8; 32];
-    let s = run(&cc, "register", seed(&base_params()), &caller, 0, b"jeff", 4, 3)
+    let s = run_paid(&cc, "register", seed(&base_params()), &caller, 0, b"jeff", 4, 3, 300 * 3)
         .expect("register halts");
     assert_eq!(vault(&s), 300 * 3, "three years of the four character tier");
 }
@@ -171,7 +192,8 @@ fn the_absolute_expiry_is_now_plus_whole_years() {
     let cc = compiled();
     let caller = [0xC0u8; 32];
     let t0 = 1000 * DAY;
-    let s = run(&cc, "register", seed(&base_params()), &caller, t0, b"alice", 5, 4)
+    // Five character label at the five plus tier for four years.
+    let s = run_paid(&cc, "register", seed(&base_params()), &caller, t0, b"alice", 5, 4, 100 * 4)
         .expect("register halts");
     assert_eq!(expiry(&s, b"alice"), t0 + 4 * YEAR, "expiry is now plus four whole years");
     assert_eq!(expiry(&s, b"alice") % DAY, 0, "the expiry lands on a whole day");
@@ -183,7 +205,7 @@ fn a_label_shorter_than_three_reverts() {
     let caller = [0xC0u8; 32];
     let r = run(&cc, "register", seed(&base_params()), &caller, 0, b"ab", 2, 1);
     assert!(matches!(r, Err(Fault::DivByZero)), "a two character label reverts and charges nothing");
-    let r3 = run(&cc, "register", seed(&base_params()), &caller, 0, b"bob", 3, 1);
+    let r3 = run_paid(&cc, "register", seed(&base_params()), &caller, 0, b"bob", 3, 1, 500);
     assert!(r3.is_ok(), "a three character label is the shortest that registers");
 }
 
@@ -192,12 +214,13 @@ fn renew_extends_by_whole_years_within_grace() {
     let cc = compiled();
     let caller = [0xC0u8; 32];
     let t0 = 1000 * DAY;
-    let s = run(&cc, "register", seed(&base_params()), &caller, t0, b"jeff", 4, 1)
+    let s = run_paid(&cc, "register", seed(&base_params()), &caller, t0, b"jeff", 4, 1, 300)
         .expect("register halts");
     let e1 = expiry(&s, b"jeff");
     assert_eq!(e1, t0 + YEAR);
     // Renew two years while the name is still active (now well before expiry + grace).
-    let s2 = run(&cc, "renew", s, &caller, t0 + 10 * DAY, b"jeff", 4, 2).expect("renew halts");
+    let s2 = run_paid(&cc, "renew", s, &caller, t0 + 10 * DAY, b"jeff", 4, 2, 300 * 2)
+        .expect("renew halts");
     assert_eq!(expiry(&s2, b"jeff"), e1 + 2 * YEAR, "renew adds two whole years to the expiry");
     assert_eq!(vault(&s2), 300 + 300 * 2, "renew charges the tier per renewed year");
 }
@@ -208,7 +231,8 @@ fn renew_past_grace_reverts() {
     let caller = [0xC0u8; 32];
     let p = base_params();
     let t0 = 1000 * DAY;
-    let s = run(&cc, "register", seed(&p), &caller, t0, b"jeff", 4, 1).expect("register halts");
+    let s = run_paid(&cc, "register", seed(&p), &caller, t0, b"jeff", 4, 1, 300)
+        .expect("register halts");
     let e1 = expiry(&s, b"jeff");
     // now beyond expiry + grace: the grace guard reverts.
     let past = e1 + p.grace + DAY;
@@ -229,9 +253,10 @@ fn the_premium_halves_by_start_premium_shifted_right_k() {
         let mut storage = seed(&p);
         storage.insert(map_key(EXPIRY_BASE, &name_key(b"alice")), e);
         let now = grace_end + k * p.interval;
-        let s = run(&cc, "claim_premium", storage, &claimant, now, b"alice", 5, 1)
-            .expect("claim_premium halts inside the auction window");
         let premium = p.start_premium >> (k & 63);
+        let pay = premium + p.base_5_plus;
+        let s = run_paid(&cc, "claim_premium", storage, &claimant, now, b"alice", 5, 1, pay)
+            .expect("claim_premium halts inside the auction window");
         assert_eq!(
             vault(&s),
             premium + p.base_5_plus,
@@ -274,7 +299,7 @@ fn a_registered_name_cannot_be_re_registered_before_it_fully_lapses() {
     let b = [0xB2u8; 32];
     let p = base_params();
     let t0 = 1000 * DAY;
-    let s = run(&cc, "register", seed(&p), &a, t0, b"jeff", 4, 1).expect("register halts");
+    let s = run_paid(&cc, "register", seed(&p), &a, t0, b"jeff", 4, 1, 300).expect("register halts");
     let e1 = expiry(&s, b"jeff");
 
     // A stranger tries to re-register while the name is still held: reverts.
@@ -283,7 +308,8 @@ fn a_registered_name_cannot_be_re_registered_before_it_fully_lapses() {
 
     // Once now is past expiry + grace + auction, the name is free again.
     let free_at = e1 + p.grace + p.auction;
-    let s2 = run(&cc, "register", s, &b, free_at, b"jeff", 4, 1).expect("a fully lapsed name registers");
+    let s2 = run_paid(&cc, "register", s, &b, free_at, b"jeff", 4, 1, 300)
+        .expect("a fully lapsed name registers");
     assert_eq!(
         owner_word(&s2, b"jeff", 0),
         u64::from_be_bytes(b[0..8].try_into().unwrap()),
