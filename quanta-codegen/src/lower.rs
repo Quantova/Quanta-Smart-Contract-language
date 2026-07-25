@@ -35,6 +35,11 @@ const CONTRACT_KEY: &str = "@contract";
 
 const TIME_KEY: &str = "@time";
 
+// The chain the entry runs on, supplied by the host the same way the contract self address is. It is
+// folded into the signed and quorum message tag so a captured authorization cannot be lifted onto
+// another chain. A host that leaves it zero reproduces the unbound tag.
+const CHAIN_KEY: &str = "@chain";
+
 const SIGNER_ADDR_SCRATCH: u64 = 40960;
 const NONCE_PREIMAGE_SCRATCH: u64 = 41088;
 const NONCE_DIGEST_SCRATCH: u64 = 41216;
@@ -1267,6 +1272,7 @@ fn emit_quorum_member(
             d: r,
             imm: SIGNED_MSG_TAG,
         });
+        bind_chain_into_tag(ctx, r, span)?;
         store_off(ctx, dst, MSG_TAG_OFF, r);
         ctx.regs.free(r);
     }
@@ -1576,6 +1582,19 @@ fn quorum_spec(param: &Param) -> Option<(u64, u64, String)> {
     Some((m, n, set?))
 }
 
+
+/// Fold the chain identity the host supplies at `@chain` into a message tag register. The signed and
+fn bind_chain_into_tag(ctx: &mut Ctx, tag: Reg, span: Span) -> Result<(), CodegenError> {
+    let chain_off = ctx.args.offset_of(CHAIN_KEY);
+    let chain = load_arg(ctx, chain_off, span)?;
+    ctx.b.op(Instr::Xor {
+        d: tag,
+        a: tag,
+        b: chain,
+    });
+    ctx.regs.free(chain);
+    Ok(())
+}
 
 fn store_off(ctx: &mut Ctx, base: Reg, off: u64, value: Reg) {
     ctx.b.op(Instr::Ldi {
@@ -1942,6 +1961,7 @@ fn emit_signed_binding(
             d: r,
             imm: SIGNED_MSG_TAG,
         });
+        bind_chain_into_tag(ctx, r, span)?;
         store_off(ctx, dst, MSG_TAG_OFF, r);
         ctx.regs.free(r);
     }
