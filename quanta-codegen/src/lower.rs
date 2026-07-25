@@ -936,6 +936,11 @@ pub fn lower_entry(
         ctx.args.offset_of_width(CALLER_KEY, ADDR_BYTES);
         ctx.args.offset_of_width(CONTRACT_KEY, ADDR_BYTES);
         ctx.args.offset_of_width(TIME_KEY, WORD);
+        // The chain identity the host injects at @chain is a fixed context word, reserved right after
+        // @time and ahead of any parameter, so the host always sets it and it never lands in the caller
+        // supplied argument region. This word is what binds a signed or quorum order to one chain, so an
+        // order captured on one chain does not verify on another.
+        ctx.args.offset_of_width(CHAIN_KEY, WORD);
         for param in &entry.params {
             if param.ty.name.text == NAME_TYPE {
                 ctx.args.offset_of_width(&param.name.text, NAME_WINDOW);

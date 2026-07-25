@@ -70,11 +70,11 @@ fn run(
 }
 
 fn deploy(cc: &CompiledContract, owner: &[u8; 32], supply: u64) -> BTreeMap<[u8; 32], u64> {
-    let mut mem = vec![0u8; 72 + 32 + 16 + 8];
-    mem[72..104].copy_from_slice(owner);
-    mem[104..112].copy_from_slice(&supply.to_be_bytes());
-    mem[112..120].copy_from_slice(&0u64.to_be_bytes());
-    mem[120..128].copy_from_slice(&SENTINEL);
+    let mut mem = vec![0u8; 80 + 32 + 16 + 8];
+    mem[80..112].copy_from_slice(owner);
+    mem[112..120].copy_from_slice(&supply.to_be_bytes());
+    mem[120..128].copy_from_slice(&0u64.to_be_bytes());
+    mem[128..136].copy_from_slice(&SENTINEL);
     let (storage, _) = run(cc, selector(GENESIS_SIGNATURE), BTreeMap::new(), &mem)
         .expect("genesis initializes from the deploy parameters");
     for i in 0..4u64 {
@@ -271,5 +271,52 @@ fn a_transfer_of_more_than_the_balance_reverts() {
         run(&cc, selector_of(&cc, "transfer"), storage, &mem).map(|(s, _)| s),
         Err(Fault::Overflow),
         "an overdrawn transfer reverts"
+    );
+}
+
+#[test]
+fn a_signed_mint_is_bound_to_its_chain_and_does_not_replay_on_another() {
+    // An order the owner authorises for one chain must not verify on another. The machine folds the
+    // host supplied @chain word at memory[72..80] into the signed message tag, so the same captured
+    // order carries a different tag under a different chain id and its signature no longer verifies.
+    let cc = compiled();
+    let key = owner_key();
+    let owner = signer_address(SCHEME_ML, &key.0);
+    let to = holder_a();
+    let chain_a: u64 = 3;
+    let chain_b: u64 = 9;
+    let mint = find_entry(&cc, "mint");
+    let mint_sel = selector_of(&cc, "mint");
+
+    // Sign the order for chain A: the tag is QTVSGN01 folded with chain_a, matching bind_chain_into_tag.
+    let mut msg = mint_message(&cc, &owner, 0, 100, &to);
+    let tag = (u64::from_be_bytes(*b"QTVSGN01") ^ chain_a).to_be_bytes();
+    msg[0..8].copy_from_slice(&tag);
+    let sig = ml_dsa::sign(&key.1, &msg, &[], &[0u8; 32]).expect("sign");
+    let mut region = Vec::new();
+    region.extend_from_slice(&key.0);
+    region.extend_from_slice(&sig);
+    region.extend_from_slice(&msg);
+
+    let mem_on = |chain: u64| {
+        let mut mem = vec![0u8; 65536];
+        mem[32..64].copy_from_slice(&CONTRACT);
+        mem[72..80].copy_from_slice(&chain.to_be_bytes());
+        put_addr(&mut mem, mint, "order.to", &to);
+        put_arg(&mut mem, mint, "order.amount", 100);
+        let region_off = 8192usize;
+        mem[region_off..region_off + region.len()].copy_from_slice(&region);
+        put_arg(&mut mem, mint, "order#scheme", SCHEME_ML as u64);
+        put_arg(&mut mem, mint, "order#ptr", region_off as u64);
+        mem
+    };
+
+    let on_a = run(&cc, mint_sel, deploy(&cc, &owner, 0), &mem_on(chain_a));
+    assert!(on_a.is_ok(), "the order authorised for chain A mints on chain A");
+
+    let on_b = run(&cc, mint_sel, deploy(&cc, &owner, 0), &mem_on(chain_b));
+    assert!(
+        on_b.is_err(),
+        "the same captured order does not verify on chain B, so a cross chain replay is refused"
     );
 }

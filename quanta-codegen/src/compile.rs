@@ -277,8 +277,12 @@ mod tests {
                     offset: 64,
                 },
                 ArgSlot {
-                    key: "step".to_string(),
+                    key: "@chain".to_string(),
                     offset: 72,
+                },
+                ArgSlot {
+                    key: "step".to_string(),
+                    offset: 80,
                 },
             ]
         );
