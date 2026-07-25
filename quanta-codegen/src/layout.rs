@@ -128,6 +128,27 @@ impl Layout {
         self.map_bases.get(name).copied()
     }
 
+    // Every scalar slot of every field, in a deterministic slot order so the container identity is
+    // stable. Genesis, the constructor, initialises the whole state, so it declares all of these.
+    pub fn all_state_slots(&self) -> Vec<u64> {
+        let mut ordered: Vec<(&str, u64)> =
+            self.slots.iter().map(|(n, s)| (n.as_str(), *s)).collect();
+        ordered.sort_by_key(|(_, slot)| *slot);
+        let mut out = Vec::new();
+        for (name, _) in ordered {
+            self.field_slots(name, &mut out);
+        }
+        out
+    }
+
+    // Every map base, deterministically ordered. Genesis may seed any map, so it declares all of these
+    // as keyed domains.
+    pub fn all_map_bases(&self) -> Vec<u64> {
+        let mut bases: Vec<u64> = self.map_bases.values().copied().collect();
+        bases.sort_unstable();
+        bases
+    }
+
     pub fn is_wide(&self, name: &str) -> bool {
         self.wide.contains(name)
     }
@@ -157,7 +178,11 @@ impl Layout {
             Some(slot) => slot,
             None => return,
         };
-        if self.is_addr(name) {
+        if let Some((base, count)) = self.guardian_set(name) {
+            for word in 0..count * ADDR_WORDS {
+                out.push(base + word);
+            }
+        } else if self.is_addr(name) {
             for word in 0..ADDR_WORDS {
                 out.push(slot + word);
             }
@@ -170,24 +195,44 @@ impl Layout {
     }
 
     pub fn access(&self, entry: &EntryDecl) -> StateAccess {
-        let mut reads = Vec::new();
+        // Reads are broad, writes are tight. Reading chain state is public and cannot corrupt it, and
+        // Quanta infers reads from invariants, limits, guards, denies, and signature bindings that are
+        // never spelled out in a reads clause, so an entry may read any of its own scalar fields or map
+        // domains. A write is what can corrupt state, so writes stay exactly the scalar fields and map
+        // bases the entry declares it writes. This is a real manifest over the contract's own storage.
+        let reads = self.all_state_slots();
+        let keyed_reads = self.all_map_bases();
         let mut writes = Vec::new();
+        let mut keyed_writes = Vec::new();
         for clause in &entry.clauses {
-            match clause {
-                Clause::Reads { names, .. } => {
-                    for name in names {
-                        self.field_slots(&name.text, &mut reads);
-                    }
-                }
-                Clause::Writes { names, .. } => {
-                    for name in names {
+            if let Clause::Writes { names, .. } = clause {
+                for name in names {
+                    // A map lives in a keyed domain, so it is declared by its base, which grants the
+                    // whole keyspace, rather than by a scalar slot.
+                    if let Some(base) = self.map_base(&name.text) {
+                        keyed_writes.push(base);
+                    } else {
                         self.field_slots(&name.text, &mut writes);
                     }
                 }
-                _ => {}
             }
         }
-        StateAccess { reads, writes }
+        // A signed by binding, or a quorum binding, reads and increments per signer nonces in a keyed
+        // domain under the nonce tag. Declaring the nonce base as a keyed write authorises both its
+        // write and its read, since a declared keyed write grants the matching read.
+        let touches_nonce = entry
+            .params
+            .iter()
+            .any(|p| p.signed_by.is_some() || p.ty.name.text == "Quorum");
+        if touches_nonce {
+            keyed_writes.push(crate::lower::NONCE_TAG);
+        }
+        StateAccess {
+            reads,
+            writes,
+            keyed_reads,
+            keyed_writes,
+        }
     }
 }
 
@@ -277,13 +322,15 @@ mod tests {
     }
 
     #[test]
-    fn access_maps_reads_and_writes_to_slots() {
+    fn access_reads_broadly_and_writes_tightly() {
         let c = contract(
             "contract C { state { a: u64; b: u64; } entry e(x: u64) reads(a) writes(b) { } }",
         );
         let layout = Layout::build(&c);
         let access = layout.access(first_entry(&c));
-        assert_eq!(access.reads, vec![0]);
+        // Reads are broad, every scalar field, because Quanta infers reads beyond the reads clause.
+        assert_eq!(access.reads, vec![0, 1]);
+        // Writes stay tight, exactly the declared field.
         assert_eq!(access.writes, vec![1]);
     }
 }

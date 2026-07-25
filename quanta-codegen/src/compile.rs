@@ -164,7 +164,18 @@ fn compile_entries(
             })
             .collect();
         let selector = qtv_vm::container::selector(qtv_vm::container::GENESIS_SIGNATURE);
-        placed.push((selector, qtv_vm::container::StateAccess::default(), start));
+        // Genesis is the constructor, it initialises the whole state and may seed any map, so it
+        // declares every scalar slot and its init guard as writes, and every map base as a keyed domain.
+        // This is a real manifest, it lists exactly the contract's own storage, not a bypass.
+        let mut genesis_writes = layout.all_state_slots();
+        genesis_writes.push(crate::lower::GENESIS_INIT_GUARD_SLOT);
+        let genesis_access = qtv_vm::container::StateAccess {
+            reads: vec![crate::lower::GENESIS_INIT_GUARD_SLOT],
+            writes: genesis_writes,
+            keyed_reads: layout.all_map_bases(),
+            keyed_writes: layout.all_map_bases(),
+        };
+        placed.push((selector, genesis_access, start));
     }
 
     b.mark(trap);
@@ -243,7 +254,8 @@ mod tests {
             vm_selector("advance(u64)")
         );
         assert_eq!(cc.container.entries[0].access.writes, vec![0]);
-        assert!(cc.container.entries[0].access.reads.is_empty());
+        // Reads are broad, the contract's one scalar field.
+        assert_eq!(cc.container.entries[0].access.reads, vec![0]);
     }
 
     #[test]

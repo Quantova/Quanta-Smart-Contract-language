@@ -30,7 +30,7 @@ const DEPLOY_PARAMS: &str = "deploy_params";
 
 const GENESIS_PARAM_SENTINEL: u64 = u64::from_be_bytes(*b"QGENSNTL");
 
-const GENESIS_INIT_GUARD_SLOT: u64 = u64::from_be_bytes(*b"QGINIT01");
+pub(crate) const GENESIS_INIT_GUARD_SLOT: u64 = u64::from_be_bytes(*b"QGINIT01");
 
 const CALLER_KEY: &str = "@caller";
 
@@ -62,7 +62,7 @@ const ADDR_WORDS: u64 = ADDR_BYTES / WORD;
 const ADDR_TYPE: &str = "Q_Address";
 
 const SIGNED_MSG_TAG: u64 = u64::from_be_bytes(*b"QTVSGN01");
-const NONCE_TAG: u64 = u64::from_be_bytes(*b"QTVNONCE");
+pub(crate) const NONCE_TAG: u64 = u64::from_be_bytes(*b"QTVNONCE");
 
 fn deploy_param_name(expr: &Expr) -> Option<&str> {
     if let Expr::Field { base, name, .. } = expr {

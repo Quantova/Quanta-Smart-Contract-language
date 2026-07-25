@@ -31,7 +31,6 @@ fn is_post_quantum_crypto(op: OpCode) -> bool {
             | OpCode::VerifyMl
             | OpCode::VerifySlh
             | OpCode::MerkleVerify
-            | OpCode::VrfVerify
             | OpCode::Kem
             | OpCode::Addr
     )
@@ -44,7 +43,6 @@ fn is_cryptographic(op: OpCode) -> bool {
         | OpCode::VerifyMl
         | OpCode::VerifySlh
         | OpCode::MerkleVerify
-        | OpCode::VrfVerify
         | OpCode::Kem
         | OpCode::Addr => true,
         OpCode::Halt
@@ -120,8 +118,8 @@ fn the_machine_exposes_only_post_quantum_crypto_opcodes() {
     // derivation. There is no classical signature verify and no ecrecover style recovery opcode.
     assert_eq!(
         crypto.len(),
-        7,
-        "the crypto opcode set must be the post quantum seven"
+        6,
+        "the crypto opcode set must be the post quantum six"
     );
 }
 
