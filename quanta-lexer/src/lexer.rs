@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! The scanner. Produces a token stream with byte accurate spans and rejects
 
 use crate::token::{is_forbidden, keyword_kind, Span, Token, TokenKind};

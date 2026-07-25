@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Asset operation lowering. An asset amount is a stored balance, so split, merge, mint, and burn
 
 use std::collections::BTreeMap;

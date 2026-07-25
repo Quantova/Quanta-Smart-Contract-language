@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! The genesis constructor. A contract's genesis block lowers to a reserved entry the chain runs at
 
 use qtv_vm::container::{selector, GENESIS_SIGNATURE};

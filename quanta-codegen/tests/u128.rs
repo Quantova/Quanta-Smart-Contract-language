@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Two word arithmetic for u128 state fields, run end to end in the interpreter. A carry crosses the
 
 use qtv_vm::interp::{Fault, Interpreter};

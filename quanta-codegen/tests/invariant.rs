@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! A contract invariant lowers to an epilogue check on every state writing entry. A call that keeps
 
 use std::collections::BTreeMap;

@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Quorum binding. A `Quorum<M of N, set>` is constructed only from M valid signatures, each by a
 
 use std::collections::BTreeMap;

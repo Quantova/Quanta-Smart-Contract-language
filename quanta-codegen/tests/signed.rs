@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! A `signed by owner` parameter is bound three ways, not merely verified. The signer's address is
 
 use std::collections::BTreeMap;

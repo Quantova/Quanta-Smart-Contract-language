@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Conformance vectors for the multi scheme signature dispatch under the bound `signed by` lowering.
 
 use std::collections::BTreeMap;

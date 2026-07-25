@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Conformance vectors for the arithmetic forms. The checked form lowers to the checked add opcode
 
 use std::collections::BTreeMap;

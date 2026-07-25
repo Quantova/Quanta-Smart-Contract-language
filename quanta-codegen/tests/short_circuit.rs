@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Logical `and` and `or` short circuit: the right operand runs only when the left has not already
 
 use std::collections::BTreeMap;

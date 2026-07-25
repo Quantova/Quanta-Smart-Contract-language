@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! No classical cryptography is emittable. The machine exposes only post quantum cryptographic
 
 use qtv_vm::isa::{decode, OpCode};

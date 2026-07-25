@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Conformance vector for the sealed parameter. Sealing a parameter is legal and type checks. The
 
 use std::collections::BTreeMap;

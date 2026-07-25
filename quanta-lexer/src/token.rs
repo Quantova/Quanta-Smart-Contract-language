@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Token kinds, source spans, and the keyword and forbidden registers.
 
 /// A half open byte range `[start, end)` into the source text.

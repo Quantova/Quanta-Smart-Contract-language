@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 use crate::emit::{Builder, LinkError};
 use crate::error::CodegenError;
 use crate::layout::{Layout, ADDR_WORDS};

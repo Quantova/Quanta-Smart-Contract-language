@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! A `Map<Q_Address, u64>` keyed by the whole thirty two byte address, storing a single word value.
 
 use std::collections::BTreeMap;

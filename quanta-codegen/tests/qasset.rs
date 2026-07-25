@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! QAsset driven through the register machine: genesis from deploy parameters, an owner signed mint, a
 
 use std::collections::BTreeMap;

@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! The `after` time guard, run end to end in the interpreter. A time locked entry reverts before its
 
 use qtv_vm::interp::{Fault, Interpreter};

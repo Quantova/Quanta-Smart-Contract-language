@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 use crate::error::TypeError;
 use crate::model::Model;
 use quanta_ast::{BinOp, Clause, EntryDecl, Expr};

@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! The issuer control token standard, end to end. The reference contract type checks, compiles to a
 
 use std::collections::BTreeMap;

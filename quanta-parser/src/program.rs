@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 use crate::error::ParseError;
 use crate::parser::Parser;
 use quanta_ast::{Contract, Import, Program};

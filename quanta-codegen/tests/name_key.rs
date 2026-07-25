@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! The Q_Name parameter type: a thirty two byte plaintext label window plus a label length word. The
 
 use std::collections::BTreeMap;

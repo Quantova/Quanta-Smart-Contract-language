@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! The QNS pricing model driven through the register machine with controlled @time and label
 
 use std::collections::BTreeMap;

@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! A `limits` clause and a `denies` clause lower to real runtime traps rather than to nothing. A
 
 use std::collections::BTreeMap;

@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! An emit records a typed event effect the host appends to the block event trie. The event selector
 
 use qtv_vm::container::selector as vm_selector;

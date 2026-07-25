@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! A `Map<Q_Address, Q_Address>` driven through the register machine: a set stores the whole thirty
 
 use std::collections::BTreeMap;

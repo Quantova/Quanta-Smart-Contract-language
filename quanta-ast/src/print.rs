@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Canonical source pretty printer. Output re-parses to the same tree, and a
 
 use crate::ast::*;

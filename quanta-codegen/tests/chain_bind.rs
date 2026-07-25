@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! The signed authorization preimage binds the chain identity the host presents at the `@chain`
 
 use std::collections::BTreeMap;

@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 use qtv_vm::container::StateAccess;
 use quanta_ast::{Clause, Contract, EntryDecl, Item};
 use std::collections::{HashMap, HashSet};

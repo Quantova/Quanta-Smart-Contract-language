@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! The milestone. Compile the simplest contract, load its container into the interpreter, run the
 
 use std::collections::BTreeMap;

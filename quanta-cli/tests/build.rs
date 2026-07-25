@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! The build subcommand compiles a source file to its container on disk.
 
 use std::path::PathBuf;

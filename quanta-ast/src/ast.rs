@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Node definitions. Every node carries the source span it was parsed from.
 
 use quanta_lexer::Span;

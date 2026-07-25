@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 use quanta_ast::{Contract, EntryDecl, FieldDecl, GenericArg, Item, Param, Type};
 use std::collections::{HashMap, HashSet};
 

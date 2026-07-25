@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! Shared helpers for the code generator tests under the thirty two byte storage key model. A scalar
 
 #![allow(dead_code)]

@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 //! The QCollectible token id key: a `Map<Q_Id, Q_Address>` promotes an eight byte token id into a
 
 use std::collections::BTreeMap;
