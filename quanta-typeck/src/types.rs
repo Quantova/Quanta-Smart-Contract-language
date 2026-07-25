@@ -193,13 +193,10 @@ fn ty_of_decl(ty: &Type) -> Ty {
 }
 
 fn check_arithmetic(entry: &EntryDecl, params: &HashMap<&str, Ty>) -> Result<(), TypeError> {
-    if entry
+    let entry_mints = entry
         .clauses
         .iter()
-        .any(|c| matches!(c, Clause::Mints { .. }))
-    {
-        return Ok(());
-    }
+        .any(|c| matches!(c, Clause::Mints { .. }));
     let asset_params: Vec<&str> = entry
         .params
         .iter()
@@ -244,6 +241,13 @@ fn check_arithmetic(entry: &EntryDecl, params: &HashMap<&str, Ty>) -> Result<(),
         if bounded_addend(addend, &asset_params) {
             continue;
         }
+        // A `mints` clause authorizes growing the supply it mints, and the supply grows by the
+        // minted amount the order carries in. That single addition is the supply mint the clause
+        // governs and is exempt. Every other addition inside the same entry, on a field the mint
+        // does not govern, is held to the same bound rule it would face outside a mint entry.
+        if entry_mints && is_minted_amount(addend, entry) {
+            continue;
+        }
         if limits_names(entry, name) {
             continue;
         }
@@ -260,6 +264,17 @@ fn check_arithmetic(entry: &EntryDecl, params: &HashMap<&str, Ty>) -> Result<(),
 
 fn acknowledged(value: &Expr) -> bool {
     matches!(value, Expr::Checked { .. } | Expr::Wrapping { .. })
+}
+
+fn is_minted_amount(value: &Expr, entry: &EntryDecl) -> bool {
+    if let Expr::Field { base, name, .. } = value {
+        if name.text == "amount" {
+            if let Expr::Ident(id) = base.as_ref() {
+                return entry.params.iter().any(|p| p.name.text == id.text);
+            }
+        }
+    }
+    false
 }
 
 fn bounded_addend(value: &Expr, asset_params: &[&str]) -> bool {
@@ -353,6 +368,24 @@ mod tests {
         let src = "contract C { state { counter: u8; } \
                    entry bump(order: BumpOrder) writes(counter) \
                    { counter = wrapping(counter + order.step); } }";
+        ok(src);
+    }
+
+    #[test]
+    fn a_mint_entry_still_rejects_an_unbounded_add_on_a_non_supply_field() {
+        let src = "contract C { asset TKN; state { total_supply: u128; rewards: u64; } \
+                   entry mint(order: MintOrder, bonus: u64) mints TKN writes(total_supply, rewards) \
+                   { total_supply += order.amount; rewards += bonus; } }";
+        let message = error_for(src);
+        assert!(message.contains("unchecked overflow"), "{message}");
+        assert!(message.contains("rewards"), "{message}");
+    }
+
+    #[test]
+    fn a_mint_entry_permits_the_supply_field_it_mints() {
+        let src = "contract C { asset TKN; state { total_supply: u128; } \
+                   entry mint(order: MintOrder) mints TKN writes(total_supply) \
+                   { total_supply += order.amount; } }";
         ok(src);
     }
 }
