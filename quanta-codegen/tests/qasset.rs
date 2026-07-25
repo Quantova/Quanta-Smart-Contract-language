@@ -1,4 +1,4 @@
-//! QRC20 driven through the register machine: genesis from deploy parameters, an owner signed mint, a
+//! QAsset driven through the register machine: genesis from deploy parameters, an owner signed mint, a
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -19,18 +19,18 @@ const CONTRACT: [u8; 32] = [0x99; 32];
 const SCHEME_ML: u8 = 1;
 const SENTINEL: [u8; 8] = *b"QGENSNTL";
 
-fn qrc20() -> Contract {
+fn qasset() -> Contract {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop();
-    path.push("examples/QRC20.qs");
+    path.push("examples/QAsset.qs");
     let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read example: {e}"));
     let program = quanta_parser::parse(&src).expect("parse");
-    quanta_typeck::check(&program).expect("the QRC20 standard type checks clean");
+    quanta_typeck::check(&program).expect("the QAsset standard type checks clean");
     program.contracts.into_iter().next().expect("one contract")
 }
 
 fn compiled() -> CompiledContract {
-    compile_contract(&qrc20()).expect("the QRC20 standard compiles")
+    compile_contract(&qasset()).expect("the QAsset standard compiles")
 }
 
 fn find_entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
@@ -147,7 +147,7 @@ fn balance(storage: &BTreeMap<[u8; 32], u64>, who: &[u8; 32]) -> u64 {
 }
 
 #[test]
-fn the_whole_qrc20_standard_compiles_to_a_container_with_a_genesis() {
+fn the_whole_qasset_standard_compiles_to_a_container_with_a_genesis() {
     let cc = compiled();
     assert!(cc.entries.iter().any(|e| e.name == "mint"));
     assert!(cc.entries.iter().any(|e| e.name == "transfer"));

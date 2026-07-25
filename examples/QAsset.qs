@@ -1,5 +1,5 @@
 import { Map } from "quantova/stdlib";
-contract QRC20 {
+contract QAsset {
   asset QAT;
   state {
     owner: Q_Address;
