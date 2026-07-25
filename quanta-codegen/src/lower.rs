@@ -533,6 +533,9 @@ fn lower_binary(
         let (rlo, rhi) = eval_wide(ctx, right, wrapping)?;
         return Ok(wide_compare(ctx, op, llo, lhi, rlo, rhi));
     }
+    if matches!(op, BinOp::And | BinOp::Or) {
+        return lower_short_circuit(ctx, op, left, right, wrapping);
+    }
     let l = lower_expr(ctx, left, wrapping)?;
     let r = lower_expr(ctx, right, wrapping)?;
     match op {
@@ -545,8 +548,7 @@ fn lower_binary(
         BinOp::Div => ctx.b.op(Instr::Div { d: l, a: l, b: r }),
         BinOp::Rem => ctx.b.op(Instr::Rem { d: l, a: l, b: r }),
         BinOp::Shr => ctx.b.op(Instr::Shr { d: l, a: l, b: r }),
-        BinOp::And => ctx.b.op(Instr::And { d: l, a: l, b: r }),
-        BinOp::Or => ctx.b.op(Instr::Or { d: l, a: l, b: r }),
+        BinOp::And | BinOp::Or => unreachable!("logical and or short circuit above"),
         BinOp::Eq => ctx.b.op(Instr::Eq { d: l, a: l, b: r }),
         BinOp::Lt => ctx.b.op(Instr::LtU { d: l, a: l, b: r }),
         BinOp::Gt => ctx.b.op(Instr::GtU { d: l, a: l, b: r }),
@@ -564,6 +566,39 @@ fn lower_binary(
         }
     }
     ctx.regs.free(r);
+    Ok(l)
+}
+
+/// Logical `and` and `or` evaluate the right operand only when the left has not already decided the
+fn lower_short_circuit(
+    ctx: &mut Ctx,
+    op: BinOp,
+    left: &Expr,
+    right: &Expr,
+    wrapping: bool,
+) -> Result<Reg, CodegenError> {
+    let l = lower_expr(ctx, left, wrapping)?;
+    let done = ctx.b.label();
+    match op {
+        BinOp::And => {
+            // A false left already decides the whole `and`, so leave the zero in place and skip the
+            // right; a true left falls through to combine with it.
+            ctx.b.jz(l, done);
+            let r = lower_expr(ctx, right, wrapping)?;
+            ctx.b.op(Instr::And { d: l, a: l, b: r });
+            ctx.regs.free(r);
+        }
+        BinOp::Or => {
+            // A true left already decides the whole `or`, so leave the true value in place and skip
+            // the right; a false left falls through to combine with it.
+            ctx.b.jnz(l, done);
+            let r = lower_expr(ctx, right, wrapping)?;
+            ctx.b.op(Instr::Or { d: l, a: l, b: r });
+            ctx.regs.free(r);
+        }
+        _ => unreachable!("only and or short circuit"),
+    }
+    ctx.b.mark(done);
     Ok(l)
 }
 
