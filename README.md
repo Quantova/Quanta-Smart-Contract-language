@@ -41,7 +41,7 @@ The compiler is a Rust workspace.
 - quanta-typeck is the static checker and its seven passes.
 - quanta-codegen lowers to QVM bytecode and builds the container.
 - quanta-emit produces the one JSON document that every front end shares.
-- quanta-web is the browser compiler crate. It builds to WebAssembly and runs the whole compiler in the user's page with no backend, which keeps the compile off Quantova's servers and gives the IDE the same lexer, parser, checker, and code generator the command line runs.
+- quanta-web is the browser compiler crate. It runs the whole compiler in the user's page with no backend, which keeps the compile off Quantova's servers and gives the IDE the same lexer, parser, checker, and code generator the command line runs.
 - quanta-cli is the command line front end, with parse, fmt, tokens, check, build, and emit subcommands.
 
 The QVM and the cryptography arrive as pinned dependencies, qtv-vm at tag v0.4.0 and qtv-crypto at tag v0.1.0, and are never reimplemented here.
