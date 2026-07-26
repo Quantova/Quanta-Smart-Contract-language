@@ -205,6 +205,7 @@ pub struct Ctx<'a> {
     addr_params: HashSet<String>,
     name_keys: HashMap<String, u64>,
     state_addr_scratch: HashMap<String, u64>,
+    map_value_scratch: HashMap<String, u64>,
     next_state_addr_scratch: u64,
     trap: Label,
     b: &'a mut Builder,
@@ -234,6 +235,7 @@ impl<'a> Ctx<'a> {
             addr_params: HashSet::new(),
             name_keys: HashMap::new(),
             state_addr_scratch: HashMap::new(),
+            map_value_scratch: HashMap::new(),
             next_state_addr_scratch: STATE_ADDR_SCRATCH_BASE,
             asset_locals: HashMap::new(),
             next_asset_local: ASSET_LOCAL_BASE,
@@ -254,6 +256,19 @@ impl<'a> Ctx<'a> {
         let off = self.next_asset_local;
         self.next_asset_local += WORD;
         self.asset_locals.insert(name.to_string(), off);
+        off
+    }
+
+    // A per map scratch region that holds the four words of an address read out of that map. It draws
+    // from the same bump pointer as a materialized state address, so the two never overlap, and it is
+    // reused across reads of the one map since every read reloads the words before the region is used.
+    fn bind_map_value_scratch(&mut self, name: &str) -> u64 {
+        if let Some(off) = self.map_value_scratch.get(name) {
+            return *off;
+        }
+        let off = self.next_state_addr_scratch;
+        self.next_state_addr_scratch += ADDR_BYTES;
+        self.map_value_scratch.insert(name.to_string(), off);
         off
     }
 }
@@ -2231,6 +2246,10 @@ fn lower_address(ctx: &mut Ctx, expr: &Expr, span: Span) -> Result<u64, CodegenE
             return materialize_state_addr(ctx, &id.text.clone(), span);
         }
     }
+    if let Some((map_name, mbase, key_expr)) = addr_map_get(ctx, expr) {
+        let map_name = map_name.to_string();
+        return materialize_map_addr_value(ctx, &map_name, mbase, key_expr, span);
+    }
     match addr_key_of(expr, ctx.params) {
         Some(key) => Ok(ctx.args.offset_of_width(&key, ADDR_BYTES)),
         None => Err(CodegenError::Unsupported {
@@ -2257,6 +2276,28 @@ fn materialize_state_addr(ctx: &mut Ctx, name: &str, span: Span) -> Result<u64, 
     };
     for i in 0..ADDR_WORDS {
         let w = load_slot(ctx, slot + i, span)?;
+        store_mem_word(ctx, off + i * WORD, w);
+        ctx.regs.free(w);
+    }
+    Ok(off)
+}
+
+/// An address stored as a keyed map value lives across four hashed word slots. Reading it back for
+fn materialize_map_addr_value(
+    ctx: &mut Ctx,
+    map_name: &str,
+    mbase: u64,
+    key_expr: &Expr,
+    span: Span,
+) -> Result<u64, CodegenError> {
+    let key_off = map_key_region_named(ctx, map_name, key_expr, span)?;
+    let off = ctx.bind_map_value_scratch(map_name);
+    for i in 0..ADDR_WORDS {
+        compute_map_addr_word_key(ctx, mbase, key_off, i, span)?;
+        let w = ctx.regs.alloc(span)?;
+        let key = map_key_ptr(ctx, span)?;
+        ctx.b.op(Instr::SLoad { d: w, a: key });
+        ctx.regs.free(key);
         store_mem_word(ctx, off + i * WORD, w);
         ctx.regs.free(w);
     }
