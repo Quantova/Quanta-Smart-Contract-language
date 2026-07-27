@@ -60,7 +60,7 @@ fn meter_advance_runs_metered_and_writes_state() {
     // marshals the operand into the payload region and records the event through the EMIT opcode.
     // The advance reads and writes the reading field, each now materializing a thirty two byte slot
     // key before the storage opcode, on top of the guard, the add, and the emit.
-    assert_eq!(out.gas_used, 955, "metered gas cost of the advance entry");
+    assert_eq!(out.meter_used, 955, "metered meter cost of the advance entry");
 }
 
 #[test]
