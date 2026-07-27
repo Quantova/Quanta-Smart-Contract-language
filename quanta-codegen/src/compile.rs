@@ -8,7 +8,9 @@ use crate::lower::{lower_entry, EventSig};
 use crate::selector::{entry_selector, entry_signature, event_selector, event_signature};
 use qtv_vm::container::{Container, Entry, SELECTOR_BYTES};
 use qtv_vm::isa::Instr;
-use quanta_ast::{Contract, EntryDecl, EventDecl, Item, Program, Type};
+use quanta_ast::{
+    AssignOp, Contract, EntryDecl, EventDecl, Expr, Ident, Item, Program, Stmt, Type,
+};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,19 +139,47 @@ fn compile_entries(
         });
     }
 
-    if let Some(genesis) = contract.items.iter().find_map(|item| match item {
+    let state_block = contract.items.iter().find_map(|item| match item {
+        Item::State(sb) => Some(sb),
+        _ => None,
+    });
+    let default_assigns: Vec<Stmt> = state_block
+        .map(|sb| {
+            sb.fields
+                .iter()
+                .filter_map(|f| {
+                    f.default.as_ref().map(|value| Stmt::Assign {
+                        target: Expr::Ident(f.name.clone()),
+                        op: AssignOp::Set,
+                        value: value.clone(),
+                        span: f.span,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let genesis_block = contract.items.iter().find_map(|item| match item {
         Item::Genesis(g) => Some(g),
         _ => None,
-    }) {
+    });
+    if genesis_block.is_some() || !default_assigns.is_empty() {
+        let gspan = genesis_block
+            .map(|g| g.span)
+            .or_else(|| state_block.map(|sb| sb.span))
+            .unwrap_or_default();
+        let mut body = default_assigns;
+        if let Some(g) = genesis_block {
+            body.extend(g.body.clone());
+        }
         let synthetic = EntryDecl {
-            name: quanta_ast::Ident {
+            name: Ident {
                 text: "@genesis".to_string(),
-                span: genesis.span,
+                span: gspan,
             },
             params: Vec::new(),
             clauses: Vec::new(),
-            body: genesis.body.clone(),
-            span: genesis.span,
+            body,
+            span: gspan,
         };
         let start = b.label();
         b.mark(start);

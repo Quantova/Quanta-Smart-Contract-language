@@ -273,6 +273,38 @@ impl<'a> Ctx<'a> {
     }
 }
 
+fn parse_date_epoch(text: &str, span: Span) -> Result<u64, CodegenError> {
+    let bad = || CodegenError::Unsupported {
+        what: "a malformed date literal".into(),
+        span,
+    };
+    let parts: Vec<&str> = text.split('-').collect();
+    if parts.len() != 3 {
+        return Err(bad());
+    }
+    let y: i64 = parts[0].parse().map_err(|_| bad())?;
+    let m: i64 = parts[1].parse().map_err(|_| bad())?;
+    let d: i64 = parts[2].parse().map_err(|_| bad())?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return Err(bad());
+    }
+    let days = days_from_civil(y, m, d);
+    if days < 0 {
+        return Err(bad());
+    }
+    Ok((days as u64) * 86_400)
+}
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 pub fn lower_expr(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<Reg, CodegenError> {
     match expr {
         Expr::Int(lit) => {
@@ -301,10 +333,12 @@ pub fn lower_expr(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<Reg, Cod
             what: "a string literal".into(),
             span: s.span,
         }),
-        Expr::Date { span, .. } => Err(CodegenError::Unsupported {
-            what: "a date literal".into(),
-            span: *span,
-        }),
+        Expr::Date { text, span } => {
+            let value = parse_date_epoch(text, *span)?;
+            let d = ctx.regs.alloc(*span)?;
+            ctx.b.op(Instr::Ldi { d, imm: value });
+            Ok(d)
+        }
         Expr::Call { callee, args, span } => lower_call_value(ctx, callee, args, *span),
     }
 }
