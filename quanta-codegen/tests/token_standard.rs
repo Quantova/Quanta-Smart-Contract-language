@@ -118,6 +118,7 @@ fn mint_message(
     msg.extend_from_slice(member);
     msg.extend_from_slice(&nonce.to_be_bytes());
     msg.extend_from_slice(&amount.to_be_bytes());
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(to);
     msg
 }

@@ -23,6 +23,7 @@ pub struct Layout {
     map_key_addr: HashSet<String>,
     map_key_id: HashSet<String>,
     map_value_addr: HashSet<String>,
+    map_value_wide: HashSet<String>,
     guardian_sets: HashMap<String, u64>,
 }
 
@@ -35,6 +36,7 @@ impl Layout {
         let mut map_key_addr = HashSet::new();
         let mut map_key_id = HashSet::new();
         let mut map_value_addr = HashSet::new();
+        let mut map_value_wide = HashSet::new();
         let mut guardian_sets = HashMap::new();
         let mut next = 0u64;
         let mut keyed = 0u64;
@@ -68,6 +70,12 @@ impl Layout {
                         ) {
                             map_value_addr.insert(field.name.text.clone());
                         }
+                        if matches!(
+                            field.ty.args.get(1),
+                            Some(quanta_ast::GenericArg::Type(t)) if t.name.text == WIDE_TYPE
+                        ) {
+                            map_value_wide.insert(field.name.text.clone());
+                        }
                         next += 1;
                     } else if ty == WIDE_TYPE {
                         wide.insert(field.name.text.clone());
@@ -98,6 +106,7 @@ impl Layout {
             map_key_addr,
             map_key_id,
             map_value_addr,
+            map_value_wide,
             guardian_sets,
         }
     }
@@ -118,6 +127,10 @@ impl Layout {
 
     pub fn map_value_is_addr(&self, name: &str) -> bool {
         self.map_value_addr.contains(name)
+    }
+
+    pub fn map_value_is_wide(&self, name: &str) -> bool {
+        self.map_value_wide.contains(name)
     }
 
     pub fn slot(&self, name: &str) -> Option<u64> {
@@ -306,6 +319,18 @@ mod tests {
         assert!(!layout.map_value_is_addr("expiry_of"));
         assert!(layout.map_value_is_addr("owner_of"));
         assert!(layout.map_key_is_addr("owner_of"));
+    }
+
+    #[test]
+    fn a_map_value_of_the_wide_type_is_marked() {
+        let c = contract(
+            "contract C { state { holdings: Map<Q_Address, u64>; \
+             balances: Map<Q_Address, u128>; } }",
+        );
+        let layout = Layout::build(&c);
+        assert!(!layout.map_value_is_wide("holdings"));
+        assert!(layout.map_value_is_wide("balances"));
+        assert!(!layout.map_value_is_addr("balances"));
     }
 
     #[test]

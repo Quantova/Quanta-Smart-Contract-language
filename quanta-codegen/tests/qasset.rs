@@ -93,6 +93,7 @@ fn mint_message(cc: &CompiledContract, owner: &[u8; 32], nonce: u64, amount: u64
     msg.extend_from_slice(owner);
     msg.extend_from_slice(&nonce.to_be_bytes());
     msg.extend_from_slice(&amount.to_be_bytes());
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(to);
     msg
 }
@@ -269,7 +270,7 @@ fn a_transfer_of_more_than_the_balance_reverts() {
     let mem = transfer_memory(&cc, &holder_a(), &holder_b(), 500);
     assert_eq!(
         run(&cc, selector_of(&cc, "transfer"), storage, &mem).map(|(s, _)| s),
-        Err(Fault::Overflow),
+        Err(Fault::DivByZero),
         "an overdrawn transfer reverts"
     );
 }

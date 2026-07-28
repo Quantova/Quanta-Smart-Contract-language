@@ -61,6 +61,8 @@ const ADDR_WORDS: u64 = ADDR_BYTES / WORD;
 
 const ADDR_TYPE: &str = "Q_Address";
 
+const WIDE_TYPE: &str = "u128";
+
 const SIGNED_MSG_TAG: u64 = u64::from_be_bytes(*b"QTVSGN01");
 pub(crate) const NONCE_TAG: u64 = u64::from_be_bytes(*b"QTVNONCE");
 
@@ -203,6 +205,7 @@ pub struct Ctx<'a> {
     address_keys: HashSet<String>,
     name_params: HashSet<String>,
     addr_params: HashSet<String>,
+    wide_keys: HashSet<String>,
     name_keys: HashMap<String, u64>,
     state_addr_scratch: HashMap<String, u64>,
     map_value_scratch: HashMap<String, u64>,
@@ -233,6 +236,7 @@ impl<'a> Ctx<'a> {
             address_keys: HashSet::new(),
             name_params: HashSet::new(),
             addr_params: HashSet::new(),
+            wide_keys: HashSet::new(),
             name_keys: HashMap::new(),
             state_addr_scratch: HashMap::new(),
             map_value_scratch: HashMap::new(),
@@ -371,7 +375,11 @@ fn lower_ident(ctx: &mut Ctx, name: &str, span: Span) -> Result<Reg, CodegenErro
     if let Some(slot) = ctx.layout.slot(name) {
         load_slot(ctx, slot, span)
     } else if ctx.params.contains(name) {
-        let off = ctx.args.offset_of(name);
+        let off = if ctx.wide_keys.contains(name) {
+            ctx.args.offset_of_width(name, 2 * WORD)
+        } else {
+            ctx.args.offset_of(name)
+        };
         load_arg(ctx, off, span)
     } else {
         Err(CodegenError::Unsupported {
@@ -411,7 +419,11 @@ fn lower_field(ctx: &mut Ctx, base: &Expr, field: &str, span: Span) -> Result<Re
         }
         if ctx.params.contains(&id.text) {
             let key = format!("{}.{}", id.text, field);
-            let off = ctx.args.offset_of(&key);
+            let off = if ctx.wide_keys.contains(&key) {
+                ctx.args.offset_of_width(&key, 2 * WORD)
+            } else {
+                ctx.args.offset_of(&key)
+            };
             return load_arg(ctx, off, span);
         }
     }
@@ -661,11 +673,163 @@ fn lower_short_circuit(
 
 fn is_wide_expr(ctx: &Ctx, expr: &Expr) -> bool {
     match expr {
-        Expr::Ident(id) => ctx.layout.is_wide(&id.text),
+        Expr::Ident(id) => ctx.layout.is_wide(&id.text) || ctx.wide_keys.contains(&id.text),
+        Expr::Field { base, name, .. } => {
+            matches!(base.as_ref(), Expr::Ident(id) if ctx.wide_keys.contains(&format!("{}.{}", id.text, name.text)))
+        }
         Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => is_wide_expr(ctx, expr),
         Expr::Binary { op, left, right, .. } => {
             matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul)
                 && (is_wide_expr(ctx, left) || is_wide_expr(ctx, right))
+        }
+        _ => false,
+    }
+}
+
+fn collect_wide_keys(
+    layout: &Layout,
+    params: &HashSet<String>,
+    asset_params: &HashSet<String>,
+    events: &HashMap<String, EventSig>,
+    entry: &EntryDecl,
+) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for p in &entry.params {
+        if p.ty.name.text == WIDE_TYPE {
+            out.insert(p.name.text.clone());
+        }
+    }
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => {
+                mark_wide_compares(layout, params, asset_params, expr, &mut out)
+            }
+            Clause::After {
+                from: Some(expr), ..
+            } => mark_wide_compares(layout, params, asset_params, expr, &mut out),
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        wide_sinks_stmt(layout, params, asset_params, events, stmt, &mut out);
+    }
+    out
+}
+
+fn wide_sinks_stmt(
+    layout: &Layout,
+    params: &HashSet<String>,
+    asset_params: &HashSet<String>,
+    events: &HashMap<String, EventSig>,
+    stmt: &Stmt,
+    out: &mut HashSet<String>,
+) {
+    match stmt {
+        Stmt::Assign { target, value, .. } => {
+            if let Expr::Ident(id) = target {
+                if layout.is_wide(&id.text) {
+                    mark_wide_field_operands(params, asset_params, value, out);
+                }
+            }
+            mark_wide_compares(layout, params, asset_params, value, out);
+        }
+        Stmt::Emit { name, args, .. } => {
+            if let Some(sig) = events.get(&name.text) {
+                for (i, arg) in args.iter().enumerate() {
+                    if sig.field_words.get(i).copied() == Some(2) {
+                        mark_wide_field_operands(params, asset_params, arg, out);
+                    }
+                    mark_wide_compares(layout, params, asset_params, arg, out);
+                }
+            }
+        }
+        Stmt::Guard { expr, .. } | Stmt::Expr { expr, .. } => {
+            mark_wide_compares(layout, params, asset_params, expr, out)
+        }
+        Stmt::Let { value, .. } => mark_wide_compares(layout, params, asset_params, value, out),
+    }
+}
+
+fn mark_wide_field_operands(
+    params: &HashSet<String>,
+    asset_params: &HashSet<String>,
+    expr: &Expr,
+    out: &mut HashSet<String>,
+) {
+    match expr {
+        Expr::Field { base, name, .. } => {
+            if let Expr::Ident(id) = base.as_ref() {
+                if params.contains(&id.text) && !asset_params.contains(&id.text) {
+                    out.insert(format!("{}.{}", id.text, name.text));
+                    return;
+                }
+            }
+            mark_wide_field_operands(params, asset_params, base, out);
+        }
+        Expr::Binary { left, right, .. } => {
+            mark_wide_field_operands(params, asset_params, left, out);
+            mark_wide_field_operands(params, asset_params, right, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            mark_wide_field_operands(params, asset_params, expr, out)
+        }
+        _ => {}
+    }
+}
+
+fn mark_wide_compares(
+    layout: &Layout,
+    params: &HashSet<String>,
+    asset_params: &HashSet<String>,
+    expr: &Expr,
+    out: &mut HashSet<String>,
+) {
+    match expr {
+        Expr::Binary {
+            op, left, right, ..
+        } => {
+            mark_wide_compares(layout, params, asset_params, left, out);
+            mark_wide_compares(layout, params, asset_params, right, out);
+            if matches!(
+                op,
+                BinOp::Add
+                    | BinOp::Sub
+                    | BinOp::Mul
+                    | BinOp::Lt
+                    | BinOp::Gt
+                    | BinOp::Le
+                    | BinOp::Ge
+                    | BinOp::Eq
+                    | BinOp::Ne
+            ) && (has_wide_leaf(layout, left, out) || has_wide_leaf(layout, right, out))
+            {
+                mark_wide_field_operands(params, asset_params, left, out);
+                mark_wide_field_operands(params, asset_params, right, out);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            mark_wide_compares(layout, params, asset_params, expr, out)
+        }
+        Expr::Call { args, .. } => {
+            for a in args {
+                mark_wide_compares(layout, params, asset_params, a, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn has_wide_leaf(layout: &Layout, expr: &Expr, out: &HashSet<String>) -> bool {
+    match expr {
+        Expr::Ident(id) => layout.is_wide(&id.text) || out.contains(&id.text),
+        Expr::Field { base, name, .. } => {
+            matches!(base.as_ref(), Expr::Ident(id) if out.contains(&format!("{}.{}", id.text, name.text)))
+        }
+        Expr::Binary { left, right, .. } => {
+            has_wide_leaf(layout, left, out) || has_wide_leaf(layout, right, out)
+        }
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            has_wide_leaf(layout, expr, out)
         }
         _ => false,
     }
@@ -693,6 +857,12 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
             let hi = load_slot(ctx, hi_slot, id.span)?;
             Ok((lo, hi))
         }
+        Expr::Ident(id) if ctx.wide_keys.contains(&id.text) && ctx.params.contains(&id.text) => {
+            let off = ctx.args.offset_of_width(&id.text, 2 * WORD);
+            let lo = load_arg(ctx, off, id.span)?;
+            let hi = load_arg(ctx, off + WORD, id.span)?;
+            Ok((lo, hi))
+        }
         Expr::Binary { op, left, right, span }
             if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) =>
         {
@@ -707,6 +877,19 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
         }
         Expr::Field { name, .. } if ctx.is_genesis && deploy_param_name(expr).is_some() => {
             let off = ctx.args.deploy_param_offset(&name.text, 2 * WORD);
+            let lo = load_arg(ctx, off, name.span)?;
+            let hi = load_arg(ctx, off + WORD, name.span)?;
+            Ok((lo, hi))
+        }
+        Expr::Field { base, name, .. }
+            if matches!(base.as_ref(), Expr::Ident(id) if ctx.wide_keys.contains(&format!("{}.{}", id.text, name.text))) =>
+        {
+            let id = match base.as_ref() {
+                Expr::Ident(id) => &id.text,
+                _ => unreachable!("the guard matched an ident base"),
+            };
+            let key = format!("{id}.{}", name.text);
+            let off = ctx.args.offset_of_width(&key, 2 * WORD);
             let lo = load_arg(ctx, off, name.span)?;
             let hi = load_arg(ctx, off + WORD, name.span)?;
             Ok((lo, hi))
@@ -990,6 +1173,7 @@ pub fn lower_entry(
             .filter(|p| p.ty.name.text == ADDR_TYPE)
             .map(|p| p.name.text.clone())
             .collect();
+        ctx.wide_keys = collect_wide_keys(layout, &params, &asset_params, events, entry);
         ctx.args.offset_of_width(CALLER_KEY, ADDR_BYTES);
         ctx.args.offset_of_width(CONTRACT_KEY, ADDR_BYTES);
         ctx.args.offset_of_width(TIME_KEY, WORD);
@@ -1145,6 +1329,8 @@ fn quorum_message_fields(ctx: &mut Ctx, entry: &EntryDecl, quorum_name: &str) ->
         for key in collect_signed_fields(entry, pname) {
             let words = if ctx.address_keys.contains(&key) {
                 ADDR_WORDS
+            } else if ctx.wide_keys.contains(&key) {
+                2
             } else {
                 1
             };
@@ -1830,6 +2016,8 @@ fn lower_signed_binding(
         .map(|key| {
             let words = if ctx.address_keys.contains(key) {
                 ADDR_WORDS
+            } else if ctx.wide_keys.contains(key) {
+                2
             } else {
                 1
             };
@@ -2635,6 +2823,9 @@ fn lower_map_credit(
 ) -> Result<(), CodegenError> {
     let mbase = map_base_of(ctx, base, span)?;
     let (key_expr, value_expr) = two_args(args, span)?;
+    if map_name_is_value_wide(ctx, base) {
+        return lower_map_credit_wide(ctx, base, mbase, key_expr, value_expr, span, add);
+    }
     let value = ledger_amount(ctx, value_expr, span)?;
     let addr_off = map_key_region(ctx, base, key_expr, span)?;
     compute_map_key(ctx, mbase, addr_off, span)?;
@@ -2658,6 +2849,68 @@ fn lower_map_credit(
     ctx.regs.free(key);
     ctx.regs.free(cur);
     ctx.regs.free(value);
+    Ok(())
+}
+
+fn map_name_is_value_wide(ctx: &Ctx, base: &Expr) -> bool {
+    matches!(base, Expr::Ident(id) if ctx.layout.map_value_is_wide(&id.text))
+}
+
+fn ledger_amount_wide(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<(Reg, Reg), CodegenError> {
+    if is_asset_value(ctx, value) {
+        let lo = asset_amount(ctx, value, span)?;
+        let hi = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi { d: hi, imm: 0 });
+        Ok((lo, hi))
+    } else {
+        eval_wide(ctx, value, false)
+    }
+}
+
+fn lower_map_credit_wide(
+    ctx: &mut Ctx,
+    base: &Expr,
+    mbase: u64,
+    key_expr: &Expr,
+    value_expr: &Expr,
+    span: Span,
+    add: bool,
+) -> Result<(), CodegenError> {
+    let key_off = map_key_region(ctx, base, key_expr, span)?;
+    compute_map_key(ctx, mbase, key_off, span)?;
+    let clo = ctx.regs.alloc(span)?;
+    {
+        let key = map_key_ptr(ctx, span)?;
+        ctx.b.op(Instr::SLoad { d: clo, a: key });
+        ctx.regs.free(key);
+    }
+    compute_map_addr_word_key(ctx, mbase, key_off, 1, span)?;
+    let chi = ctx.regs.alloc(span)?;
+    {
+        let key = map_key_ptr(ctx, span)?;
+        ctx.b.op(Instr::SLoad { d: chi, a: key });
+        ctx.regs.free(key);
+    }
+    let (vlo, vhi) = ledger_amount_wide(ctx, value_expr, span)?;
+    if add {
+        two_word_add(ctx, clo, chi, vlo, vhi, false);
+    } else {
+        two_word_sub(ctx, clo, chi, vlo, vhi, false);
+    }
+    compute_map_key(ctx, mbase, key_off, span)?;
+    {
+        let key = map_key_ptr(ctx, span)?;
+        ctx.b.op(Instr::SStore { a: key, b: clo });
+        ctx.regs.free(key);
+    }
+    compute_map_addr_word_key(ctx, mbase, key_off, 1, span)?;
+    {
+        let key = map_key_ptr(ctx, span)?;
+        ctx.b.op(Instr::SStore { a: key, b: chi });
+        ctx.regs.free(key);
+    }
+    ctx.regs.free(chi);
+    ctx.regs.free(clo);
     Ok(())
 }
 
@@ -2746,6 +2999,24 @@ fn lower_map_set(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Resul
             ctx.regs.free(key);
             ctx.regs.free(w);
         }
+        return Ok(());
+    }
+    if map_name_is_value_wide(ctx, base) {
+        let (vlo, vhi) = ledger_amount_wide(ctx, value_expr, span)?;
+        compute_map_key(ctx, mbase, key_off, span)?;
+        {
+            let key = map_key_ptr(ctx, span)?;
+            ctx.b.op(Instr::SStore { a: key, b: vlo });
+            ctx.regs.free(key);
+        }
+        compute_map_addr_word_key(ctx, mbase, key_off, 1, span)?;
+        {
+            let key = map_key_ptr(ctx, span)?;
+            ctx.b.op(Instr::SStore { a: key, b: vhi });
+            ctx.regs.free(key);
+        }
+        ctx.regs.free(vhi);
+        ctx.regs.free(vlo);
         return Ok(());
     }
     let v = lower_expr(ctx, value_expr, false)?;

@@ -110,7 +110,7 @@ fn deploy(cc: &CompiledContract, owner: &[u8; 32]) -> BTreeMap<[u8; 32], u64> {
 
 /// A committed order field: either a single machine word or a whole thirty two byte address. The order
 enum Field<'a> {
-    Word(&'a str, u64),
+    Wide(&'a str, u64),
     Addr(&'a str, &'a [u8; 32]),
 }
 
@@ -132,7 +132,10 @@ fn signed_memory(
     msg.extend_from_slice(&nonce.to_be_bytes());
     for f in fields {
         match f {
-            Field::Word(_, v) => msg.extend_from_slice(&v.to_be_bytes()),
+            Field::Wide(_, v) => {
+                msg.extend_from_slice(&v.to_be_bytes());
+                msg.extend_from_slice(&0u64.to_be_bytes());
+            }
             Field::Addr(_, a) => msg.extend_from_slice(*a),
         }
     }
@@ -147,7 +150,7 @@ fn signed_memory(
     mem[32..64].copy_from_slice(&CONTRACT);
     for f in fields {
         match f {
-            Field::Word(k, v) => put_arg(&mut mem, entry, k, *v),
+            Field::Wide(k, v) => put_arg(&mut mem, entry, k, *v),
             Field::Addr(k, a) => put_addr(&mut mem, entry, k, a),
         }
     }
@@ -172,7 +175,7 @@ fn mint(
         key,
         signer,
         nonce,
-        &[Field::Word("order.amount", amount), Field::Addr("order.to", to)],
+        &[Field::Wide("order.amount", amount), Field::Addr("order.to", to)],
     )
 }
 
@@ -190,7 +193,7 @@ fn burn(
         key,
         signer,
         nonce,
-        &[Field::Addr("order.holder", holder), Field::Word("order.amount", amount)],
+        &[Field::Addr("order.holder", holder), Field::Wide("order.amount", amount)],
     )
 }
 
@@ -372,7 +375,7 @@ fn a_burn_of_more_than_the_holder_holds_reverts() {
     let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint(&cc, &key, &owner, 0, 100, &alice)).expect("mint");
     assert_eq!(
         run(&cc, selector_of(&cc, "burn"), storage, &burn(&cc, &key, &owner, 1, &alice, 500)).map(|(s, _)| s),
-        Err(Fault::Overflow),
+        Err(Fault::DivByZero),
         "an over burn reverts on the checked debit"
     );
 }

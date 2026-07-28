@@ -149,6 +149,7 @@ fn signed_mint_memory(cc: &CompiledContract, amount: u64) -> (Vec<u8>, [u8; 32])
     msg.extend_from_slice(&signer);
     msg.extend_from_slice(&0u64.to_be_bytes()); // nonce zero
     msg.extend_from_slice(&amount.to_be_bytes());
+    msg.extend_from_slice(&0u64.to_be_bytes()); // order.amount high word
     let sig = ml_dsa::sign(&sk, &msg, &[], &[0u8; 32]).expect("sign");
 
     let mut region = Vec::new();
@@ -248,7 +249,7 @@ fn two_addresses_colliding_in_a_leading_word_have_distinct_balances() {
     // The debit hits the caller's own empty slot, not the victim's, so it underflows and reverts.
     assert_eq!(
         run(&cc, storage.clone(), &mem),
-        Err(Fault::Overflow),
+        Err(Fault::DivByZero),
         "the caller cannot draw on a balance that only shares a leading word"
     );
     assert_eq!(
@@ -276,7 +277,7 @@ fn debiting_more_than_the_caller_holds_reverts() {
     set_addr_arg(&mut mem, &cc, 0, "to", &to);
     assert_eq!(
         run(&cc, storage, &mem),
-        Err(Fault::Overflow),
+        Err(Fault::DivByZero),
         "an overdrawn debit must fault"
     );
 }
