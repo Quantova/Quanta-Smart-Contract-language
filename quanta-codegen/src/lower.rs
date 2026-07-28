@@ -588,7 +588,7 @@ fn lower_binary(
     {
         let (llo, lhi) = eval_wide(ctx, left, wrapping)?;
         let (rlo, rhi) = eval_wide(ctx, right, wrapping)?;
-        return Ok(wide_compare(ctx, op, llo, lhi, rlo, rhi));
+        return wide_compare(ctx, op, llo, lhi, rlo, rhi, left.span());
     }
     if matches!(op, BinOp::And | BinOp::Or) {
         return lower_short_circuit(ctx, op, left, right, wrapping);
@@ -814,9 +814,17 @@ fn two_word_mul(
     Ok(())
 }
 
-fn wide_compare(ctx: &mut Ctx, op: BinOp, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg) -> Reg {
-    let t1 = ctx.regs.alloc(Span::default()).expect("a compare temporary");
-    let t2 = ctx.regs.alloc(Span::default()).expect("a compare temporary");
+fn wide_compare(
+    ctx: &mut Ctx,
+    op: BinOp,
+    llo: Reg,
+    lhi: Reg,
+    rlo: Reg,
+    rhi: Reg,
+    span: Span,
+) -> Result<Reg, CodegenError> {
+    let t1 = ctx.regs.alloc(span)?;
+    let t2 = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Eq { d: SCRATCH, a: lhi, b: rhi });
     ctx.b.op(Instr::LtU { d: t1, a: llo, b: rlo });
     ctx.b.op(Instr::And { d: t1, a: t1, b: SCRATCH });
@@ -845,7 +853,7 @@ fn wide_compare(ctx: &mut Ctx, op: BinOp, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg
     ctx.regs.free(rhi);
     ctx.regs.free(rlo);
     ctx.regs.free(lhi);
-    llo
+    Ok(llo)
 }
 
 fn logical_not(ctx: &mut Ctx, r: Reg) {
