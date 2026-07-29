@@ -54,6 +54,7 @@ const ID_KEY_SCRATCH: u64 = 42048;
 const STATE_ADDR_SCRATCH_BASE: u64 = 42112;
 
 const NAME_TYPE: &str = "Q_Name";
+const GUARDIAN_SET_PARAM: &str = "GuardianSet";
 const NAME_WINDOW: u64 = 32;
 const NAME_LEN_SUFFIX: &str = "#len";
 
@@ -1289,7 +1290,7 @@ fn lower_quorum_prologue(
         }
         let name = &param.name.text;
         let span = param.span;
-        let field_specs = quorum_message_fields(ctx, entry, name);
+        let field_specs = quorum_message_fields(ctx, entry, name)?;
         let selector_word = u32::from_be_bytes(entry_selector(entry)) as u64;
         let mut prev_index_off: Option<u64> = None;
         for i in 0..threshold {
@@ -1319,11 +1320,37 @@ fn lower_quorum_prologue(
     Ok(())
 }
 
-fn quorum_message_fields(ctx: &mut Ctx, entry: &EntryDecl, quorum_name: &str) -> Vec<(u64, u64)> {
+// The address words a `GuardianSet<N>` parameter carries; None for any other parameter type.
+fn guardian_set_param_words(param: &Param) -> Option<u64> {
+    if param.ty.name.text != GUARDIAN_SET_PARAM {
+        return None;
+    }
+    let n = match param.ty.args.first() {
+        Some(GenericArg::Int(i)) => i.text.replace('_', "").parse::<u64>().ok()?,
+        _ => return None,
+    };
+    (n > 0).then_some(n * ADDR_WORDS)
+}
+
+fn quorum_message_fields(
+    ctx: &mut Ctx,
+    entry: &EntryDecl,
+    quorum_name: &str,
+) -> Result<Vec<(u64, u64)>, CodegenError> {
     let mut specs = Vec::new();
     for param in &entry.params {
         let pname = &param.name.text;
         if pname == quorum_name || quorum_spec(param).is_some() || ctx.asset_params.contains(pname) {
+            continue;
+        }
+        if param.ty.name.text == GUARDIAN_SET_PARAM {
+            // Bind the full new set, so a quorum cannot be replayed to rotate to a different membership.
+            let words = guardian_set_param_words(param).ok_or_else(|| CodegenError::Unsupported {
+                what: format!("a guardian set parameter `{pname}` whose size is not a positive count"),
+                span: param.span,
+            })?;
+            let off = ctx.args.offset_of_width(pname, words * WORD);
+            specs.push((off, words));
             continue;
         }
         for key in collect_signed_fields(entry, pname) {
@@ -1337,7 +1364,7 @@ fn quorum_message_fields(ctx: &mut Ctx, entry: &EntryDecl, quorum_name: &str) ->
             specs.push((ctx.args.offset_of_width(&key, words * WORD), words));
         }
     }
-    specs
+    Ok(specs)
 }
 
 struct QuorumMember<'a> {
