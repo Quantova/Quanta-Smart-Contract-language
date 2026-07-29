@@ -1704,6 +1704,7 @@ fn lower_after_prologue(
                         d: addend,
                         imm: seconds,
                     });
+                    // Checked add: an overflowing time gate must fault and revert, not wrap open.
                     ctx.b.op(Instr::Add {
                         d: reg,
                         a: reg,
@@ -1910,6 +1911,7 @@ fn copy_words_fixed(
     Ok(())
 }
 
+// The signed field set is exactly the parameter fields the entry reads, in first read order.
 fn collect_signed_fields(entry: &EntryDecl, param: &str) -> Vec<String> {
     let mut out = Vec::new();
     for clause in &entry.clauses {
@@ -1917,9 +1919,15 @@ fn collect_signed_fields(entry: &EntryDecl, param: &str) -> Vec<String> {
             Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => {
                 collect_fields_expr(expr, param, &mut out)
             }
-            Clause::After {
-                from: Some(expr), ..
-            } => collect_fields_expr(expr, param, &mut out),
+            Clause::After { target, from, .. } => {
+                // Both the target and the optional `from` base are read, so both must be signed over.
+                if let AfterTarget::Expr(expr) = target {
+                    collect_fields_expr(expr, param, &mut out);
+                }
+                if let Some(expr) = from {
+                    collect_fields_expr(expr, param, &mut out);
+                }
+            }
             _ => {}
         }
     }
