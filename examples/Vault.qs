@@ -10,6 +10,13 @@ contract Vault {
     owner = deployer;
   }
   invariant spent_today <= daily_cap;
+  entry deposit(funds: Q_Asset<QTOV>)
+    conserves QTOV
+    writes(reserve)
+  {
+    reserve.merge(funds);
+    emit Funded(funds.amount);
+  }
   entry withdraw(req: WithdrawReq signed by owner)
     writes(reserve, spent_today)
     conserves QTOV
@@ -21,5 +28,6 @@ contract Vault {
     send(req.to, payout);
     emit Withdrawn(req.to, req.amount);
   }
+  event Funded(amount: u128);
   event Withdrawn(to: Q_Address, amount: u128);
 }

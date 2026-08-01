@@ -13,6 +13,13 @@ contract Payroll {
     paid_this_period = 0;
   }
   invariant paid_this_period <= period_cap;
+  entry fund(funds: Q_Asset<QTOV>)
+    conserves QTOV
+    writes(treasury)
+  {
+    treasury.merge(funds);
+    emit Funded(funds.amount);
+  }
   entry pay(order: PayOrder signed by employer)
     conserves QTOV
     writes(treasury, paid_this_period)
@@ -33,6 +40,7 @@ contract Payroll {
     staff.insert(order.worker);
     emit Hired(order.worker);
   }
+  event Funded(amount: u128);
   event Paid(to: Q_Address, amount: u128);
   event Hired(worker: Q_Address);
 }

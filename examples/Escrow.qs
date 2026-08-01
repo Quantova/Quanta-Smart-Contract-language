@@ -18,8 +18,8 @@ contract Escrow {
   entry fund(payment: sealed Q_Asset<QTOV>)
     conserves QTOV
     writes(holding)
-    limits payment.amount >= price
   {
+    guard payment.amount == price;
     holding.merge(payment);
     emit Funded(buyer, payment.amount);
   }
