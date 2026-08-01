@@ -29,14 +29,16 @@ contract QNS {
   }
   entry register(label: sealed Q_Name, years: u64, payment: sealed Q_Asset<QTOV>)
     reads(base_3, base_4, base_5_plus, grace_period, auction_duration, reserved)
-    writes(owner_of, expiry_of, vault)
+    writes(owner_of, expiry_of, resolved_of, vault)
     conserves QTOV
   {
+    guard years >= 1;
     guard label.len >= 3;
     guard reserved.get(label) == 0;
     guard expiry_of.get(label) == 0 || now >= expiry_of.get(label) + grace_period + auction_duration;
     guard payment.amount >= (base_3 * (3 / label.len) + base_4 * ((4 / label.len) - (3 / label.len)) + base_5_plus * (1 - (4 / label.len))) * years;
     owner_of.set(label, caller);
+    resolved_of.set(label, caller);
     expiry_of.set(label, now + years * 31536000);
     vault.merge(payment);
     emit Registered(label, caller, now + years * 31536000, years);
@@ -46,6 +48,7 @@ contract QNS {
     writes(expiry_of, vault)
     conserves QTOV
   {
+    guard years >= 1;
     guard label.len >= 3;
     guard expiry_of.get(label) > 0;
     guard now <= expiry_of.get(label) + grace_period;
@@ -56,15 +59,17 @@ contract QNS {
   }
   entry claim_premium(label: sealed Q_Name, years: u64, payment: sealed Q_Asset<QTOV>)
     reads(base_3, base_4, base_5_plus, grace_period, auction_duration, start_premium, interval, reserved)
-    writes(owner_of, expiry_of, vault)
+    writes(owner_of, expiry_of, resolved_of, vault)
     conserves QTOV
   {
+    guard years >= 1;
     guard label.len >= 3;
     guard reserved.get(label) == 0;
     guard now >= expiry_of.get(label) + grace_period;
     guard now < expiry_of.get(label) + grace_period + auction_duration;
     guard payment.amount >= (start_premium >> ((now - (expiry_of.get(label) + grace_period)) / interval)) + (base_3 * (3 / label.len) + base_4 * ((4 / label.len) - (3 / label.len)) + base_5_plus * (1 - (4 / label.len))) * years;
     owner_of.set(label, caller);
+    resolved_of.set(label, caller);
     expiry_of.set(label, now + years * 31536000);
     vault.merge(payment);
     emit PremiumClaimed(label, caller, now + years * 31536000, years);
@@ -101,10 +106,11 @@ contract QNS {
   }
   entry transfer(label: Q_Name, to: Q_Address)
     reads(owner_of)
-    writes(owner_of)
+    writes(owner_of, resolved_of)
   {
     guard owner_of.get(label) == caller;
     owner_of.set(label, to);
+    resolved_of.set(label, to);
     emit Transferred(label, caller, to);
   }
   entry withdraw(order: Sweep, approvals: Quorum<5 of 7, guardians>)
