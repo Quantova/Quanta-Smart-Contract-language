@@ -1301,6 +1301,15 @@ fn lower_quorum_prologue(
 ) -> Result<(), CodegenError> {
     for param in &entry.params {
         let Some((threshold, count, set)) = quorum_spec(param) else {
+            if param.ty.name.text == "Quorum" {
+                return Err(CodegenError::Unsupported {
+                    what: format!(
+                        "a quorum parameter `{}` whose threshold or guarding set the lowering cannot read as `M of N, set`, which would leave the entry with no signature check",
+                        param.name.text
+                    ),
+                    span: param.span,
+                });
+            }
             continue;
         };
         let (set_base, set_count) = ctx.layout.guardian_set(&set).ok_or_else(|| {
