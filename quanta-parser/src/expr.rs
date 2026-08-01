@@ -23,26 +23,35 @@ impl Parser {
 
     fn logic_or(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.logic_and()?;
+        let mut links = 0;
         while self.check(&TokenKind::OrOr) {
             self.bump();
+            self.enter()?;
+            links += 1;
             let right = self.logic_and()?;
             left = fold(BinOp::Or, left, right);
         }
+        self.unwind(links);
         Ok(left)
     }
 
     fn logic_and(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.equality()?;
+        let mut links = 0;
         while self.check(&TokenKind::AndAnd) {
             self.bump();
+            self.enter()?;
+            links += 1;
             let right = self.equality()?;
             left = fold(BinOp::And, left, right);
         }
+        self.unwind(links);
         Ok(left)
     }
 
     fn equality(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.comparison()?;
+        let mut links = 0;
         loop {
             let op = match self.peek() {
                 TokenKind::EqEq => BinOp::Eq,
@@ -50,14 +59,18 @@ impl Parser {
                 _ => break,
             };
             self.bump();
+            self.enter()?;
+            links += 1;
             let right = self.comparison()?;
             left = fold(op, left, right);
         }
+        self.unwind(links);
         Ok(left)
     }
 
     fn comparison(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.shift()?;
+        let mut links = 0;
         loop {
             let op = match self.peek() {
                 TokenKind::Lt => BinOp::Lt,
@@ -67,24 +80,32 @@ impl Parser {
                 _ => break,
             };
             self.bump();
+            self.enter()?;
+            links += 1;
             let right = self.shift()?;
             left = fold(op, left, right);
         }
+        self.unwind(links);
         Ok(left)
     }
 
     fn shift(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.additive()?;
+        let mut links = 0;
         while self.check(&TokenKind::Shr) {
             self.bump();
+            self.enter()?;
+            links += 1;
             let right = self.additive()?;
             left = fold(BinOp::Shr, left, right);
         }
+        self.unwind(links);
         Ok(left)
     }
 
     fn additive(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.multiplicative()?;
+        let mut links = 0;
         loop {
             let op = match self.peek() {
                 TokenKind::Plus => BinOp::Add,
@@ -92,14 +113,18 @@ impl Parser {
                 _ => break,
             };
             self.bump();
+            self.enter()?;
+            links += 1;
             let right = self.multiplicative()?;
             left = fold(op, left, right);
         }
+        self.unwind(links);
         Ok(left)
     }
 
     fn multiplicative(&mut self) -> Result<Expr, ParseError> {
         let mut left = self.unary()?;
+        let mut links = 0;
         loop {
             let op = match self.peek() {
                 TokenKind::Star => BinOp::Mul,
@@ -108,9 +133,12 @@ impl Parser {
                 _ => break,
             };
             self.bump();
+            self.enter()?;
+            links += 1;
             let right = self.unary()?;
             left = fold(op, left, right);
         }
+        self.unwind(links);
         Ok(left)
     }
 
@@ -136,9 +164,12 @@ impl Parser {
 
     fn postfix(&mut self) -> Result<Expr, ParseError> {
         let mut e = self.primary()?;
+        let mut links = 0;
         loop {
             match self.peek() {
                 TokenKind::Dot => {
+                    self.enter()?;
+                    links += 1;
                     self.bump();
                     let name = self.expect_ident()?;
                     let span = e.span().join(name.span);
@@ -149,6 +180,8 @@ impl Parser {
                     };
                 }
                 TokenKind::LParen => {
+                    self.enter()?;
+                    links += 1;
                     self.bump();
                     let args = self.call_args()?;
                     let rparen = self.expect(&TokenKind::RParen)?;
@@ -162,6 +195,7 @@ impl Parser {
                 _ => break,
             }
         }
+        self.unwind(links);
         Ok(e)
     }
 

@@ -37,6 +37,10 @@ impl Parser {
         self.depth -= 1;
     }
 
+    pub(crate) fn unwind(&mut self, count: usize) {
+        self.depth -= count;
+    }
+
     pub(crate) fn peek(&self) -> &TokenKind {
         &self.tokens[self.pos].kind
     }
