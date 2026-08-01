@@ -5,6 +5,7 @@ contract MultiSig {
     threshold: u8 = 3;
     nonce: u64;
     vault: Q_Asset<QTOV>;
+    rotation_armed: u64;
   }
   genesis {
     signers = deploy_params.signers;
@@ -20,13 +21,22 @@ contract MultiSig {
     send(payment.to, out);
     emit Executed(payment.to, payment.amount, approvals.digest);
   }
+  entry arm_rotation(approvals: Quorum<4 of 5, signers>)
+    writes(rotation_armed)
+  {
+    rotation_armed = now;
+    emit RotationArmed(approvals.digest);
+  }
   entry rotate(new_signers: GuardianSet<5>, approvals: Quorum<4 of 5, signers>)
-    writes(signers)
-    after 24 hours from approvals.first
+    writes(signers, rotation_armed)
+    after 24 hours from rotation_armed
+    denies rotation_armed == 0
   {
     signers = new_signers;
+    rotation_armed = 0;
     emit Rotated(approvals.digest);
   }
   event Executed(to: Q_Address, amount: u128, digest: Q_Hash);
+  event RotationArmed(digest: Q_Hash);
   event Rotated(digest: Q_Hash);
 }

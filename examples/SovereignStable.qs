@@ -7,6 +7,7 @@ contract SovereignStable {
     monthly_ceiling: u128;
     issued_this_month: u128;
     sanctions: Registry<Q_Address>;
+    board_rotation_armed: u64;
   }
   genesis {
     issuance_board = deploy_params.board;
@@ -28,14 +29,23 @@ contract SovereignStable {
   {
     send(to, funds);
   }
+  entry arm_board_rotation(approvals: Quorum<4 of 5, issuance_board>)
+    writes(board_rotation_armed)
+  {
+    board_rotation_armed = now;
+    emit BoardRotationArmed(approvals.digest);
+  }
   entry rotate_board(new_set: GuardianSet<5>,
                      approvals: Quorum<4 of 5, issuance_board>)
-    writes(issuance_board)
-    after 48 hours from approvals.first
+    writes(issuance_board, board_rotation_armed)
+    after 48 hours from board_rotation_armed
+    denies board_rotation_armed == 0
   {
     issuance_board = new_set;
+    board_rotation_armed = 0;
     emit BoardRotated(approvals.digest);
   }
   event Issued(amount: u128, digest: Q_Hash);
+  event BoardRotationArmed(digest: Q_Hash);
   event BoardRotated(digest: Q_Hash);
 }

@@ -1162,6 +1162,7 @@ pub fn lower_entry(
     trap: Label,
     is_genesis: bool,
 ) -> Result<Args, CodegenError> {
+    validate_entry_gates(entry)?;
     let params: HashSet<String> = entry.params.iter().map(|p| p.name.text.clone()).collect();
     let asset_params: HashSet<String> = entry
         .params
@@ -2064,6 +2065,183 @@ fn collect_fields_expr(expr: &Expr, param: &str, out: &mut Vec<String>) {
             }
         }
         _ => {}
+    }
+}
+
+fn validate_entry_gates(entry: &EntryDecl) -> Result<(), CodegenError> {
+    check_after_anchors(entry)?;
+    check_gate_pseudo_fields(entry)?;
+    Ok(())
+}
+
+fn check_gate_pseudo_fields(entry: &EntryDecl) -> Result<(), CodegenError> {
+    let quorum_params: HashSet<&str> = entry
+        .params
+        .iter()
+        .filter(|p| quorum_spec(p).is_some())
+        .map(|p| p.name.text.as_str())
+        .collect();
+    if quorum_params.is_empty() {
+        return Ok(());
+    }
+    for clause in &entry.clauses {
+        let (expr, span) = match clause {
+            Clause::Limits { expr, span } | Clause::Denies { expr, span } => (expr, *span),
+            _ => continue,
+        };
+        reject_gate_pseudo_field(expr, &quorum_params, span)?;
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, span } = stmt {
+            reject_gate_pseudo_field(expr, &quorum_params, *span)?;
+        }
+    }
+    Ok(())
+}
+
+fn reject_gate_pseudo_field(
+    expr: &Expr,
+    quorum_params: &HashSet<&str>,
+    span: Span,
+) -> Result<(), CodegenError> {
+    match expr {
+        Expr::Field { base, name, .. } => {
+            if let Expr::Ident(id) = base.as_ref() {
+                if quorum_params.contains(id.text.as_str()) {
+                    return Err(CodegenError::Rejected {
+                        what: format!(
+                            "a gate that reads `{}.{}`, a quorum field that no guardian signs; a quorum never authenticates its own fields",
+                            id.text, name.text
+                        ),
+                        span,
+                    });
+                }
+            }
+            reject_gate_pseudo_field(base, quorum_params, span)
+        }
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            reject_gate_pseudo_field(expr, quorum_params, span)
+        }
+        Expr::Binary { left, right, .. } => {
+            reject_gate_pseudo_field(left, quorum_params, span)?;
+            reject_gate_pseudo_field(right, quorum_params, span)
+        }
+        Expr::Call { callee, args, .. } => {
+            reject_gate_pseudo_field(callee, quorum_params, span)?;
+            for arg in args {
+                reject_gate_pseudo_field(arg, quorum_params, span)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn check_after_anchors(entry: &EntryDecl) -> Result<(), CodegenError> {
+    let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
+    let quorum_params: HashSet<&str> = entry
+        .params
+        .iter()
+        .filter(|p| quorum_spec(p).is_some())
+        .map(|p| p.name.text.as_str())
+        .collect();
+
+    let mut authenticated: HashSet<String> = HashSet::new();
+    for param in &entry.params {
+        if param.signed_by.is_some() {
+            for key in collect_signed_fields(entry, &param.name.text) {
+                authenticated.insert(key);
+            }
+        }
+    }
+    if !quorum_params.is_empty() {
+        for param in &entry.params {
+            if quorum_spec(param).is_some() || param.ty.name.text == "Q_Asset" {
+                continue;
+            }
+            for key in collect_signed_fields(entry, &param.name.text) {
+                authenticated.insert(key);
+            }
+        }
+    }
+
+    for clause in &entry.clauses {
+        let Clause::After { target, from, span } = clause else {
+            continue;
+        };
+        if let AfterTarget::Expr(expr) = target {
+            check_anchor_expr(expr, &params, &quorum_params, &authenticated, *span)?;
+        }
+        if let Some(expr) = from {
+            check_anchor_expr(expr, &params, &quorum_params, &authenticated, *span)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_anchor_expr(
+    expr: &Expr,
+    params: &HashSet<&str>,
+    quorum_params: &HashSet<&str>,
+    authenticated: &HashSet<String>,
+    span: Span,
+) -> Result<(), CodegenError> {
+    match expr {
+        Expr::Field { base, name, .. } => {
+            if let Expr::Ident(id) = base.as_ref() {
+                if params.contains(id.text.as_str()) {
+                    let key = format!("{}.{}", id.text, name.text);
+                    if !authenticated.contains(&key) {
+                        return Err(anchor_rejection(
+                            key,
+                            quorum_params.contains(id.text.as_str()),
+                            span,
+                        ));
+                    }
+                    return Ok(());
+                }
+            }
+            check_anchor_expr(base, params, quorum_params, authenticated, span)
+        }
+        Expr::Ident(id) => {
+            if params.contains(id.text.as_str()) {
+                return Err(anchor_rejection(
+                    id.text.clone(),
+                    quorum_params.contains(id.text.as_str()),
+                    span,
+                ));
+            }
+            Ok(())
+        }
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            check_anchor_expr(expr, params, quorum_params, authenticated, span)
+        }
+        Expr::Binary { left, right, .. } => {
+            check_anchor_expr(left, params, quorum_params, authenticated, span)?;
+            check_anchor_expr(right, params, quorum_params, authenticated, span)
+        }
+        Expr::Call { callee, args, .. } => {
+            check_anchor_expr(callee, params, quorum_params, authenticated, span)?;
+            for arg in args {
+                check_anchor_expr(arg, params, quorum_params, authenticated, span)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn anchor_rejection(display: String, is_quorum: bool, span: Span) -> CodegenError {
+    let source = if is_quorum {
+        format!("a time gate anchored on `{display}`, a quorum field that no guardian signs")
+    } else {
+        format!("a time gate anchored on `{display}`, a caller supplied value that no signature covers")
+    };
+    CodegenError::Rejected {
+        what: format!(
+            "{source}; anchor the delay on state that an authorized entry records with `now`"
+        ),
+        span,
     }
 }
 

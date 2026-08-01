@@ -7,6 +7,7 @@ use quanta_lexer::Span;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodegenError {
     Unsupported { what: String, span: Span },
+    Rejected { what: String, span: Span },
     RegisterExhausted { span: Span },
     IntegerTooWide { text: String, span: Span },
     Link(LinkError),
@@ -16,6 +17,7 @@ impl CodegenError {
     pub fn span(&self) -> Span {
         match self {
             CodegenError::Unsupported { span, .. }
+            | CodegenError::Rejected { span, .. }
             | CodegenError::RegisterExhausted { span }
             | CodegenError::IntegerTooWide { span, .. } => *span,
             CodegenError::Link(_) => Span::default(),
@@ -28,6 +30,9 @@ impl std::fmt::Display for CodegenError {
         match self {
             CodegenError::Unsupported { what, .. } => {
                 write!(f, "code generation does not yet lower {what}")
+            }
+            CodegenError::Rejected { what, .. } => {
+                write!(f, "code generation rejects {what}")
             }
             CodegenError::RegisterExhausted { .. } => {
                 write!(
