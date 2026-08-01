@@ -69,7 +69,10 @@ impl Parser {
                 Ok(GenericArg::Int(m))
             }
         } else {
-            Ok(GenericArg::Type(self.ty()?))
+            self.enter()?;
+            let inner = self.ty();
+            self.leave();
+            Ok(GenericArg::Type(inner?))
         }
     }
 }

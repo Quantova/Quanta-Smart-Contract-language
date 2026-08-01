@@ -15,7 +15,10 @@ pub fn parse_expr(src: &str) -> Result<Expr, ParseError> {
 
 impl Parser {
     pub(crate) fn expr(&mut self) -> Result<Expr, ParseError> {
-        self.logic_or()
+        self.enter()?;
+        let result = self.logic_or();
+        self.leave();
+        result
     }
 
     fn logic_or(&mut self) -> Result<Expr, ParseError> {
@@ -119,7 +122,10 @@ impl Parser {
         };
         let op_span = self.peek_span();
         self.bump();
-        let expr = self.unary()?;
+        self.enter()?;
+        let inner = self.unary();
+        self.leave();
+        let expr = inner?;
         let span = op_span.join(expr.span());
         Ok(Expr::Unary {
             op,

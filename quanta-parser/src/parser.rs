@@ -5,15 +5,36 @@ use crate::error::ParseError;
 use quanta_ast::{Ident, IntLit, StrLit};
 use quanta_lexer::{tokenize, Span, Token, TokenKind};
 
+pub(crate) const MAX_DEPTH: usize = 64;
+
 pub(crate) struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    depth: usize,
 }
 
 impl Parser {
     pub(crate) fn new(src: &str) -> Result<Parser, ParseError> {
         let tokens = tokenize(src)?;
-        Ok(Parser { tokens, pos: 0 })
+        Ok(Parser {
+            tokens,
+            pos: 0,
+            depth: 0,
+        })
+    }
+
+    pub(crate) fn enter(&mut self) -> Result<(), ParseError> {
+        if self.depth >= MAX_DEPTH {
+            return Err(self.err(format!(
+                "expression or type nests deeper than the {MAX_DEPTH} level limit"
+            )));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    pub(crate) fn leave(&mut self) {
+        self.depth -= 1;
     }
 
     pub(crate) fn peek(&self) -> &TokenKind {
