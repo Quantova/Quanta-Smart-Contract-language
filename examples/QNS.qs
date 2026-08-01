@@ -69,17 +69,17 @@ contract QNS {
     vault.merge(payment);
     emit PremiumClaimed(label, caller, now + years * 31536000, years);
   }
-  entry reserve(label: Q_Name, approvals: Quorum<4 of 7, guardians>)
+  entry reserve(order: NameReservation, approvals: Quorum<4 of 7, guardians>)
     writes(reserved)
   {
-    reserved.set(label, 1);
-    emit Reserved(label);
+    reserved.set(order.name, 1);
+    emit Reserved(order.name);
   }
-  entry release(label: Q_Name, approvals: Quorum<4 of 7, guardians>)
+  entry release(order: NameReservation, approvals: Quorum<4 of 7, guardians>)
     writes(reserved)
   {
-    reserved.set(label, 0);
-    emit Released(label);
+    reserved.set(order.name, 0);
+    emit Released(order.name);
   }
   entry set_resolved(label: Q_Name, target: Q_Address)
     reads(owner_of, expiry_of)

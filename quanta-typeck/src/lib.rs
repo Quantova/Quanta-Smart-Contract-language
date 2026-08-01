@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 mod access;
+mod binding;
 mod conserve;
 pub mod error;
 mod linear;
@@ -25,6 +26,7 @@ pub fn check(program: &Program) -> Result<(), TypeError> {
         signature::check(&model)?;
         conserve::check(&model)?;
         access::check(&model)?;
+        binding::check(&model)?;
         sealed::check(&model)?;
     }
     Ok(())
