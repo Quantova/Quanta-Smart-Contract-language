@@ -1317,6 +1317,22 @@ fn lower_quorum_prologue(
                 span: param.span,
             });
         }
+        if threshold == 0 {
+            return Err(CodegenError::Unsupported {
+                what: format!(
+                    "a quorum over `{set}` whose threshold is zero, which would admit the entry with no signatures"
+                ),
+                span: param.span,
+            });
+        }
+        if threshold > count {
+            return Err(CodegenError::Unsupported {
+                what: format!(
+                    "a quorum over `{set}` whose threshold exceeds its set size, which can never be met"
+                ),
+                span: param.span,
+            });
+        }
         let name = &param.name.text;
         let span = param.span;
         let field_specs = quorum_message_fields(ctx, entry, name)?;
