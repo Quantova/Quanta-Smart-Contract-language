@@ -373,6 +373,15 @@ fn lower_call_value(
 }
 
 fn lower_ident(ctx: &mut Ctx, name: &str, span: Span) -> Result<Reg, CodegenError> {
+    if ctx.layout.is_wide(name) || ctx.wide_keys.contains(name) {
+        return Err(CodegenError::Unsupported {
+            what: format!(
+                "the u128 value `{name}` where a single word is expected, which would drop its \
+                 high word; keep a wide value in a two word context"
+            ),
+            span,
+        });
+    }
     if let Some(slot) = ctx.layout.slot(name) {
         load_slot(ctx, slot, span)
     } else if ctx.params.contains(name) {
@@ -474,10 +483,21 @@ fn asset_amount(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<Reg, CodegenE
     }
 }
 
+fn narrow_amount(ctx: &mut Ctx, value: &Expr) -> Result<Reg, CodegenError> {
+    if is_wide_expr(ctx, value) {
+        let (lo, hi) = eval_wide(ctx, value, false)?;
+        ctx.b.jnz(hi, ctx.trap);
+        ctx.regs.free(hi);
+        Ok(lo)
+    } else {
+        lower_expr(ctx, value, false)
+    }
+}
+
 fn lower_split(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Result<Reg, CodegenError> {
     let slot = asset_field_slot(ctx, base, span)?;
     let value = one_arg(args, span)?;
-    let amt = lower_expr(ctx, value, false)?;
+    let amt = narrow_amount(ctx, value)?;
     let rf = load_slot(ctx, slot, span)?;
     ctx.b.op(Instr::Sub {
         d: rf,
@@ -497,7 +517,7 @@ fn lower_mint(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<Reg, CodegenEr
         });
     }
     let amount = one_arg(args, span)?;
-    lower_expr(ctx, amount, false)
+    narrow_amount(ctx, amount)
 }
 
 fn produces_asset(value: &Expr) -> bool {
@@ -602,6 +622,15 @@ fn lower_binary(
         let (llo, lhi) = eval_wide(ctx, left, wrapping)?;
         let (rlo, rhi) = eval_wide(ctx, right, wrapping)?;
         return wide_compare(ctx, op, llo, lhi, rlo, rhi, left.span());
+    }
+    if matches!(op, BinOp::Div | BinOp::Rem | BinOp::Shr)
+        && (is_wide_expr(ctx, left) || is_wide_expr(ctx, right))
+    {
+        return Err(CodegenError::Unsupported {
+            what: "a division, remainder, or shift with a u128 operand, which would truncate the \
+                   wide value to its low word".into(),
+            span: left.span(),
+        });
     }
     if matches!(op, BinOp::And | BinOp::Or) {
         return lower_short_circuit(ctx, op, left, right, wrapping);
@@ -3010,6 +3039,12 @@ fn lower_map_read(
     span: Span,
 ) -> Result<Reg, CodegenError> {
     let mbase = map_base_of(ctx, base, span)?;
+    if map_name_is_value_wide(ctx, base) {
+        return Err(CodegenError::Unsupported {
+            what: "reading a u128 map value as a single word, which would drop its high word".into(),
+            span,
+        });
+    }
     let key_expr = one_arg(args, span)?;
     let addr_off = map_key_region(ctx, base, key_expr, span)?;
     if map_name_is_value_addr(ctx, base) {
