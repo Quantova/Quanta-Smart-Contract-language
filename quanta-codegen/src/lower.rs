@@ -1457,6 +1457,7 @@ fn emit_quorum_member(
     let msg_len = MSG_FIELDS_OFF + fields_bytes;
 
     let ptr = load_arg(ctx, member.ptr_off, span)?;
+    bound_message_pointer(ctx, ptr, msg_start, msg_len, trap, span)?;
 
     {
         let rscheme = ctx.regs.alloc(span)?;
@@ -2128,6 +2129,38 @@ fn lower_signed_binding(
     Ok(())
 }
 
+fn bound_message_pointer(
+    ctx: &mut Ctx,
+    ptr: Reg,
+    msg_start: u64,
+    msg_len: u64,
+    trap: Label,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let region = msg_start + msg_len;
+    let limit = SIGNER_ADDR_SCRATCH
+        .checked_sub(region)
+        .ok_or(CodegenError::Unsupported {
+            what: "a signed authorization message wider than the scratch floor allows".into(),
+            span,
+        })?;
+    let rlimit = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: rlimit,
+        imm: limit,
+    });
+    let over = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::GtU {
+        d: over,
+        a: ptr,
+        b: rlimit,
+    });
+    ctx.b.jnz(over, trap);
+    ctx.regs.free(over);
+    ctx.regs.free(rlimit);
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn emit_signed_binding(
     ctx: &mut Ctx,
@@ -2156,6 +2189,7 @@ fn emit_signed_binding(
     let msg_len = MSG_FIELDS_OFF + fields_bytes;
 
     let ptr = load_arg(ctx, ptr_off, span)?;
+    bound_message_pointer(ctx, ptr, msg_start, msg_len, trap, span)?;
 
     {
         let rscheme = ctx.regs.alloc(span)?;
