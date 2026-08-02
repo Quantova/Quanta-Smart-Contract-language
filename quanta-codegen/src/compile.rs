@@ -85,6 +85,7 @@ fn compile_entries(
     entries: &[&EntryDecl],
 ) -> Result<CompiledContract, CodegenError> {
     let layout = Layout::build(contract);
+    crate::lower::check_anchor_state_writes(contract, &layout)?;
     let invariants: Vec<&quanta_ast::Expr> = contract
         .items
         .iter()

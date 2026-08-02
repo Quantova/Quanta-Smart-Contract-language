@@ -139,3 +139,66 @@ fn a_quorum_signed_order_field_anchor_still_compiles() {
     }\n";
     try_compile(src).expect("a quorum that signs the anchor field keeps compiling");
 }
+
+#[test]
+fn a_state_anchor_written_from_a_caller_param_is_rejected() {
+    let src = "contract C {\n\
+      state { owner: Q_Address; anchor: u64; opened: u64; }\n\
+      genesis { owner = deployer; }\n\
+      entry set_anchor(t: u64) writes(anchor) { anchor = t; }\n\
+      entry open(order: OpenOrder signed by owner) writes(opened)\n\
+        after 24 hours from anchor denies anchor == 0 { opened = 1; }\n\
+    }\n";
+    let what = rejection(src);
+    assert!(
+        what.contains("`anchor`") && what.contains("pre-date the delay"),
+        "an anchor a second entry writes from a caller value cannot back the delay: {what}"
+    );
+}
+
+#[test]
+fn a_state_anchor_advanced_by_a_caller_param_is_rejected() {
+    let src = "contract C {\n\
+      state { owner: Q_Address; anchor: u64; opened: u64; }\n\
+      genesis { owner = deployer; }\n\
+      entry push(t: u64) writes(anchor) { anchor = wrapping(anchor + t); }\n\
+      entry open(order: OpenOrder signed by owner) writes(opened)\n\
+        after 24 hours from anchor denies anchor == 0 { opened = 1; }\n\
+    }\n";
+    let what = rejection(src);
+    assert!(what.contains("`anchor`"), "an anchor moved by a caller value is rejected: {what}");
+}
+
+#[test]
+fn a_state_anchor_seeded_from_a_deploy_param_is_rejected() {
+    let src = "contract C {\n\
+      state { owner: Q_Address; anchor: u64; opened: u64; }\n\
+      genesis { owner = deployer; anchor = deploy_params.anchor; }\n\
+      entry open(order: OpenOrder signed by owner) writes(opened)\n\
+        after 24 hours from anchor denies anchor == 0 { opened = 1; }\n\
+    }\n";
+    let what = rejection(src);
+    assert!(what.contains("`anchor`"), "a genesis seeded anchor from a deploy value is rejected: {what}");
+}
+
+#[test]
+fn a_recorded_now_anchor_that_a_reset_clears_still_compiles() {
+    let src = "contract C {\n\
+      state { board: GuardianSet<3>; armed: u64; opened: u64; }\n\
+      entry arm(approvals: Quorum<2 of 3, board>) writes(armed) { armed = now; }\n\
+      entry open(approvals: Quorum<2 of 3, board>) writes(opened, armed)\n\
+        after 24 hours from armed denies armed == 0 { opened = 1; armed = 0; }\n\
+    }\n";
+    try_compile(src).expect("recording the anchor with now and clearing it with a constant compiles");
+}
+
+#[test]
+fn a_constant_default_anchor_still_compiles() {
+    let src = "contract C {\n\
+      state { owner: Q_Address; vault: Q_Asset<QTOV>; unlock: Time = 2027-12-31; }\n\
+      genesis { owner = deployer; }\n\
+      entry withdraw(order: WithdrawOrder signed by owner) conserves QTOV writes(vault)\n\
+        after unlock { send(order.to, vault.split(order.amount)); }\n\
+    }\n";
+    try_compile(src).expect("a fixed constant unlock time is a safe anchor and compiles");
+}

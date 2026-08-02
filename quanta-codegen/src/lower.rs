@@ -7,7 +7,8 @@ use crate::layout::Layout;
 use crate::selector::entry_selector;
 use qtv_vm::isa::{Instr, Reg, NUM_REGS};
 use quanta_ast::{
-    AfterTarget, AssignOp, BinOp, Clause, EntryDecl, Expr, GenericArg, Param, Stmt, UnaryOp,
+    AfterTarget, AssignOp, BinOp, Clause, Contract, EntryDecl, Expr, GenericArg, Item, Param, Stmt,
+    UnaryOp,
 };
 use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
@@ -2240,6 +2241,121 @@ fn anchor_rejection(display: String, is_quorum: bool, span: Span) -> CodegenErro
     CodegenError::Rejected {
         what: format!(
             "{source}; anchor the delay on state that an authorized entry records with `now`"
+        ),
+        span,
+    }
+}
+
+pub fn check_anchor_state_writes(contract: &Contract, layout: &Layout) -> Result<(), CodegenError> {
+    let mut anchors: HashSet<String> = HashSet::new();
+    for item in &contract.items {
+        let Item::Entry(entry) = item else { continue };
+        let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
+        for clause in &entry.clauses {
+            let Clause::After { target, from, .. } = clause else {
+                continue;
+            };
+            if let AfterTarget::Expr(expr) = target {
+                collect_anchor_idents(expr, &params, layout, &mut anchors);
+            }
+            if let Some(expr) = from {
+                collect_anchor_idents(expr, &params, layout, &mut anchors);
+            }
+        }
+    }
+    if anchors.is_empty() {
+        return Ok(());
+    }
+    for item in &contract.items {
+        match item {
+            Item::Entry(entry) => {
+                for stmt in &entry.body {
+                    check_anchor_assign(stmt, &anchors)?;
+                }
+            }
+            Item::Genesis(g) => {
+                for stmt in &g.body {
+                    check_anchor_assign(stmt, &anchors)?;
+                }
+            }
+            Item::State(sb) => {
+                for field in &sb.fields {
+                    if let Some(value) = &field.default {
+                        if anchors.contains(&field.name.text) && !is_recorded_time_or_const(value) {
+                            return Err(anchor_write_rejection(&field.name.text, field.span));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn collect_anchor_idents(
+    expr: &Expr,
+    params: &HashSet<&str>,
+    layout: &Layout,
+    out: &mut HashSet<String>,
+) {
+    match expr {
+        Expr::Ident(id) => {
+            if !params.contains(id.text.as_str()) && layout.slot(&id.text).is_some() {
+                out.insert(id.text.clone());
+            }
+        }
+        Expr::Field { base, .. } => collect_anchor_idents(base, params, layout, out),
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            collect_anchor_idents(expr, params, layout, out)
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_anchor_idents(left, params, layout, out);
+            collect_anchor_idents(right, params, layout, out);
+        }
+        Expr::Call { callee, args, .. } => {
+            collect_anchor_idents(callee, params, layout, out);
+            for arg in args {
+                collect_anchor_idents(arg, params, layout, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn check_anchor_assign(stmt: &Stmt, anchors: &HashSet<String>) -> Result<(), CodegenError> {
+    let Stmt::Assign {
+        target,
+        op,
+        value,
+        span,
+    } = stmt
+    else {
+        return Ok(());
+    };
+    let Expr::Ident(id) = target else {
+        return Ok(());
+    };
+    if !anchors.contains(&id.text) {
+        return Ok(());
+    }
+    if !matches!(op, AssignOp::Set) || !is_recorded_time_or_const(value) {
+        return Err(anchor_write_rejection(&id.text, *span));
+    }
+    Ok(())
+}
+
+fn is_recorded_time_or_const(value: &Expr) -> bool {
+    matches!(
+        value,
+        Expr::Now { .. } | Expr::Int(_) | Expr::Date { .. }
+    )
+}
+
+fn anchor_write_rejection(field: &str, span: Span) -> CodegenError {
+    CodegenError::Rejected {
+        what: format!(
+            "a write to `{field}`, a state field a time gate anchors on, from a value that is not `now` or a constant; record the anchor with `now` so no caller can pre-date the delay"
         ),
         span,
     }
