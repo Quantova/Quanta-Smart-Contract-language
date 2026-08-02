@@ -202,3 +202,81 @@ fn a_constant_default_anchor_still_compiles() {
     }\n";
     try_compile(src).expect("a fixed constant unlock time is a safe anchor and compiles");
 }
+
+#[test]
+fn a_map_anchor_set_from_a_caller_param_is_rejected() {
+    let src = "contract C {\n\
+      state { owner: Q_Address; anchor: Map<Q_Address, u64>; opened: u64; }\n\
+      genesis { owner = deployer; }\n\
+      entry set_anchor(t: u64) writes(anchor) { anchor.set(caller, t); }\n\
+      entry open(order: OpenOrder signed by owner) writes(opened)\n\
+        after 24 hours from anchor.get(caller) denies anchor.get(caller) == 0 { opened = 1; }\n\
+    }\n";
+    let what = rejection(src);
+    assert!(
+        what.contains("`anchor`") && what.contains("pre-date the delay"),
+        "a keyed anchor a second entry writes from a caller value cannot back the delay: {what}"
+    );
+}
+
+#[test]
+fn a_map_anchor_advanced_by_a_caller_credit_is_rejected() {
+    let src = "contract C {\n\
+      state { owner: Q_Address; anchor: Map<Q_Address, u64>; opened: u64; }\n\
+      genesis { owner = deployer; }\n\
+      entry push(t: u64) writes(anchor) { anchor.credit(caller, t); }\n\
+      entry open(order: OpenOrder signed by owner) writes(opened)\n\
+        after 24 hours from anchor.get(caller) denies anchor.get(caller) == 0 { opened = 1; }\n\
+    }\n";
+    let what = rejection(src);
+    assert!(what.contains("`anchor`"), "a keyed anchor moved by a caller amount is rejected: {what}");
+}
+
+#[test]
+fn a_map_anchor_seeded_from_a_deploy_param_is_rejected() {
+    let src = "contract C {\n\
+      state { owner: Q_Address; anchor: Map<Q_Address, u64>; opened: u64; }\n\
+      genesis { owner = deployer; anchor.set(deployer, deploy_params.t); }\n\
+      entry open(order: OpenOrder signed by owner) writes(opened)\n\
+        after 24 hours from anchor.get(caller) denies anchor.get(caller) == 0 { opened = 1; }\n\
+    }\n";
+    let what = rejection(src);
+    assert!(what.contains("`anchor`"), "a genesis seeded keyed anchor from a deploy value is rejected: {what}");
+}
+
+#[test]
+fn a_map_anchor_recorded_with_now_still_compiles() {
+    let src = "contract C {\n\
+      state { owner: Q_Address; anchor: Map<Q_Address, u64>; opened: u64; }\n\
+      genesis { owner = deployer; }\n\
+      entry arm() writes(anchor) { anchor.set(caller, now); }\n\
+      entry open(order: OpenOrder signed by owner) writes(opened)\n\
+        after 24 hours from anchor.get(caller) denies anchor.get(caller) == 0 { opened = 1; }\n\
+    }\n";
+    try_compile(src).expect("recording a keyed anchor with now compiles");
+}
+
+#[test]
+fn a_caller_write_to_a_non_anchor_map_still_compiles() {
+    let src = "contract Bank {\n\
+      state { bal: Map<Q_Address, u64>; }\n\
+      entry deposit(v: u64) writes(bal) { bal.set(caller, v); }\n\
+    }\n";
+    try_compile(src).expect("an ordinary keyed write to a map no delay anchors on compiles");
+}
+
+#[test]
+fn an_asset_balance_anchor_is_rejected() {
+    let src = "contract C {\n\
+      state { owner: Q_Address; vault: Q_Asset<QTOV>; opened: u64; }\n\
+      genesis { owner = deployer; }\n\
+      entry fund(payment: Q_Asset<QTOV>) conserves QTOV writes(vault) { vault.merge(payment); }\n\
+      entry open(order: OpenOrder signed by owner) writes(opened)\n\
+        after 24 hours from vault.amount { opened = 1; }\n\
+    }\n";
+    let what = rejection(src);
+    assert!(
+        what.contains("`vault`") && what.contains("pre-date the delay"),
+        "an asset balance is not a recorded time and cannot anchor a delay: {what}"
+    );
+}

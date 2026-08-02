@@ -2324,25 +2324,57 @@ fn collect_anchor_idents(
 }
 
 fn check_anchor_assign(stmt: &Stmt, anchors: &HashSet<String>) -> Result<(), CodegenError> {
-    let Stmt::Assign {
-        target,
-        op,
-        value,
-        span,
-    } = stmt
-    else {
+    match stmt {
+        Stmt::Assign {
+            target,
+            op,
+            value,
+            span,
+        } => {
+            let Expr::Ident(id) = target else {
+                return Ok(());
+            };
+            if !anchors.contains(&id.text) {
+                return Ok(());
+            }
+            if !matches!(op, AssignOp::Set) || !is_recorded_time_or_const(value) {
+                return Err(anchor_write_rejection(&id.text, *span));
+            }
+            Ok(())
+        }
+        Stmt::Expr {
+            expr: Expr::Call { callee, args, span },
+            ..
+        } => check_anchor_map_write(callee, args, anchors, *span),
+        _ => Ok(()),
+    }
+}
+
+fn check_anchor_map_write(
+    callee: &Expr,
+    args: &[Expr],
+    anchors: &HashSet<String>,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let Expr::Field { base, name, .. } = callee else {
         return Ok(());
     };
-    let Expr::Ident(id) = target else {
+    let Expr::Ident(id) = base.as_ref() else {
         return Ok(());
     };
     if !anchors.contains(&id.text) {
         return Ok(());
     }
-    if !matches!(op, AssignOp::Set) || !is_recorded_time_or_const(value) {
-        return Err(anchor_write_rejection(&id.text, *span));
+    match name.text.as_str() {
+        "set" => {
+            if args.len() != 2 || !is_recorded_time_or_const(&args[1]) {
+                return Err(anchor_write_rejection(&id.text, span));
+            }
+            Ok(())
+        }
+        "insert" | "remove" => Ok(()),
+        _ => Err(anchor_write_rejection(&id.text, span)),
     }
-    Ok(())
 }
 
 fn is_recorded_time_or_const(value: &Expr) -> bool {
