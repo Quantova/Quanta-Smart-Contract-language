@@ -15,7 +15,7 @@ contract NameRegistry {
     denies names.contains(claim.name)
   {
     names.insert(claim.name);
-    owners.credit(claim.name, claim.owner);
+    owners.set(claim.name, claim.owner);
     emit Registered(claim.name, claim.owner);
   }
   entry release_name(order: ReleaseName signed by admin)

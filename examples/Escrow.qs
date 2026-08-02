@@ -6,6 +6,7 @@ contract Escrow {
     arbiter: Q_Address;
     holding: Q_Asset<QTOV>;
     price: u128;
+    funded: u8 = 0;
     released: u8 = 0;
   }
   genesis {
@@ -14,12 +15,15 @@ contract Escrow {
     arbiter = deploy_params.arbiter;
     price = deploy_params.price;
   }
+  invariant funded <= 1;
   invariant released <= 1;
   entry fund(payment: sealed Q_Asset<QTOV>)
     conserves QTOV
-    writes(holding)
+    writes(holding, funded)
+    denies funded == 1
   {
     guard payment.amount == price;
+    funded = 1;
     holding.merge(payment);
     emit Funded(buyer, payment.amount);
   }

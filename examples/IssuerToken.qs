@@ -12,6 +12,7 @@ contract IssuerToken {
   }
   genesis {
     total_supply = 0;
+    guardians = deploy_params.guardians;
   }
   invariant total_supply <= max_supply;
   entry mint(order: MintOrder, approvals: Quorum<3 of 5, guardians>)
