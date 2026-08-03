@@ -8,6 +8,7 @@ contract SovereignStable {
     issued_this_month: u128;
     sanctions: Registry<Q_Address>;
     board_rotation_armed: u64;
+    month_reset: u64;
   }
   genesis {
     issuance_board = deploy_params.board;
@@ -29,6 +30,28 @@ contract SovereignStable {
   {
     send(to, funds);
   }
+  entry roll_month(approvals: Quorum<3 of 5, issuance_board>)
+    writes(issued_this_month, month_reset)
+    after 30 days from month_reset
+  {
+    issued_this_month = 0;
+    month_reset = now;
+    emit MonthRolled(approvals.digest);
+  }
+  entry sanction(order: SanctionOrder, approvals: Quorum<3 of 5, issuance_board>)
+    writes(sanctions)
+    denies sanctions.contains(order.who)
+  {
+    sanctions.insert(order.who);
+    emit Sanctioned(order.who, approvals.digest);
+  }
+  entry unsanction(order: SanctionOrder, approvals: Quorum<3 of 5, issuance_board>)
+    writes(sanctions)
+    denies !sanctions.contains(order.who)
+  {
+    sanctions.remove(order.who);
+    emit Unsanctioned(order.who, approvals.digest);
+  }
   entry arm_board_rotation(approvals: Quorum<4 of 5, issuance_board>)
     writes(board_rotation_armed)
   {
@@ -48,4 +71,7 @@ contract SovereignStable {
   event Issued(amount: u128, digest: Q_Hash);
   event BoardRotationArmed(digest: Q_Hash);
   event BoardRotated(digest: Q_Hash);
+  event MonthRolled(digest: Q_Hash);
+  event Sanctioned(who: Q_Address, digest: Q_Hash);
+  event Unsanctioned(who: Q_Address, digest: Q_Hash);
 }

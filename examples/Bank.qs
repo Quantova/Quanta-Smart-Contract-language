@@ -8,6 +8,14 @@ contract Bank {
   genesis {
     owner = deployer;
   }
+  entry deposit(funds: Q_Asset<QTOV>)
+    conserves QTOV
+    writes(vault, balance)
+  {
+    balance += funds.amount;
+    vault.merge(funds);
+    emit Deposited(caller, funds.amount);
+  }
   entry withdraw(order: WithdrawOrder signed by owner)
     conserves QTOV
     writes(vault, balance)
@@ -18,5 +26,6 @@ contract Bank {
     balance -= order.amount;
     emit Withdrawn(order.to, order.amount);
   }
+  event Deposited(from_addr: Q_Address, amount: u128);
   event Withdrawn(to: Q_Address, amount: u128);
 }

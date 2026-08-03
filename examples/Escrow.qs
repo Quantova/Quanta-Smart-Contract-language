@@ -37,6 +37,17 @@ contract Escrow {
     send(seller, out);
     emit Released(seller, price);
   }
+  entry refund(order: RefundOrder signed by arbiter)
+    conserves QTOV
+    writes(holding, released)
+    denies released == 1
+  {
+    released = 1;
+    let out = holding.split(price);
+    send(buyer, out);
+    emit Refunded(buyer, price);
+  }
   event Funded(from_addr: Q_Address, amount: u128);
   event Released(to: Q_Address, amount: u128);
+  event Refunded(to: Q_Address, amount: u128);
 }

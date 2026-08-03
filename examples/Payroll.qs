@@ -7,6 +7,7 @@ contract Payroll {
     staff: Registry<Q_Address>;
     period_cap: u128 = 500_000;
     paid_this_period: u128;
+    period_reset: u64;
   }
   genesis {
     employer = deployer;
@@ -40,7 +41,16 @@ contract Payroll {
     staff.insert(order.worker);
     emit Hired(order.worker);
   }
+  entry roll_period(order: RollPeriod signed by employer)
+    writes(paid_this_period, period_reset)
+    after 30 days from period_reset
+  {
+    paid_this_period = 0;
+    period_reset = now;
+    emit PeriodRolled();
+  }
   event Funded(amount: u128);
   event Paid(to: Q_Address, amount: u128);
   event Hired(worker: Q_Address);
+  event PeriodRolled();
 }

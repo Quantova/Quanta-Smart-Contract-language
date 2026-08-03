@@ -9,6 +9,7 @@ contract Auction {
   }
   genesis {
     seller = deploy_params.seller;
+    highest_bidder = deploy_params.seller;
   }
   invariant closed <= 1;
   entry bid(offer: sealed Bid, funds: Q_Asset<QTOV>)
@@ -17,7 +18,9 @@ contract Auction {
     denies closed == 1
     limits offer.amount > highest_bid
   {
-    guard funds.amount >= offer.amount;
+    guard funds.amount == offer.amount;
+    let refund = pot.split(highest_bid);
+    send(highest_bidder, refund);
     highest_bid = offer.amount;
     highest_bidder = offer.bidder;
     pot.merge(funds);

@@ -12,6 +12,13 @@ contract Vesting {
     total = deploy_params.total;
   }
   invariant claimed <= total;
+  entry deposit(funds: Q_Asset<QTOV>)
+    conserves QTOV
+    writes(locked)
+  {
+    locked.merge(funds);
+    emit Deposited(funds.amount);
+  }
   entry claim(order: ClaimOrder signed by beneficiary)
     conserves QTOV
     writes(claimed, locked)
@@ -23,5 +30,6 @@ contract Vesting {
     send(beneficiary, out);
     emit Claimed(beneficiary, order.amount);
   }
+  event Deposited(amount: u128);
   event Claimed(to: Q_Address, amount: u128);
 }

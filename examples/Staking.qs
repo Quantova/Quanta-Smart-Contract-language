@@ -1,16 +1,12 @@
 import { Q_Asset } from "quantova/primitives";
 import { Map } from "quantova/stdlib";
 contract Staking {
-  asset SREWARD;
   state {
-    admin: Q_Address;
     pool: Q_Asset<QTOV>;
     stakes: Map<Q_Address, u128>;
     total_staked: u128;
-    reward_rate: u16 = 5;
   }
   genesis {
-    admin = deployer;
     total_staked = 0;
   }
   invariant total_staked <= pool.amount;
@@ -24,15 +20,16 @@ contract Staking {
     stakes.credit(caller, funds.amount);
     emit Staked(caller, funds.amount);
   }
-  entry unstake(order: UnstakeOrder signed by admin)
+  entry unstake(order: UnstakeOrder)
     conserves QTOV
     writes(pool, stakes, total_staked)
-    limits order.amount <= total_staked
   {
+    guard order.amount > 0;
+    stakes.debit(caller, order.amount);
     total_staked -= order.amount;
     let out = pool.split(order.amount);
-    send(order.to, out);
-    emit Unstaked(order.to, order.amount);
+    send(caller, out);
+    emit Unstaked(caller, order.amount);
   }
   event Staked(who: Q_Address, amount: u128);
   event Unstaked(who: Q_Address, amount: u128);

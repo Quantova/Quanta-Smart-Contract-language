@@ -5,6 +5,7 @@ contract Vault {
     reserve: Q_Asset<QTOV>;
     daily_cap: u64 = 50_000;
     spent_today: u64;
+    last_reset: u64;
   }
   genesis {
     owner = deployer;
@@ -28,6 +29,15 @@ contract Vault {
     send(req.to, payout);
     emit Withdrawn(req.to, req.amount);
   }
+  entry roll_day(req: RollDay signed by owner)
+    writes(spent_today, last_reset)
+    after 24 hours from last_reset
+  {
+    spent_today = 0;
+    last_reset = now;
+    emit DayRolled();
+  }
   event Funded(amount: u128);
   event Withdrawn(to: Q_Address, amount: u128);
+  event DayRolled();
 }

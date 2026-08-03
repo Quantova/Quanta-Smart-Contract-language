@@ -8,6 +8,16 @@ contract TreasuryBond {
     maturity: Time = 2036-07-01;
     coupon_bps: u16 = 425;
   }
+  genesis {
+    registrar = deployer;
+  }
+  entry enroll(order: EnrollOrder signed by registrar)
+    writes(holders)
+    denies holders.contains(order.investor)
+  {
+    holders.insert(order.investor);
+    emit Enrolled(order.investor);
+  }
   entry subscribe(order: SubscriptionOrder signed by registrar,
                   payment: sealed Q_Asset<QSGD>)
     conserves QSGD
@@ -30,6 +40,7 @@ contract TreasuryBond {
     send(caller, principal);
     emit Redeemed(caller, units.amount);
   }
+  event Enrolled(investor: Q_Address);
   event Subscribed(investor: Q_Address, units: u128);
   event Redeemed(holder: Q_Address, units: u128);
 }
