@@ -1171,7 +1171,9 @@ pub fn lower_entry(
         .filter(|p| p.ty.name.text == "Q_Asset")
         .map(|p| p.name.text.clone())
         .collect();
-    let writes_state = !layout.access(entry).writes.is_empty();
+    let access = layout.access(entry);
+    let writes_state = !access.writes.is_empty()
+        || access.keyed_writes.iter().any(|&b| b != NONCE_TAG);
     let entry_mints = entry
         .clauses
         .iter()
