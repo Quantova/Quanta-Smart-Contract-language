@@ -3,7 +3,7 @@
 
 use crate::error::TypeError;
 use crate::model::Model;
-use quanta_ast::{BinOp, Clause, EntryDecl, Expr};
+use quanta_ast::{BinOp, Clause, EntryDecl, Expr, Stmt};
 use std::collections::HashSet;
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
@@ -29,6 +29,13 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         };
         if let Some(err) = forged(model, &params, &signed, expr) {
             return Err(err);
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            if let Some(err) = forged(model, &params, &signed, expr) {
+                return Err(err);
+            }
         }
     }
     Ok(())
@@ -74,23 +81,29 @@ fn authority_gate(
     b: &Expr,
 ) -> Option<String> {
     param_field(params, signed, a)
-        .filter(|_| is_state_ident(model, b))
-        .or_else(|| param_field(params, signed, b).filter(|_| is_state_ident(model, a)))
+        .filter(|_| is_state_address(model, b))
+        .or_else(|| param_field(params, signed, b).filter(|_| is_state_address(model, a)))
 }
 
 fn param_field(params: &HashSet<&str>, signed: &HashSet<&str>, expr: &Expr) -> Option<String> {
-    if let Expr::Field { base, name, .. } = expr {
-        if let Expr::Ident(id) = base.as_ref() {
-            if params.contains(id.text.as_str()) && !signed.contains(id.text.as_str()) {
-                return Some(format!("{}.{}", id.text, name.text));
+    match expr {
+        Expr::Field { base, name, .. } => {
+            if let Expr::Ident(id) = base.as_ref() {
+                if params.contains(id.text.as_str()) && !signed.contains(id.text.as_str()) {
+                    return Some(format!("{}.{}", id.text, name.text));
+                }
             }
+            None
         }
+        Expr::Ident(id) if params.contains(id.text.as_str()) && !signed.contains(id.text.as_str()) => {
+            Some(id.text.clone())
+        }
+        _ => None,
     }
-    None
 }
 
-fn is_state_ident(model: &Model, expr: &Expr) -> bool {
-    matches!(expr, Expr::Ident(id) if model.is_state(&id.text))
+fn is_state_address(model: &Model, expr: &Expr) -> bool {
+    matches!(expr, Expr::Ident(id) if model.state.get(id.text.as_str()).is_some_and(|f| f.ty.name.text == "Q_Address"))
 }
 
 #[cfg(test)]
@@ -129,6 +142,41 @@ mod tests {
     fn comparing_state_to_a_literal_is_not_authority() {
         let src = "contract C { state { released: u8; } \
                    entry release(order: Order) writes(released) denies released == 1 { } }";
+        ok(src);
+    }
+
+    #[test]
+    fn a_body_guard_comparing_a_field_to_a_state_address_is_forged() {
+        let src = "contract C { state { owner: Q_Address; } \
+                   entry withdraw(order: WithdrawOrder) writes(owner) { guard order.sender == owner; } }";
+        assert!(error_for(src).contains("forged authority"));
+    }
+
+    #[test]
+    fn a_bare_parameter_compared_to_a_state_address_is_forged() {
+        let src = "contract C { state { owner: Q_Address; } \
+                   entry withdraw(claimed: Q_Address) limits claimed == owner { } }";
+        assert!(error_for(src).contains("forged authority"));
+    }
+
+    #[test]
+    fn a_body_guard_comparing_a_bare_parameter_to_a_state_address_is_forged() {
+        let src = "contract C { state { owner: Q_Address; } \
+                   entry withdraw(claimed: Q_Address) writes(owner) { guard claimed == owner; } }";
+        assert!(error_for(src).contains("forged authority"));
+    }
+
+    #[test]
+    fn a_value_precondition_comparing_an_amount_to_a_price_is_not_authority() {
+        let src = "contract C { state { price: u64; } \
+                   entry fund(order: FundOrder) writes(price) { guard order.amount == price; } }";
+        ok(src);
+    }
+
+    #[test]
+    fn comparing_a_parameter_to_a_literal_is_not_authority() {
+        let src = "contract C { state { released: u8; } \
+                   entry release(flag: u64) writes(released) { guard flag == 1; } }";
         ok(src);
     }
 }
