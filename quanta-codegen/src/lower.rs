@@ -580,10 +580,18 @@ fn lower_unary(
             logical_not(ctx, r);
             Ok(r)
         }
-        UnaryOp::Neg => Err(CodegenError::Unsupported {
-            what: "unary negation".into(),
-            span,
-        }),
+        UnaryOp::Neg => {
+            let r = lower_expr(ctx, expr, wrapping)?;
+            let zero = ctx.regs.alloc(span)?;
+            ctx.b.op(Instr::Ldi { d: zero, imm: 0 });
+            if wrapping {
+                ctx.b.op(Instr::SubW { d: r, a: zero, b: r });
+            } else {
+                ctx.b.op(Instr::Sub { d: r, a: zero, b: r });
+            }
+            ctx.regs.free(zero);
+            Ok(r)
+        }
     }
 }
 
@@ -709,6 +717,7 @@ fn is_wide_expr(ctx: &Ctx, expr: &Expr) -> bool {
             matches!(base.as_ref(), Expr::Ident(id) if ctx.wide_keys.contains(&format!("{}.{}", id.text, name.text)))
         }
         Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => is_wide_expr(ctx, expr),
+        Expr::Unary { op: UnaryOp::Neg, expr, .. } => is_wide_expr(ctx, expr),
         Expr::Binary { op, left, right, .. } => {
             matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul)
                 && (is_wide_expr(ctx, left) || is_wide_expr(ctx, right))
@@ -924,6 +933,15 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
             let lo = load_arg(ctx, off, name.span)?;
             let hi = load_arg(ctx, off + WORD, name.span)?;
             Ok((lo, hi))
+        }
+        Expr::Unary { op: UnaryOp::Neg, expr: inner, span } => {
+            let zlo = ctx.regs.alloc(*span)?;
+            ctx.b.op(Instr::Ldi { d: zlo, imm: 0 });
+            let zhi = ctx.regs.alloc(*span)?;
+            ctx.b.op(Instr::Ldi { d: zhi, imm: 0 });
+            let (xlo, xhi) = eval_wide(ctx, inner, wrapping)?;
+            two_word_sub(ctx, zlo, zhi, xlo, xhi, wrapping);
+            Ok((zlo, zhi))
         }
         _ => {
             let lo = lower_expr(ctx, expr, wrapping)?;
