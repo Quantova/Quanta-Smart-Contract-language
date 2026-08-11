@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::error::TypeError;
-use crate::model::Model;
-use quanta_ast::{BinOp, Clause, EntryDecl, Expr, Stmt};
+use crate::model::{is_quorum_param, Model};
+use quanta_ast::{BinOp, Clause, EntryDecl, Expr, GenericArg, Stmt};
+use quanta_lexer::Span;
 use std::collections::HashSet;
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
@@ -38,7 +39,164 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
             }
         }
     }
+    if let Some(err) = forged_map_authority(model, entry, &params, &signed) {
+        return Err(err);
+    }
     Ok(())
+}
+
+fn forged_map_authority(
+    model: &Model,
+    entry: &EntryDecl,
+    params: &HashSet<&str>,
+    signed: &HashSet<&str>,
+) -> Option<TypeError> {
+    if !entry_sends(entry) || entry_binds_caller(entry, signed) {
+        return None;
+    }
+    let mut gate_expr = |expr: &Expr| map_lookup_on_param(model, params, signed, expr);
+    for clause in &entry.clauses {
+        if let Clause::Limits { expr, .. } | Clause::Denies { expr, .. } = clause {
+            if let Some((field, span)) = gate_expr(expr) {
+                return Some(map_authority_error(&field, span));
+            }
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            if let Some((field, span)) = gate_expr(expr) {
+                return Some(map_authority_error(&field, span));
+            }
+        }
+    }
+    None
+}
+
+fn map_authority_error(field: &str, span: Span) -> TypeError {
+    TypeError::new(
+        format!(
+            "forged authority: this entry moves value gated only by looking up self declared \
+             parameter data `{field}` in a state map, with no `caller` check or `signed by` \
+             binding; authority must come from `caller` or a signature"
+        ),
+        span,
+    )
+}
+
+fn entry_sends(entry: &EntryDecl) -> bool {
+    let mut sends = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, .. } = e {
+                if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") {
+                    sends = true;
+                }
+            }
+        });
+    }
+    sends
+}
+
+fn entry_binds_caller(entry: &EntryDecl, signed: &HashSet<&str>) -> bool {
+    if !signed.is_empty() || entry.params.iter().any(is_quorum_param) {
+        return true;
+    }
+    let mut caller_gate = false;
+    let mut mark = |expr: &Expr| {
+        walk(expr, &mut |e| {
+            if matches!(e, Expr::Caller { .. }) {
+                caller_gate = true;
+            }
+        });
+    };
+    for clause in &entry.clauses {
+        if let Clause::Limits { expr, .. } | Clause::Denies { expr, .. } = clause {
+            mark(expr);
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            mark(expr);
+        }
+    }
+    caller_gate
+}
+
+fn map_lookup_on_param(
+    model: &Model,
+    params: &HashSet<&str>,
+    signed: &HashSet<&str>,
+    expr: &Expr,
+) -> Option<(String, Span)> {
+    let mut found = None;
+    walk(expr, &mut |e| {
+        if found.is_some() {
+            return;
+        }
+        if let Expr::Call { callee, args, span } = e {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if matches!(name.text.as_str(), "contains" | "get" | "has") {
+                    if let Expr::Ident(map_id) = base.as_ref() {
+                        if is_addr_keyed(model, map_id.text.as_str()) {
+                            for a in args {
+                                if let Some(field) = param_field(params, signed, a) {
+                                    found = Some((field, *span));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+    found
+}
+
+fn is_addr_keyed(model: &Model, ident: &str) -> bool {
+    if let Some(f) = model.state.get(ident) {
+        if matches!(f.ty.name.text.as_str(), "Map" | "Set") {
+            if let Some(GenericArg::Type(k)) = f.ty.args.first() {
+                return k.name.text == "Q_Address";
+            }
+        }
+    }
+    false
+}
+
+fn stmt_exprs(stmt: &Stmt, f: &mut impl FnMut(&Expr)) {
+    match stmt {
+        Stmt::Guard { expr, .. } | Stmt::Expr { expr, .. } => walk(expr, f),
+        Stmt::Let { value, .. } => walk(value, f),
+        Stmt::Assign { target, value, .. } => {
+            walk(target, f);
+            walk(value, f);
+        }
+        Stmt::Emit { args, .. } => {
+            for a in args {
+                walk(a, f);
+            }
+        }
+    }
+}
+
+fn walk(expr: &Expr, f: &mut impl FnMut(&Expr)) {
+    f(expr);
+    match expr {
+        Expr::Unary { expr, .. } => walk(expr, f),
+        Expr::Binary { left, right, .. } => {
+            walk(left, f);
+            walk(right, f);
+        }
+        Expr::Field { base, .. } => walk(base, f),
+        Expr::Call { callee, args, .. } => {
+            walk(callee, f);
+            for a in args {
+                walk(a, f);
+            }
+        }
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => walk(expr, f),
+        _ => {}
+    }
 }
 
 fn forged(
