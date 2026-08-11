@@ -3,7 +3,7 @@
 
 use crate::error::TypeError;
 use crate::model::{is_asset_param, is_integer_type, Model};
-use quanta_ast::{AssignOp, BinOp, Clause, EntryDecl, Expr, Item, Stmt, Type, UnaryOp};
+use quanta_ast::{AssignOp, BinOp, Clause, EntryDecl, Expr, GenericArg, Item, Stmt, Type, UnaryOp};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -23,7 +23,34 @@ struct Env<'a> {
     params: HashMap<&'a str, Ty>,
 }
 
+const MAX_GUARDIAN_SET: u64 = 256;
+
+fn guardian_bound(ty: &Type) -> Result<(), TypeError> {
+    if ty.name.text != "GuardianSet" {
+        return Ok(());
+    }
+    let members = match ty.args.first() {
+        Some(GenericArg::Int(i)) => i.text.replace('_', "").parse::<u64>().ok(),
+        _ => None,
+    };
+    match members {
+        Some(n) if (1..=MAX_GUARDIAN_SET).contains(&n) => Ok(()),
+        _ => Err(TypeError::new(
+            format!("a guardian set must declare between 1 and {MAX_GUARDIAN_SET} members"),
+            ty.span,
+        )),
+    }
+}
+
 pub fn check(model: &Model) -> Result<(), TypeError> {
+    for field in model.state.values() {
+        guardian_bound(&field.ty)?;
+    }
+    for entry in &model.entries {
+        for param in &entry.params {
+            guardian_bound(&param.ty)?;
+        }
+    }
     for item in &model.contract.items {
         if let Item::Invariant(inv) = item {
             let env = Env {

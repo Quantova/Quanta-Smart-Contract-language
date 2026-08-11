@@ -13,10 +13,11 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
 }
 
 fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
-    if body_sends(entry) {
-        return Ok(());
-    }
-    if !pools_asset(model, entry) {
+    let pooled = match pooled_field(model, entry) {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+    if pooled_field_sent(entry, &pooled) {
         return Ok(());
     }
     for param in &entry.params {
@@ -40,30 +41,16 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     Ok(())
 }
 
-fn body_sends(entry: &EntryDecl) -> bool {
-    let mut sends = false;
-    for stmt in &entry.body {
-        for_each_expr(stmt, &mut |e| {
-            if let Expr::Call { callee, .. } = e {
-                if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") {
-                    sends = true;
-                }
-            }
-        });
-    }
-    sends
-}
-
-fn pools_asset(model: &Model, entry: &EntryDecl) -> bool {
-    let mut pools = false;
+fn pooled_field(model: &Model, entry: &EntryDecl) -> Option<String> {
+    let mut pooled = None;
     for stmt in &entry.body {
         for_each_expr(stmt, &mut |e| {
             if let Expr::Call { callee, .. } = e {
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
                     if name.text == "merge" {
-                        if let Some(field) = root_ident(base).and_then(|r| model.state.get(r)) {
-                            if is_asset_type(&field.ty) {
-                                pools = true;
+                        if let Some(root) = root_ident(base) {
+                            if model.state.get(root).is_some_and(|f| is_asset_type(&f.ty)) {
+                                pooled = Some(root.to_string());
                             }
                         }
                     }
@@ -71,7 +58,27 @@ fn pools_asset(model: &Model, entry: &EntryDecl) -> bool {
             }
         });
     }
-    pools
+    pooled
+}
+
+fn pooled_field_sent(entry: &EntryDecl, pooled: &str) -> bool {
+    let mut sent = false;
+    for stmt in &entry.body {
+        for_each_expr(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") {
+                    for a in args {
+                        walk(a, &mut |x| {
+                            if matches!(x, Expr::Ident(id) if id.text == pooled) {
+                                sent = true;
+                            }
+                        });
+                    }
+                }
+            }
+        });
+    }
+    sent
 }
 
 fn order_field_gates(entry: &EntryDecl, param: &str) -> bool {
