@@ -112,30 +112,40 @@ fn forgeable_anchor_error(anchor: &str, span: Span) -> TypeError {
     )
 }
 
-fn authority_anchor_protected(model: &Model, field: &str) -> bool {
-    let mut stack = HashSet::new();
-    let mut memo = HashMap::new();
-    anchor_protected(model, field, &mut stack, &mut memo).0
+const AUTHORITY_STEP_BUDGET: u64 = 100_000;
+
+struct Prot {
+    stack: HashSet<String>,
+    memo: HashMap<String, bool>,
+    steps: u64,
 }
 
-fn anchor_protected(
-    model: &Model,
-    field: &str,
-    stack: &mut HashSet<String>,
-    memo: &mut HashMap<String, bool>,
-) -> (bool, bool) {
-    if let Some(&resolved) = memo.get(field) {
+fn authority_anchor_protected(model: &Model, field: &str) -> bool {
+    let mut prot = Prot {
+        stack: HashSet::new(),
+        memo: HashMap::new(),
+        steps: 0,
+    };
+    anchor_protected(model, field, &mut prot).0
+}
+
+fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool) {
+    prot.steps += 1;
+    if prot.steps > AUTHORITY_STEP_BUDGET {
+        return (false, false);
+    }
+    if let Some(&resolved) = prot.memo.get(field) {
         return (resolved, false);
     }
-    if stack.contains(field) {
+    if prot.stack.contains(field) {
         return (true, true);
     }
-    stack.insert(field.to_string());
+    prot.stack.insert(field.to_string());
     let mut protected = true;
     let mut tainted = false;
     for entry in &model.entries {
         if entry_writes_field(entry, field) {
-            let (authorized, sub_tainted) = writer_authorized(model, entry, stack, memo);
+            let (authorized, sub_tainted) = writer_authorized(model, entry, prot);
             if !authorized {
                 protected = false;
                 break;
@@ -143,23 +153,18 @@ fn anchor_protected(
             tainted |= sub_tainted;
         }
     }
-    stack.remove(field);
+    prot.stack.remove(field);
     if !protected {
-        memo.insert(field.to_string(), false);
+        prot.memo.insert(field.to_string(), false);
         return (false, false);
     }
     if !tainted {
-        memo.insert(field.to_string(), true);
+        prot.memo.insert(field.to_string(), true);
     }
     (true, tainted)
 }
 
-fn writer_authorized(
-    model: &Model,
-    entry: &EntryDecl,
-    stack: &mut HashSet<String>,
-    memo: &mut HashMap<String, bool>,
-) -> (bool, bool) {
+fn writer_authorized(model: &Model, entry: &EntryDecl, prot: &mut Prot) -> (bool, bool) {
     let signed: HashSet<&str> = entry
         .params
         .iter()
@@ -172,14 +177,13 @@ fn writer_authorized(
     for clause in &entry.clauses {
         match clause {
             Clause::Limits { expr, .. } => {
-                let (authorized, tainted) = gate_necessary_protected(model, expr, stack, memo);
+                let (authorized, tainted) = gate_necessary_protected(model, expr, prot);
                 if authorized {
                     return (true, tainted);
                 }
             }
             Clause::Denies { expr, .. } => {
-                let (authorized, tainted) =
-                    gate_necessary_denied_protected(model, expr, stack, memo);
+                let (authorized, tainted) = gate_necessary_denied_protected(model, expr, prot);
                 if authorized {
                     return (true, tainted);
                 }
@@ -189,7 +193,7 @@ fn writer_authorized(
     }
     for stmt in &entry.body {
         if let Stmt::Guard { expr, .. } = stmt {
-            let (authorized, tainted) = gate_necessary_protected(model, expr, stack, memo);
+            let (authorized, tainted) = gate_necessary_protected(model, expr, prot);
             if authorized {
                 return (true, tainted);
             }
@@ -198,12 +202,7 @@ fn writer_authorized(
     (false, false)
 }
 
-fn gate_necessary_protected(
-    model: &Model,
-    expr: &Expr,
-    stack: &mut HashSet<String>,
-    memo: &mut HashMap<String, bool>,
-) -> (bool, bool) {
+fn gate_necessary_protected(model: &Model, expr: &Expr, prot: &mut Prot) -> (bool, bool) {
     match expr {
         Expr::Binary {
             op: BinOp::And,
@@ -211,8 +210,8 @@ fn gate_necessary_protected(
             right,
             ..
         } => {
-            let (lp, lt) = gate_necessary_protected(model, left, stack, memo);
-            let (rp, rt) = gate_necessary_protected(model, right, stack, memo);
+            let (lp, lt) = gate_necessary_protected(model, left, prot);
+            let (rp, rt) = gate_necessary_protected(model, right, prot);
             (lp || rp, lt || rt)
         }
         Expr::Binary {
@@ -221,23 +220,18 @@ fn gate_necessary_protected(
             right,
             ..
         } => {
-            let (lp, lt) = gate_necessary_protected(model, left, stack, memo);
-            let (rp, rt) = gate_necessary_protected(model, right, stack, memo);
+            let (lp, lt) = gate_necessary_protected(model, left, prot);
+            let (rp, rt) = gate_necessary_protected(model, right, prot);
             (lp && rp, lt || rt)
         }
         _ => match anchor_of(model, expr) {
-            Some(a) => anchor_protected(model, a, stack, memo),
+            Some(a) => anchor_protected(model, a, prot),
             None => (false, false),
         },
     }
 }
 
-fn gate_necessary_denied_protected(
-    model: &Model,
-    expr: &Expr,
-    stack: &mut HashSet<String>,
-    memo: &mut HashMap<String, bool>,
-) -> (bool, bool) {
+fn gate_necessary_denied_protected(model: &Model, expr: &Expr, prot: &mut Prot) -> (bool, bool) {
     match expr {
         Expr::Binary {
             op: BinOp::And,
@@ -245,8 +239,8 @@ fn gate_necessary_denied_protected(
             right,
             ..
         } => {
-            let (lp, lt) = gate_necessary_denied_protected(model, left, stack, memo);
-            let (rp, rt) = gate_necessary_denied_protected(model, right, stack, memo);
+            let (lp, lt) = gate_necessary_denied_protected(model, left, prot);
+            let (rp, rt) = gate_necessary_denied_protected(model, right, prot);
             (lp && rp, lt || rt)
         }
         Expr::Binary {
@@ -255,12 +249,12 @@ fn gate_necessary_denied_protected(
             right,
             ..
         } => {
-            let (lp, lt) = gate_necessary_denied_protected(model, left, stack, memo);
-            let (rp, rt) = gate_necessary_denied_protected(model, right, stack, memo);
+            let (lp, lt) = gate_necessary_denied_protected(model, left, prot);
+            let (rp, rt) = gate_necessary_denied_protected(model, right, prot);
             (lp || rp, lt || rt)
         }
         _ => match anchor_of_denied(model, expr) {
-            Some(a) => anchor_protected(model, a, stack, memo),
+            Some(a) => anchor_protected(model, a, prot),
             None => (false, false),
         },
     }
