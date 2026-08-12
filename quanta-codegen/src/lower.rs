@@ -430,11 +430,17 @@ fn lower_field(ctx: &mut Ctx, base: &Expr, field: &str, span: Span) -> Result<Re
         }
         if ctx.params.contains(&id.text) {
             let key = format!("{}.{}", id.text, field);
-            let off = if ctx.wide_keys.contains(&key) {
-                ctx.args.offset_of_width(&key, 2 * WORD)
-            } else {
-                ctx.args.offset_of(&key)
-            };
+            if ctx.wide_keys.contains(&key) {
+                return Err(CodegenError::Unsupported {
+                    what: format!(
+                        "the u128 field `{}.{}` where a single word is expected, which would drop \
+                         its high word; keep a wide value in a two word context",
+                        id.text, field
+                    ),
+                    span,
+                });
+            }
+            let off = ctx.args.offset_of(&key);
             return load_arg(ctx, off, span);
         }
     }

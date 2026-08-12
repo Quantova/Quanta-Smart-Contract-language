@@ -59,6 +59,14 @@ fn reading_a_wide_map_value_as_one_word_is_rejected() {
 }
 
 #[test]
+fn narrowing_a_wide_parameter_field_into_a_scalar_is_rejected() {
+    let src = "contract W { state { total: u128; small: u64; } genesis { total = 0; small = 0; } \
+               entry e(order: O) writes(total, small) \
+               { total = checked(total + order.amount); small = order.amount; } }";
+    assert!(compile_error(src).contains("high word"));
+}
+
+#[test]
 fn narrow_division_still_compiles() {
     let src = "contract W { state { a: u64; result: u64; } genesis { a = 0; result = 0; } \
                entry divide(d: u64) writes(result) reads(a) { result = a / d; } }";

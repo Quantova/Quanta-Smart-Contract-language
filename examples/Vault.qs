@@ -3,8 +3,8 @@ contract Vault {
   state {
     owner: Q_Address;
     reserve: Q_Asset<QTOV>;
-    daily_cap: u64 = 50_000;
-    spent_today: u64;
+    daily_cap: u128 = 50_000;
+    spent_today: u128;
     last_reset: u64;
   }
   genesis {
