@@ -4,6 +4,7 @@
 use crate::error::TypeError;
 use crate::model::{asset_inner, Model};
 use quanta_ast::{Clause, EntryDecl, Expr, Stmt};
+use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
@@ -54,32 +55,8 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         }
         if let Stmt::Assign { target, value, span, .. } = stmt {
             if let Some(into) = expr_asset_kind(model, &kinds, mint_kind, target) {
-                match expr_asset_kind(model, &kinds, mint_kind, value) {
-                    None => {
-                        return Err(TypeError::new(
-                            "a value that is not an asset cannot be stored into an asset slot; \
-                             move, merge, or split an asset of this kind instead"
-                                .to_string(),
-                            *span,
-                        ));
-                    }
-                    Some(from) if from != into => {
-                        return Err(TypeError::new(
-                            format!(
-                                "asset kinds do not mix: storing `{from}` into a slot of `{into}`"
-                            ),
-                            *span,
-                        ));
-                    }
-                    Some(_) => {
-                        if !is_movable_asset(&kinds, value) {
-                            return Err(TypeError::new(
-                                "an asset pool cannot be copied by assignment; move or split it"
-                                    .to_string(),
-                                *span,
-                            ));
-                        }
-                    }
+                if let Some(err) = asset_flow_error(model, &kinds, mint_kind, &into, value, *span) {
+                    return Err(err);
                 }
             }
         }
@@ -106,22 +83,40 @@ fn merge_mismatch(
     if let Expr::Call { callee, args, span } = expr {
         if let Expr::Field { base, name, .. } = callee.as_ref() {
             if name.text == "merge" && args.len() == 1 {
-                let into = expr_asset_kind(model, kinds, mint_kind, base);
-                let from = expr_asset_kind(model, kinds, mint_kind, &args[0]);
-                if let (Some(into), Some(from)) = (into, from) {
-                    if into != from {
-                        return Some(TypeError::new(
-                            format!(
-                                "asset kinds do not mix: merging `{from}` into a pool of `{into}`"
-                            ),
-                            *span,
-                        ));
-                    }
+                if let Some(into) = expr_asset_kind(model, kinds, mint_kind, base) {
+                    return asset_flow_error(model, kinds, mint_kind, &into, &args[0], *span);
                 }
             }
         }
     }
     None
+}
+
+fn asset_flow_error(
+    model: &Model,
+    kinds: &HashMap<String, String>,
+    mint_kind: Option<&str>,
+    into: &str,
+    value: &Expr,
+    span: Span,
+) -> Option<TypeError> {
+    match expr_asset_kind(model, kinds, mint_kind, value) {
+        None => Some(TypeError::new(
+            "a value that is not an asset cannot be moved into an asset slot; move, merge, or \
+             split an asset of this kind instead"
+                .to_string(),
+            span,
+        )),
+        Some(from) if from != into => Some(TypeError::new(
+            format!("asset kinds do not mix: `{from}` and `{into}`"),
+            span,
+        )),
+        Some(_) if !is_movable_asset(kinds, value) => Some(TypeError::new(
+            "an asset pool cannot be copied; move or split it".to_string(),
+            span,
+        )),
+        Some(_) => None,
+    }
 }
 
 fn expr_asset_kind(
@@ -272,7 +267,15 @@ mod tests {
     fn copying_one_asset_pool_into_another_is_rejected() {
         let src = "contract C { state { pool: Q_Asset<QTOV>; pool2: Q_Asset<QTOV>; } \
                    entry dup(order: Order) conserves QTOV writes(pool) { pool = pool2; } }";
-        assert!(error_for(src).contains("copied by assignment"));
+        assert!(error_for(src).contains("cannot be copied"));
+    }
+
+    #[test]
+    fn merging_a_non_asset_scalar_is_rejected() {
+        let src = "contract C { state { pool: Q_Asset<QTOV>; } \
+                   entry dep(funds: Q_Asset<QTOV>) conserves QTOV writes(pool) \
+                   { pool.merge(funds.amount); } }";
+        assert!(error_for(src).contains("not an asset"));
     }
 
     #[test]
