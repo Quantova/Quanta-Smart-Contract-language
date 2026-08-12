@@ -43,7 +43,145 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if let Some(err) = forged_map_authority(model, entry, &params, &signed, &derived) {
         return Err(err);
     }
+    if let Some(err) = forged_caller_anchor(model, entry, &signed) {
+        return Err(err);
+    }
     Ok(())
+}
+
+fn forged_caller_anchor(model: &Model, entry: &EntryDecl, signed: &HashSet<&str>) -> Option<TypeError> {
+    if !entry_sends(entry) || !signed.is_empty() || entry.params.iter().any(is_quorum_param) {
+        return None;
+    }
+    if entry_binds_caller(model, entry, signed) {
+        return None;
+    }
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, span } => {
+                if let Some(anchor) = forgeable_anchor(model, expr, false) {
+                    return Some(forgeable_anchor_error(&anchor, *span));
+                }
+            }
+            Clause::Denies { expr, span } => {
+                if let Some(anchor) = forgeable_anchor(model, expr, true) {
+                    return Some(forgeable_anchor_error(&anchor, *span));
+                }
+            }
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, span } = stmt {
+            if let Some(anchor) = forgeable_anchor(model, expr, false) {
+                return Some(forgeable_anchor_error(&anchor, *span));
+            }
+        }
+    }
+    None
+}
+
+fn forgeable_anchor(model: &Model, expr: &Expr, denied: bool) -> Option<String> {
+    let mut found = None;
+    walk(expr, &mut |e| {
+        if found.is_some() {
+            return;
+        }
+        let anchor = if denied {
+            anchor_of_denied(model, e)
+        } else {
+            anchor_of(model, e)
+        };
+        if let Some(a) = anchor {
+            if !authority_anchor_protected(model, a) {
+                found = Some(a.to_string());
+            }
+        }
+    });
+    found
+}
+
+fn forgeable_anchor_error(anchor: &str, span: Span) -> TypeError {
+    TypeError::new(
+        format!(
+            "forged authority: this entry moves value gated on `caller` against `{anchor}`, but an \
+             entry with no authority can write `{anchor}`, so the check is forgeable; write the \
+             authority only from an authorized entry or from genesis"
+        ),
+        span,
+    )
+}
+
+fn authority_anchor_protected(model: &Model, field: &str) -> bool {
+    for entry in &model.entries {
+        if entry_writes_field(entry, field) && !entry_has_authorization(model, entry) {
+            return false;
+        }
+    }
+    true
+}
+
+fn entry_writes_field(entry: &EntryDecl, field: &str) -> bool {
+    let mut writes = false;
+    for stmt in &entry.body {
+        match stmt {
+            Stmt::Assign { target, .. } => {
+                if matches!(target, Expr::Ident(id) if id.text == field) {
+                    writes = true;
+                }
+            }
+            _ => {}
+        }
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if matches!(
+                        name.text.as_str(),
+                        "set" | "credit" | "debit" | "insert" | "remove" | "clear"
+                    ) && matches!(base.as_ref(), Expr::Ident(id) if id.text == field)
+                    {
+                        writes = true;
+                    }
+                }
+            }
+        });
+    }
+    writes
+}
+
+fn entry_has_authorization(model: &Model, entry: &EntryDecl) -> bool {
+    let signed: HashSet<&str> = entry
+        .params
+        .iter()
+        .filter(|p| p.signed_by.is_some())
+        .map(|p| p.name.text.as_str())
+        .collect();
+    if !signed.is_empty() || entry.params.iter().any(is_quorum_param) {
+        return true;
+    }
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } => {
+                if caller_necessary_shallow(model, expr) {
+                    return true;
+                }
+            }
+            Clause::Denies { expr, .. } => {
+                if caller_necessary_denied_shallow(model, expr) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            if caller_necessary_shallow(model, expr) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn param_derived_locals(
@@ -180,24 +318,26 @@ fn caller_necessary_denied(model: &Model, expr: &Expr) -> bool {
     }
 }
 
-fn caller_constrains_denied(model: &Model, expr: &Expr) -> bool {
+fn caller_necessary_denied_shallow(model: &Model, expr: &Expr) -> bool {
     match expr {
         Expr::Binary {
-            op: BinOp::Ne,
+            op: BinOp::And,
             left,
             right,
             ..
-        } => {
-            (is_caller(left) && is_state_address(model, right))
-                || (is_caller(right) && is_state_address(model, left))
-        }
-        Expr::Unary {
-            op: UnaryOp::Not,
-            expr,
+        } => caller_necessary_denied_shallow(model, left) && caller_necessary_denied_shallow(model, right),
+        Expr::Binary {
+            op: BinOp::Or,
+            left,
+            right,
             ..
-        } => caller_constrains(model, expr),
-        _ => false,
+        } => caller_necessary_denied_shallow(model, left) || caller_necessary_denied_shallow(model, right),
+        _ => anchor_of_denied(model, expr).is_some(),
     }
+}
+
+fn caller_constrains_denied(model: &Model, expr: &Expr) -> bool {
+    anchor_of_denied(model, expr).is_some_and(|a| authority_anchor_protected(model, a))
 }
 
 fn caller_necessary(model: &Model, expr: &Expr) -> bool {
@@ -218,7 +358,29 @@ fn caller_necessary(model: &Model, expr: &Expr) -> bool {
     }
 }
 
+fn caller_necessary_shallow(model: &Model, expr: &Expr) -> bool {
+    match expr {
+        Expr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+            ..
+        } => caller_necessary_shallow(model, left) || caller_necessary_shallow(model, right),
+        Expr::Binary {
+            op: BinOp::Or,
+            left,
+            right,
+            ..
+        } => caller_necessary_shallow(model, left) && caller_necessary_shallow(model, right),
+        _ => anchor_of(model, expr).is_some(),
+    }
+}
+
 fn caller_constrains(model: &Model, expr: &Expr) -> bool {
+    anchor_of(model, expr).is_some_and(|a| authority_anchor_protected(model, a))
+}
+
+fn anchor_of<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
     if let Expr::Binary {
         op: BinOp::Eq,
         left,
@@ -226,28 +388,96 @@ fn caller_constrains(model: &Model, expr: &Expr) -> bool {
         ..
     } = expr
     {
-        if (is_caller(left) && is_state_address(model, right))
-            || (is_caller(right) && is_state_address(model, left))
-        {
-            return true;
+        if is_caller(left) {
+            if let Some(a) = state_addr_ident(model, right) {
+                return Some(a);
+            }
+        }
+        if is_caller(right) {
+            if let Some(a) = state_addr_ident(model, left) {
+                return Some(a);
+            }
         }
     }
-    is_caller_membership(model, expr) || caller_membership_present(model, expr)
+    if let Some(m) = membership_map(model, expr) {
+        return Some(m);
+    }
+    if caller_membership_present(model, expr) {
+        if let Expr::Binary { left, right, .. } = expr {
+            if let Some(m) = membership_map(model, left) {
+                return Some(m);
+            }
+            if let Some(m) = membership_map(model, right) {
+                return Some(m);
+            }
+        }
+    }
+    None
 }
 
-fn is_caller_membership(model: &Model, expr: &Expr) -> bool {
+fn anchor_of_denied<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
+    if let Expr::Binary {
+        op: BinOp::Ne,
+        left,
+        right,
+        ..
+    } = expr
+    {
+        if is_caller(left) {
+            if let Some(a) = state_addr_ident(model, right) {
+                return Some(a);
+            }
+        }
+        if is_caller(right) {
+            if let Some(a) = state_addr_ident(model, left) {
+                return Some(a);
+            }
+        }
+    }
+    if let Expr::Unary {
+        op: UnaryOp::Not,
+        expr,
+        ..
+    } = expr
+    {
+        return anchor_of(model, expr);
+    }
+    None
+}
+
+fn state_addr_ident<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
+    if let Expr::Ident(id) = expr {
+        if model
+            .state
+            .get(id.text.as_str())
+            .is_some_and(|f| f.ty.name.text == "Q_Address")
+        {
+            return Some(id.text.as_str());
+        }
+    }
+    None
+}
+
+fn membership_map<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
     if let Expr::Call { callee, args, .. } = expr {
         if let Expr::Field { base, name, .. } = callee.as_ref() {
             if matches!(name.text.as_str(), "contains" | "get" | "has") {
                 if let Expr::Ident(map_id) = base.as_ref() {
-                    return is_addr_keyed(model, map_id.text.as_str())
+                    if is_addr_keyed(model, map_id.text.as_str())
                         && args.len() == 1
-                        && is_caller(&args[0]);
+                        && is_caller(&args[0])
+                    {
+                        return Some(map_id.text.as_str());
+                    }
                 }
             }
         }
     }
-    false
+    None
+}
+
+fn is_caller_membership(model: &Model, expr: &Expr) -> bool {
+    membership_map(model, expr).is_some()
 }
 
 fn caller_membership_present(model: &Model, expr: &Expr) -> bool {
@@ -632,6 +862,43 @@ mod tests {
                 { guard members.contains(claim.who, caller); send(claim.to, vault.split(claim.amount)); }
             }"#;
         assert!(error_for(src).contains("forged authority"));
+    }
+
+    #[test]
+    fn a_caller_check_against_a_settable_authority_is_forged() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { owner: Q_Address; vault: Q_Asset<QTOV>; }
+                entry claim(a: Q_Address) writes(owner) { owner = a; }
+                entry drain(order: Rel) conserves QTOV writes(vault)
+                { guard caller == owner; send(order.to, vault.split(order.amount)); }
+            }"#;
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn a_caller_check_against_a_genesis_only_authority_is_real() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { owner: Q_Address; vault: Q_Asset<QTOV>; }
+                genesis { owner = deployer; }
+                entry drain(order: Rel) conserves QTOV writes(vault)
+                { guard caller == owner; send(order.to, vault.split(order.amount)); }
+            }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn a_caller_check_against_an_owner_gated_rotation_is_real() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { owner: Q_Address; vault: Q_Asset<QTOV>; }
+                genesis { owner = deployer; }
+                entry rotate(new: Q_Address) writes(owner) { guard caller == owner; owner = new; }
+                entry drain(order: Rel) conserves QTOV writes(vault)
+                { guard caller == owner; send(order.to, vault.split(order.amount)); }
+            }"#;
+        ok(src);
     }
 
     #[test]
