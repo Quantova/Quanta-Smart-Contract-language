@@ -5,7 +5,7 @@ use crate::error::TypeError;
 use crate::model::{is_quorum_param, Model};
 use quanta_ast::{BinOp, Clause, EntryDecl, Expr, GenericArg, Stmt, UnaryOp};
 use quanta_lexer::Span;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
     for entry in &model.entries {
@@ -113,26 +113,57 @@ fn forgeable_anchor_error(anchor: &str, span: Span) -> TypeError {
 }
 
 fn authority_anchor_protected(model: &Model, field: &str) -> bool {
-    anchor_protected(model, field, &mut HashSet::new())
+    let mut stack = HashSet::new();
+    let mut memo = HashMap::new();
+    anchor_protected(model, field, &mut stack, &mut memo).0
 }
 
-fn anchor_protected(model: &Model, field: &str, visited: &mut HashSet<String>) -> bool {
-    if visited.contains(field) {
-        return true;
+// Returns (protected, tainted). `tainted` marks a `true` that relied on the cycle assumption about an
+// in-progress ancestor still on the stack, so it must not be memoized as a stable result. A `false`
+// result never depends on the cycle assumption (the assumption only ever yields `true`), so it is
+// always safe to cache.
+fn anchor_protected(
+    model: &Model,
+    field: &str,
+    stack: &mut HashSet<String>,
+    memo: &mut HashMap<String, bool>,
+) -> (bool, bool) {
+    if let Some(&resolved) = memo.get(field) {
+        return (resolved, false);
     }
-    visited.insert(field.to_string());
+    if stack.contains(field) {
+        return (true, true);
+    }
+    stack.insert(field.to_string());
     let mut protected = true;
+    let mut tainted = false;
     for entry in &model.entries {
-        if entry_writes_field(entry, field) && !writer_authorized(model, entry, visited) {
-            protected = false;
-            break;
+        if entry_writes_field(entry, field) {
+            let (authorized, sub_tainted) = writer_authorized(model, entry, stack, memo);
+            if !authorized {
+                protected = false;
+                break;
+            }
+            tainted |= sub_tainted;
         }
     }
-    visited.remove(field);
-    protected
+    stack.remove(field);
+    if !protected {
+        memo.insert(field.to_string(), false);
+        return (false, false);
+    }
+    if !tainted {
+        memo.insert(field.to_string(), true);
+    }
+    (true, tainted)
 }
 
-fn writer_authorized(model: &Model, entry: &EntryDecl, visited: &mut HashSet<String>) -> bool {
+fn writer_authorized(
+    model: &Model,
+    entry: &EntryDecl,
+    stack: &mut HashSet<String>,
+    memo: &mut HashMap<String, bool>,
+) -> (bool, bool) {
     let signed: HashSet<&str> = entry
         .params
         .iter()
@@ -140,18 +171,21 @@ fn writer_authorized(model: &Model, entry: &EntryDecl, visited: &mut HashSet<Str
         .map(|p| p.name.text.as_str())
         .collect();
     if !signed.is_empty() || entry.params.iter().any(is_quorum_param) {
-        return true;
+        return (true, false);
     }
     for clause in &entry.clauses {
         match clause {
             Clause::Limits { expr, .. } => {
-                if gate_necessary_protected(model, expr, visited) {
-                    return true;
+                let (authorized, tainted) = gate_necessary_protected(model, expr, stack, memo);
+                if authorized {
+                    return (true, tainted);
                 }
             }
             Clause::Denies { expr, .. } => {
-                if gate_necessary_denied_protected(model, expr, visited) {
-                    return true;
+                let (authorized, tainted) =
+                    gate_necessary_denied_protected(model, expr, stack, memo);
+                if authorized {
+                    return (true, tainted);
                 }
             }
             _ => {}
@@ -159,15 +193,21 @@ fn writer_authorized(model: &Model, entry: &EntryDecl, visited: &mut HashSet<Str
     }
     for stmt in &entry.body {
         if let Stmt::Guard { expr, .. } = stmt {
-            if gate_necessary_protected(model, expr, visited) {
-                return true;
+            let (authorized, tainted) = gate_necessary_protected(model, expr, stack, memo);
+            if authorized {
+                return (true, tainted);
             }
         }
     }
-    false
+    (false, false)
 }
 
-fn gate_necessary_protected(model: &Model, expr: &Expr, visited: &mut HashSet<String>) -> bool {
+fn gate_necessary_protected(
+    model: &Model,
+    expr: &Expr,
+    stack: &mut HashSet<String>,
+    memo: &mut HashMap<String, bool>,
+) -> (bool, bool) {
     match expr {
         Expr::Binary {
             op: BinOp::And,
@@ -175,8 +215,9 @@ fn gate_necessary_protected(model: &Model, expr: &Expr, visited: &mut HashSet<St
             right,
             ..
         } => {
-            gate_necessary_protected(model, left, visited)
-                || gate_necessary_protected(model, right, visited)
+            let (lp, lt) = gate_necessary_protected(model, left, stack, memo);
+            let (rp, rt) = gate_necessary_protected(model, right, stack, memo);
+            (lp || rp, lt || rt)
         }
         Expr::Binary {
             op: BinOp::Or,
@@ -184,12 +225,13 @@ fn gate_necessary_protected(model: &Model, expr: &Expr, visited: &mut HashSet<St
             right,
             ..
         } => {
-            gate_necessary_protected(model, left, visited)
-                && gate_necessary_protected(model, right, visited)
+            let (lp, lt) = gate_necessary_protected(model, left, stack, memo);
+            let (rp, rt) = gate_necessary_protected(model, right, stack, memo);
+            (lp && rp, lt || rt)
         }
         _ => match anchor_of(model, expr) {
-            Some(a) => anchor_protected(model, a, visited),
-            None => false,
+            Some(a) => anchor_protected(model, a, stack, memo),
+            None => (false, false),
         },
     }
 }
@@ -197,8 +239,9 @@ fn gate_necessary_protected(model: &Model, expr: &Expr, visited: &mut HashSet<St
 fn gate_necessary_denied_protected(
     model: &Model,
     expr: &Expr,
-    visited: &mut HashSet<String>,
-) -> bool {
+    stack: &mut HashSet<String>,
+    memo: &mut HashMap<String, bool>,
+) -> (bool, bool) {
     match expr {
         Expr::Binary {
             op: BinOp::And,
@@ -206,8 +249,9 @@ fn gate_necessary_denied_protected(
             right,
             ..
         } => {
-            gate_necessary_denied_protected(model, left, visited)
-                && gate_necessary_denied_protected(model, right, visited)
+            let (lp, lt) = gate_necessary_denied_protected(model, left, stack, memo);
+            let (rp, rt) = gate_necessary_denied_protected(model, right, stack, memo);
+            (lp && rp, lt || rt)
         }
         Expr::Binary {
             op: BinOp::Or,
@@ -215,12 +259,13 @@ fn gate_necessary_denied_protected(
             right,
             ..
         } => {
-            gate_necessary_denied_protected(model, left, visited)
-                || gate_necessary_denied_protected(model, right, visited)
+            let (lp, lt) = gate_necessary_denied_protected(model, left, stack, memo);
+            let (rp, rt) = gate_necessary_denied_protected(model, right, stack, memo);
+            (lp || rp, lt || rt)
         }
         _ => match anchor_of_denied(model, expr) {
-            Some(a) => anchor_protected(model, a, visited),
-            None => false,
+            Some(a) => anchor_protected(model, a, stack, memo),
+            None => (false, false),
         },
     }
 }
@@ -1003,6 +1048,29 @@ mod tests {
                 { guard owner_of.get(order.id) == caller; send(order.to, vault.split(order.amount)); }
             }"#;
         assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn a_deep_authority_chain_checks_in_polynomial_time() {
+        let n = 30;
+        let mut src = String::from("import { Q_Asset } from \"quantova/primitives\";\ncontract C {\n  state {");
+        for i in 0..n {
+            src.push_str(&format!(" f{i}: Q_Address;"));
+        }
+        src.push_str(" vault: Q_Asset<QTOV>; }\n");
+        src.push_str(&format!("  genesis {{ f{} = deployer; }}\n", n - 1));
+        for i in 0..n - 1 {
+            src.push_str(&format!(
+                "  entry wa{i}(x: Q_Address) writes(f{i}) {{ guard caller == f{}; f{i} = x; }}\n",
+                i + 1
+            ));
+            src.push_str(&format!(
+                "  entry wb{i}(x: Q_Address) writes(f{i}) {{ guard caller == f{}; f{i} = x; }}\n",
+                i + 1
+            ));
+        }
+        src.push_str("  entry drain(order: Rel) conserves QTOV writes(vault) { guard caller == f0; send(order.to, vault.split(order.amount)); }\n}");
+        ok(&src);
     }
 
     #[test]
