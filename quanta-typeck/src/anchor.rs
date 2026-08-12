@@ -49,14 +49,24 @@ fn collect_anchor_state_fields(
     expr: &Expr,
     out: &mut Vec<String>,
 ) {
-    if let Expr::Ident(id) = expr {
-        let name = id.text.as_str();
-        if !params.contains(name)
-            && model.state.contains_key(name)
-            && !out.iter().any(|f| f == name)
-        {
-            out.push(id.text.clone());
+    match expr {
+        Expr::Ident(id) => {
+            let name = id.text.as_str();
+            if !params.contains(name)
+                && model.state.contains_key(name)
+                && !out.iter().any(|f| f == name)
+            {
+                out.push(id.text.clone());
+            }
         }
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            collect_anchor_state_fields(model, params, expr, out)
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_anchor_state_fields(model, params, left, out);
+            collect_anchor_state_fields(model, params, right, out);
+        }
+        _ => {}
     }
 }
 
@@ -132,6 +142,12 @@ fn guard_field_nonzero(expr: &Expr, field: &str) -> bool {
             ..
         } => is_field(left, field) && is_zero(right),
         Expr::Binary {
+            op: BinOp::Ge,
+            left,
+            right,
+            ..
+        } => is_field(left, field) && is_positive_int(right),
+        Expr::Binary {
             op: BinOp::And,
             left,
             right,
@@ -139,6 +155,10 @@ fn guard_field_nonzero(expr: &Expr, field: &str) -> bool {
         } => guard_field_nonzero(left, field) || guard_field_nonzero(right, field),
         _ => false,
     }
+}
+
+fn is_positive_int(expr: &Expr) -> bool {
+    matches!(expr, Expr::Int(lit) if lit.text.replace('_', "").parse::<u128>().map_or(false, |v| v >= 1))
 }
 
 fn is_field(expr: &Expr, field: &str) -> bool {
@@ -421,6 +441,31 @@ mod tests {
                 state { start: u64 = 100; vault: Q_Asset<QTOV>; }
                 entry release(order: Rel) conserves QTOV writes(vault)
                   after 365 days from start { send(order.to, vault.split(order.amount)); }
+            }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn a_zero_start_anchor_wrapped_in_arithmetic_is_still_rejected() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { armed: u64; grace: u64 = 3600; vault: Q_Asset<QTOV>; }
+                entry arm() writes(armed) { armed = now; }
+                entry release(order: Rel) conserves QTOV writes(vault)
+                  after 24 hours from armed + grace { send(order.to, vault.split(order.amount)); }
+            }"#;
+        assert!(error_for(src).contains("starts at zero"));
+    }
+
+    #[test]
+    fn a_ge_one_liveness_guard_is_accepted() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { armed: u64; vault: Q_Asset<QTOV>; }
+                entry arm() writes(armed) { armed = now; }
+                entry release(order: Rel) conserves QTOV writes(vault)
+                  after 24 hours from armed
+                  { guard armed >= 1; send(order.to, vault.split(order.amount)); }
             }"#;
         ok(src);
     }

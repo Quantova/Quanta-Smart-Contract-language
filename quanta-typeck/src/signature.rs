@@ -3,7 +3,7 @@
 
 use crate::error::TypeError;
 use crate::model::{is_quorum_param, Model};
-use quanta_ast::{BinOp, Clause, EntryDecl, Expr, GenericArg, Stmt};
+use quanta_ast::{BinOp, Clause, EntryDecl, Expr, GenericArg, Stmt, UnaryOp};
 use quanta_lexer::Span;
 use std::collections::HashSet;
 
@@ -138,10 +138,18 @@ fn entry_binds_caller(model: &Model, entry: &EntryDecl, signed: &HashSet<&str>) 
         return true;
     }
     for clause in &entry.clauses {
-        if let Clause::Limits { expr, .. } = clause {
-            if caller_necessary(model, expr) {
-                return true;
+        match clause {
+            Clause::Limits { expr, .. } => {
+                if caller_necessary(model, expr) {
+                    return true;
+                }
             }
+            Clause::Denies { expr, .. } => {
+                if caller_necessary_denied(model, expr) {
+                    return true;
+                }
+            }
+            _ => {}
         }
     }
     for stmt in &entry.body {
@@ -152,6 +160,44 @@ fn entry_binds_caller(model: &Model, entry: &EntryDecl, signed: &HashSet<&str>) 
         }
     }
     false
+}
+
+fn caller_necessary_denied(model: &Model, expr: &Expr) -> bool {
+    match expr {
+        Expr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+            ..
+        } => caller_necessary_denied(model, left) && caller_necessary_denied(model, right),
+        Expr::Binary {
+            op: BinOp::Or,
+            left,
+            right,
+            ..
+        } => caller_necessary_denied(model, left) || caller_necessary_denied(model, right),
+        _ => caller_constrains_denied(model, expr),
+    }
+}
+
+fn caller_constrains_denied(model: &Model, expr: &Expr) -> bool {
+    match expr {
+        Expr::Binary {
+            op: BinOp::Ne,
+            left,
+            right,
+            ..
+        } => {
+            (is_caller(left) && is_state_address(model, right))
+                || (is_caller(right) && is_state_address(model, left))
+        }
+        Expr::Unary {
+            op: UnaryOp::Not,
+            expr,
+            ..
+        } => caller_constrains(model, expr),
+        _ => false,
+    }
 }
 
 fn caller_necessary(model: &Model, expr: &Expr) -> bool {
@@ -173,33 +219,72 @@ fn caller_necessary(model: &Model, expr: &Expr) -> bool {
 }
 
 fn caller_constrains(model: &Model, expr: &Expr) -> bool {
-    match expr {
-        Expr::Binary {
-            op: BinOp::Eq,
-            left,
-            right,
-            ..
-        } => {
-            (is_caller(left) && is_state_address(model, right))
-                || (is_caller(right) && is_state_address(model, left))
+    if let Expr::Binary {
+        op: BinOp::Eq,
+        left,
+        right,
+        ..
+    } = expr
+    {
+        if (is_caller(left) && is_state_address(model, right))
+            || (is_caller(right) && is_state_address(model, left))
+        {
+            return true;
         }
-        Expr::Call { callee, args, .. } => {
-            if let Expr::Field { base, name, .. } = callee.as_ref() {
-                if matches!(name.text.as_str(), "contains" | "get" | "has") {
-                    if let Expr::Ident(map_id) = base.as_ref() {
-                        return is_addr_keyed(model, map_id.text.as_str())
-                            && args.iter().any(is_caller);
-                    }
+    }
+    is_caller_membership(model, expr) || caller_membership_present(model, expr)
+}
+
+fn is_caller_membership(model: &Model, expr: &Expr) -> bool {
+    if let Expr::Call { callee, args, .. } = expr {
+        if let Expr::Field { base, name, .. } = callee.as_ref() {
+            if matches!(name.text.as_str(), "contains" | "get" | "has") {
+                if let Expr::Ident(map_id) = base.as_ref() {
+                    return is_addr_keyed(model, map_id.text.as_str())
+                        && args.len() == 1
+                        && is_caller(&args[0]);
                 }
             }
-            false
         }
+    }
+    false
+}
+
+fn caller_membership_present(model: &Model, expr: &Expr) -> bool {
+    let Expr::Binary { op, left, right, .. } = expr else {
+        return false;
+    };
+    let threshold = if is_caller_membership(model, left) {
+        right.as_ref()
+    } else if is_caller_membership(model, right) {
+        left.as_ref()
+    } else {
+        return false;
+    };
+    let lookup_left = is_caller_membership(model, left);
+    match (op, lookup_left) {
+        (BinOp::Ge, true) | (BinOp::Le, false) => is_positive_int(threshold),
+        (BinOp::Gt, true) | (BinOp::Lt, false) => is_nonnegative_int(threshold),
+        (BinOp::Ne, _) => is_zero_int(threshold),
+        (BinOp::Eq, _) => is_positive_int(threshold),
         _ => false,
     }
 }
 
 fn is_caller(expr: &Expr) -> bool {
     matches!(expr, Expr::Caller { .. })
+}
+
+fn is_positive_int(expr: &Expr) -> bool {
+    matches!(expr, Expr::Int(lit) if lit.text.replace('_', "").parse::<u128>().map_or(false, |v| v >= 1))
+}
+
+fn is_nonnegative_int(expr: &Expr) -> bool {
+    matches!(expr, Expr::Int(_))
+}
+
+fn is_zero_int(expr: &Expr) -> bool {
+    matches!(expr, Expr::Int(lit) if lit.text.replace('_', "").parse::<u128>() == Ok(0))
 }
 
 fn map_lookup_on_param(
@@ -510,6 +595,41 @@ mod tests {
                     guard members.contains(who);
                     send(claim.to, vault.split(claim.amount));
                 }
+            }"#;
+        assert!(error_for(src).contains("forged authority"));
+    }
+
+    #[test]
+    fn a_denies_caller_not_owner_is_real_authority() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { admin: Q_Address; registered: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry payout(order: Order) conserves QTOV writes(vault)
+                  denies caller != admin
+                { guard registered.contains(order.to); send(order.to, vault.split(order.amount)); }
+            }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn a_caller_membership_value_check_is_real_authority() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { allowed: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry payout(order: Order) conserves QTOV writes(vault)
+                { guard allowed.get(caller) >= 1; guard allowed.contains(order.to);
+                  send(order.to, vault.split(order.amount)); }
+            }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn a_decoy_caller_argument_does_not_bind_authority() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { members: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry withdraw(claim: Claim) conserves QTOV writes(vault)
+                { guard members.contains(claim.who, caller); send(claim.to, vault.split(claim.amount)); }
             }"#;
         assert!(error_for(src).contains("forged authority"));
     }

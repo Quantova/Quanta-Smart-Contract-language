@@ -66,25 +66,12 @@ fn pooled_settles_order(entry: &EntryDecl, pooled: &str, param: &str) -> bool {
         for_each_expr(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
                 if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") {
-                    let mut pays_pool = false;
-                    let mut names_order = false;
-                    for a in args {
-                        walk(a, &mut |x| {
-                            if matches!(x, Expr::Ident(id) if id.text == pooled) {
-                                pays_pool = true;
-                            }
-                            if matches!(x, Expr::Ident(id) if id.text == param) {
-                                names_order = true;
-                            }
-                            if let Expr::Field { base, .. } = x {
-                                if matches!(base.as_ref(), Expr::Ident(id) if id.text == param) {
-                                    names_order = true;
-                                }
-                            }
-                        });
-                    }
-                    if pays_pool && names_order {
-                        settles = true;
+                    if let Some(recipient) = args.first() {
+                        let recipient_from_order = mentions_ident(recipient, param);
+                        let pays_pool = args[1..].iter().any(|a| mentions_ident(a, pooled));
+                        if recipient_from_order && pays_pool {
+                            settles = true;
+                        }
                     }
                 }
             }
@@ -123,6 +110,16 @@ fn root_ident(expr: &Expr) -> Option<&str> {
         Expr::Field { base, .. } => root_ident(base),
         _ => None,
     }
+}
+
+fn mentions_ident(expr: &Expr, ident: &str) -> bool {
+    let mut found = false;
+    walk(expr, &mut |x| {
+        if matches!(x, Expr::Ident(id) if id.text == ident) {
+            found = true;
+        }
+    });
+    found
 }
 
 fn for_each_expr(stmt: &Stmt, f: &mut impl FnMut(&Expr)) {
@@ -210,6 +207,15 @@ mod tests {
                    entry bid(offer: Bid, funds: Q_Asset<QTOV>) conserves QTOV writes(pot) \
                    { guard funds.amount >= offer.amount; pot.merge(funds); \
                      send(feesink, pot.split(1)); } }";
+        assert!(error_for(src).contains("front running"));
+    }
+
+    #[test]
+    fn a_payout_to_an_unrelated_sink_naming_the_order_does_not_settle_it() {
+        let src = "contract C { state { pot: Q_Asset<QTOV>; feesink: Q_Address; } \
+                   entry bid(offer: Bid, funds: Q_Asset<QTOV>) conserves QTOV writes(pot) \
+                   { guard funds.amount >= offer.amount; pot.merge(funds); \
+                     send(feesink, pot.split(offer.tip)); } }";
         assert!(error_for(src).contains("front running"));
     }
 }
