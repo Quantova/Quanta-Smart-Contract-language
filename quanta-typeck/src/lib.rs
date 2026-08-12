@@ -3,6 +3,7 @@
 
 mod access;
 mod anchor;
+mod asset_identity;
 mod binding;
 mod conserve;
 pub mod error;
@@ -27,6 +28,7 @@ pub fn check(program: &Program) -> Result<(), TypeError> {
         signature::check(&model)?;
         anchor::check(&model)?;
         conserve::check(&model)?;
+        asset_identity::check(&model)?;
         access::check(&model)?;
         binding::check(&model)?;
         sealed::check(&model)?;
