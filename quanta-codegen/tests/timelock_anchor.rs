@@ -5,7 +5,12 @@ use quanta_codegen::{compile, CodegenError};
 
 fn try_compile(src: &str) -> Result<(), CodegenError> {
     let program = quanta_parser::parse(src).expect("parse");
-    quanta_typeck::check(&program).expect("typecheck");
+    if let Err(e) = quanta_typeck::check(&program) {
+        return Err(CodegenError::Rejected {
+            what: e.message,
+            span: e.span,
+        });
+    }
     compile(&program).map(|_| ())
 }
 
