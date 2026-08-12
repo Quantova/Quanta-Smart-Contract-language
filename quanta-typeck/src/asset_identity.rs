@@ -65,7 +65,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
             if err.is_some() {
                 return;
             }
-            err = merge_mismatch(model, &kinds, mint_kind, e);
+            err = asset_flow_in_expr(model, &kinds, mint_kind, e);
         });
         if let Some(e) = err {
             return Err(e);
@@ -74,7 +74,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     Ok(())
 }
 
-fn merge_mismatch(
+fn asset_flow_in_expr(
     model: &Model,
     kinds: &HashMap<String, String>,
     mint_kind: Option<&str>,
@@ -88,8 +88,32 @@ fn merge_mismatch(
                 }
             }
         }
+        if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") && args.len() == 2 {
+            return sent_value_error(model, kinds, mint_kind, &args[1], *span);
+        }
     }
     None
+}
+
+fn sent_value_error(
+    model: &Model,
+    kinds: &HashMap<String, String>,
+    mint_kind: Option<&str>,
+    value: &Expr,
+    span: Span,
+) -> Option<TypeError> {
+    match expr_asset_kind(model, kinds, mint_kind, value) {
+        None => Some(TypeError::new(
+            "a value that is not an asset cannot be sent; send an asset, a split, or a mint"
+                .to_string(),
+            span,
+        )),
+        Some(_) if !is_movable_asset(kinds, value) => Some(TypeError::new(
+            "an asset pool cannot be sent directly; split the amount to send".to_string(),
+            span,
+        )),
+        Some(_) => None,
+    }
 }
 
 fn asset_flow_error(
@@ -275,6 +299,14 @@ mod tests {
         let src = "contract C { state { pool: Q_Asset<QTOV>; } \
                    entry dep(funds: Q_Asset<QTOV>) conserves QTOV writes(pool) \
                    { pool.merge(funds.amount); } }";
+        assert!(error_for(src).contains("not an asset"));
+    }
+
+    #[test]
+    fn sending_a_non_asset_scalar_is_rejected() {
+        let src = "contract C { state { a: u64; } \
+                   entry drip(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV \
+                   { send(to, funds.amount); send(caller, funds); } }";
         assert!(error_for(src).contains("not an asset"));
     }
 
