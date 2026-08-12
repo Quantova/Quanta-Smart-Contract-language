@@ -21,21 +21,24 @@ fn check_anchor_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeErr
         let Clause::After { target, from, span } = clause else {
             continue;
         };
-        let mut fields: Vec<String> = Vec::new();
+        let mut reads: Vec<&Expr> = Vec::new();
         if let AfterTarget::Expr(expr) = target {
-            collect_anchor_state_fields(model, &params, expr, &mut fields);
+            collect_anchor_reads(model, &params, expr, &mut reads);
         }
         if let Some(expr) = from {
-            collect_anchor_state_fields(model, &params, expr, &mut fields);
+            collect_anchor_reads(model, &params, expr, &mut reads);
         }
-        for field in &fields {
-            if field_is_asset(model, field)
-                || field_starts_nonzero(model, field)
-                || entry_records_now(entry, field)
-            {
+        for read in reads {
+            let Some(field) = anchor_field(read) else {
+                continue;
+            };
+            if field_is_asset(model, field) {
                 continue;
             }
-            if !entry_requires_nonzero(entry, field) {
+            if read_starts_nonzero(model, read, field) || entry_records_now(entry, read) {
+                continue;
+            }
+            if !entry_requires_nonzero(entry, read) {
                 return Err(liveness_rejection(field, *span));
             }
         }
@@ -43,30 +46,55 @@ fn check_anchor_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeErr
     Ok(())
 }
 
-fn collect_anchor_state_fields(
+fn collect_anchor_reads<'a>(
     model: &Model,
     params: &HashSet<&str>,
-    expr: &Expr,
-    out: &mut Vec<String>,
+    expr: &'a Expr,
+    out: &mut Vec<&'a Expr>,
 ) {
     match expr {
         Expr::Ident(id) => {
             let name = id.text.as_str();
-            if !params.contains(name)
-                && model.state.contains_key(name)
-                && !out.iter().any(|f| f == name)
-            {
-                out.push(id.text.clone());
+            if !params.contains(name) && model.state.contains_key(name) {
+                out.push(expr);
+            }
+        }
+        Expr::Call { callee, .. } => {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if name.text == "get" {
+                    if let Expr::Ident(map_id) = base.as_ref() {
+                        if !params.contains(map_id.text.as_str())
+                            && model.state.contains_key(map_id.text.as_str())
+                        {
+                            out.push(expr);
+                        }
+                    }
+                }
             }
         }
         Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
-            collect_anchor_state_fields(model, params, expr, out)
+            collect_anchor_reads(model, params, expr, out)
         }
         Expr::Binary { left, right, .. } => {
-            collect_anchor_state_fields(model, params, left, out);
-            collect_anchor_state_fields(model, params, right, out);
+            collect_anchor_reads(model, params, left, out);
+            collect_anchor_reads(model, params, right, out);
         }
         _ => {}
+    }
+}
+
+fn anchor_field(read: &Expr) -> Option<&str> {
+    match read {
+        Expr::Ident(id) => Some(id.text.as_str()),
+        Expr::Call { callee, .. } => {
+            if let Expr::Field { base, .. } = callee.as_ref() {
+                if let Expr::Ident(map_id) = base.as_ref() {
+                    return Some(map_id.text.as_str());
+                }
+            }
+            None
+        }
+        _ => None,
     }
 }
 
@@ -74,38 +102,77 @@ fn field_is_asset(model: &Model, field: &str) -> bool {
     model.state.get(field).is_some_and(|f| is_asset_type(&f.ty))
 }
 
-fn field_starts_nonzero(model: &Model, field: &str) -> bool {
-    match model.state.get(field).and_then(|f| f.default.as_ref()) {
+fn read_starts_nonzero(model: &Model, read: &Expr, field: &str) -> bool {
+    if !matches!(read, Expr::Ident(_)) {
+        return false;
+    }
+    let has_nonzero_default = match model.state.get(field).and_then(|f| f.default.as_ref()) {
         None => false,
         Some(Expr::Int(lit)) => lit.text.replace('_', "").parse::<u128>() != Ok(0),
         Some(_) => true,
+    };
+    if !has_nonzero_default {
+        return false;
     }
-}
-
-fn entry_records_now(entry: &EntryDecl, field: &str) -> bool {
-    for stmt in &entry.body {
-        if let Stmt::Assign { target, value, .. } = stmt {
-            if matches!(target, Expr::Ident(id) if id.text == field)
-                && matches!(value, Expr::Now { .. })
-            {
-                return true;
+    for e in &model.entries {
+        for stmt in &e.body {
+            if let Stmt::Assign { target, value, .. } = stmt {
+                if matches!(target, Expr::Ident(id) if id.text == field)
+                    && !matches!(value, Expr::Now { .. })
+                {
+                    return false;
+                }
             }
         }
     }
-    false
+    true
 }
 
-fn entry_requires_nonzero(entry: &EntryDecl, field: &str) -> bool {
+fn entry_records_now(entry: &EntryDecl, read: &Expr) -> bool {
+    match read {
+        Expr::Ident(id) => entry.body.iter().any(|stmt| {
+            matches!(stmt, Stmt::Assign { target, value, .. }
+                if matches!(target, Expr::Ident(t) if t.text == id.text)
+                    && matches!(value, Expr::Now { .. }))
+        }),
+        Expr::Call { .. } => {
+            let (Some(map), Some(key)) = (anchor_field(read), call_args(read).and_then(|a| a.first()))
+            else {
+                return false;
+            };
+            for stmt in &entry.body {
+                if let Stmt::Expr { expr, .. } = stmt {
+                    if let Expr::Call { callee, args, .. } = expr {
+                        if let Expr::Field { base, name, .. } = callee.as_ref() {
+                            if name.text == "set"
+                                && matches!(base.as_ref(), Expr::Ident(m) if m.text == map)
+                                && args.len() == 2
+                                && read_eq(&args[0], key)
+                                && matches!(args[1], Expr::Now { .. })
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+fn entry_requires_nonzero(entry: &EntryDecl, read: &Expr) -> bool {
     for clause in &entry.clauses {
         if let Clause::Denies { expr, .. } = clause {
-            if denies_field_zero(expr, field) {
+            if denies_read_zero(expr, read) {
                 return true;
             }
         }
     }
     for stmt in &entry.body {
         if let Stmt::Guard { expr, .. } = stmt {
-            if guard_field_nonzero(expr, field) {
+            if guard_read_nonzero(expr, read) {
                 return true;
             }
         }
@@ -113,7 +180,7 @@ fn entry_requires_nonzero(entry: &EntryDecl, field: &str) -> bool {
     false
 }
 
-fn denies_field_zero(expr: &Expr, field: &str) -> bool {
+fn denies_read_zero(expr: &Expr, read: &Expr) -> bool {
     if let Expr::Binary {
         op: BinOp::Eq,
         left,
@@ -121,48 +188,66 @@ fn denies_field_zero(expr: &Expr, field: &str) -> bool {
         ..
     } = expr
     {
-        return (is_field(left, field) && is_zero(right))
-            || (is_field(right, field) && is_zero(left));
+        return (read_eq(left, read) && is_zero(right)) || (read_eq(right, read) && is_zero(left));
     }
     false
 }
 
-fn guard_field_nonzero(expr: &Expr, field: &str) -> bool {
+fn guard_read_nonzero(expr: &Expr, read: &Expr) -> bool {
     match expr {
         Expr::Binary {
             op: BinOp::Ne,
             left,
             right,
             ..
-        } => (is_field(left, field) && is_zero(right)) || (is_field(right, field) && is_zero(left)),
+        } => (read_eq(left, read) && is_zero(right)) || (read_eq(right, read) && is_zero(left)),
         Expr::Binary {
             op: BinOp::Gt,
             left,
             right,
             ..
-        } => is_field(left, field) && is_zero(right),
+        } => read_eq(left, read) && is_zero(right),
         Expr::Binary {
             op: BinOp::Ge,
             left,
             right,
             ..
-        } => is_field(left, field) && is_positive_int(right),
+        } => read_eq(left, read) && is_positive_int(right),
         Expr::Binary {
             op: BinOp::And,
             left,
             right,
             ..
-        } => guard_field_nonzero(left, field) || guard_field_nonzero(right, field),
+        } => guard_read_nonzero(left, read) || guard_read_nonzero(right, read),
+        _ => false,
+    }
+}
+
+fn call_args(expr: &Expr) -> Option<&[Expr]> {
+    match expr {
+        Expr::Call { args, .. } => Some(args),
+        _ => None,
+    }
+}
+
+fn read_eq(a: &Expr, b: &Expr) -> bool {
+    match (a, b) {
+        (Expr::Ident(x), Expr::Ident(y)) => x.text == y.text,
+        (Expr::Caller { .. }, Expr::Caller { .. }) => true,
+        (Expr::Now { .. }, Expr::Now { .. }) => true,
+        (Expr::Int(x), Expr::Int(y)) => x.text == y.text,
+        (Expr::Field { base: ba, name: na, .. }, Expr::Field { base: bb, name: nb, .. }) => {
+            na.text == nb.text && read_eq(ba, bb)
+        }
+        (Expr::Call { callee: ca, args: aa, .. }, Expr::Call { callee: cb, args: ab, .. }) => {
+            read_eq(ca, cb) && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| read_eq(x, y))
+        }
         _ => false,
     }
 }
 
 fn is_positive_int(expr: &Expr) -> bool {
     matches!(expr, Expr::Int(lit) if lit.text.replace('_', "").parse::<u128>().map_or(false, |v| v >= 1))
-}
-
-fn is_field(expr: &Expr, field: &str) -> bool {
-    matches!(expr, Expr::Ident(id) if id.text == field)
 }
 
 fn is_zero(expr: &Expr) -> bool {
@@ -468,6 +553,43 @@ mod tests {
                   { guard armed >= 1; send(order.to, vault.split(order.amount)); }
             }"#;
         ok(src);
+    }
+
+    #[test]
+    fn a_keyed_map_anchor_without_a_liveness_guard_is_rejected() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { armed_at: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry arm() writes(armed_at) { armed_at.set(caller, now); }
+                entry release(order: Rel) conserves QTOV writes(vault)
+                  after 24 hours from armed_at.get(caller) { send(order.to, vault.split(order.amount)); }
+            }"#;
+        assert!(error_for(src).contains("starts at zero"));
+    }
+
+    #[test]
+    fn a_keyed_map_anchor_with_a_keyed_guard_is_accepted() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { armed_at: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry arm() writes(armed_at) { armed_at.set(caller, now); }
+                entry release(order: Rel) conserves QTOV writes(vault)
+                  after 24 hours from armed_at.get(caller)
+                  denies armed_at.get(caller) == 0 { send(order.to, vault.split(order.amount)); }
+            }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn a_nonzero_default_anchor_re_zeroed_by_an_entry_is_rejected() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { start: u64 = 2000000000; vault: Q_Asset<QTOV>; }
+                entry reset() writes(start) { start = 0; }
+                entry release(order: Rel) conserves QTOV writes(vault)
+                  after 365 days from start { send(order.to, vault.split(order.amount)); }
+            }"#;
+        assert!(error_for(src).contains("starts at zero"));
     }
 
     #[test]
