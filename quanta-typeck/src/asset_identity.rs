@@ -48,7 +48,22 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     }
 
     for stmt in &entry.body {
-        if let Stmt::Let { name, value, .. } = stmt {
+        if let Stmt::Let { name, value, span } = stmt {
+            if let Expr::Ident(id) = value {
+                if !kinds.contains_key(id.text.as_str())
+                    && model
+                        .state
+                        .get(id.text.as_str())
+                        .and_then(|f| asset_inner(&f.ty))
+                        .is_some()
+                {
+                    return Err(TypeError::new(
+                        "a let cannot alias a state asset pool; split the amount to move a portion"
+                            .to_string(),
+                        *span,
+                    ));
+                }
+            }
             if let Some(sym) = expr_asset_kind(model, &kinds, mint_kind, value) {
                 kinds.insert(name.text.clone(), sym);
             }
@@ -308,6 +323,14 @@ mod tests {
                    entry drip(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV \
                    { send(to, funds.amount); send(caller, funds); } }";
         assert!(error_for(src).contains("not an asset"));
+    }
+
+    #[test]
+    fn a_let_that_aliases_a_state_pool_is_rejected() {
+        let src = "contract C { state { pool: Q_Asset<QTOV>; pool2: Q_Asset<QTOV>; } \
+                   entry mv(order: Order) conserves QTOV writes(pool2) \
+                   { let x = pool; pool2.merge(x); } }";
+        assert!(error_for(src).contains("alias a state asset pool"));
     }
 
     #[test]
