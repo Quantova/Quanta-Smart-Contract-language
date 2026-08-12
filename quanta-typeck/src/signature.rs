@@ -51,7 +51,7 @@ fn forged_map_authority(
     params: &HashSet<&str>,
     signed: &HashSet<&str>,
 ) -> Option<TypeError> {
-    if !entry_sends(entry) || entry_binds_caller(entry, signed) {
+    if !entry_sends(entry) || entry_binds_caller(model, entry, signed) {
         return None;
     }
     let mut gate_expr = |expr: &Expr| map_lookup_on_param(model, params, signed, expr);
@@ -97,29 +97,73 @@ fn entry_sends(entry: &EntryDecl) -> bool {
     sends
 }
 
-fn entry_binds_caller(entry: &EntryDecl, signed: &HashSet<&str>) -> bool {
+fn entry_binds_caller(model: &Model, entry: &EntryDecl, signed: &HashSet<&str>) -> bool {
     if !signed.is_empty() || entry.params.iter().any(is_quorum_param) {
         return true;
     }
-    let mut caller_gate = false;
-    let mut mark = |expr: &Expr| {
-        walk(expr, &mut |e| {
-            if matches!(e, Expr::Caller { .. }) {
-                caller_gate = true;
-            }
-        });
-    };
     for clause in &entry.clauses {
-        if let Clause::Limits { expr, .. } | Clause::Denies { expr, .. } = clause {
-            mark(expr);
+        if let Clause::Limits { expr, .. } = clause {
+            if caller_necessary(model, expr) {
+                return true;
+            }
         }
     }
     for stmt in &entry.body {
         if let Stmt::Guard { expr, .. } = stmt {
-            mark(expr);
+            if caller_necessary(model, expr) {
+                return true;
+            }
         }
     }
-    caller_gate
+    false
+}
+
+fn caller_necessary(model: &Model, expr: &Expr) -> bool {
+    match expr {
+        Expr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+            ..
+        } => caller_necessary(model, left) || caller_necessary(model, right),
+        Expr::Binary {
+            op: BinOp::Or,
+            left,
+            right,
+            ..
+        } => caller_necessary(model, left) && caller_necessary(model, right),
+        _ => caller_constrains(model, expr),
+    }
+}
+
+fn caller_constrains(model: &Model, expr: &Expr) -> bool {
+    match expr {
+        Expr::Binary {
+            op: BinOp::Eq,
+            left,
+            right,
+            ..
+        } => {
+            (is_caller(left) && is_state_address(model, right))
+                || (is_caller(right) && is_state_address(model, left))
+        }
+        Expr::Call { callee, args, .. } => {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if matches!(name.text.as_str(), "contains" | "get" | "has") {
+                    if let Expr::Ident(map_id) = base.as_ref() {
+                        return is_addr_keyed(model, map_id.text.as_str())
+                            && args.iter().any(is_caller);
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+fn is_caller(expr: &Expr) -> bool {
+    matches!(expr, Expr::Caller { .. })
 }
 
 fn map_lookup_on_param(
@@ -335,6 +379,60 @@ mod tests {
     fn comparing_a_parameter_to_a_literal_is_not_authority() {
         let src = "contract C { state { released: u8; } \
                    entry release(flag: u64) writes(released) { guard flag == 1; } }";
+        ok(src);
+    }
+
+    #[test]
+    fn a_caller_disjunction_with_a_parameter_branch_is_forged() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { members: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry withdraw(claim: Claim) conserves QTOV writes(vault) {
+                    guard members.contains(caller) || members.contains(claim.who);
+                    send(claim.to, vault.split(claim.amount));
+                }
+            }"#;
+        assert!(error_for(src).contains("forged authority"));
+    }
+
+    #[test]
+    fn a_tautological_caller_check_does_not_authorize() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { members: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry withdraw(claim: Claim) conserves QTOV writes(vault) {
+                    guard caller == caller;
+                    guard members.contains(claim.who);
+                    send(claim.to, vault.split(claim.amount));
+                }
+            }"#;
+        assert!(error_for(src).contains("forged authority"));
+    }
+
+    #[test]
+    fn a_genuine_caller_membership_check_is_real_authority() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { members: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry withdraw(claim: Claim) conserves QTOV writes(vault) {
+                    guard members.contains(caller);
+                    send(claim.to, vault.split(claim.amount));
+                }
+            }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn a_caller_equals_state_owner_is_real_authority() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { owner: Q_Address; members: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry withdraw(claim: Claim) conserves QTOV writes(vault) {
+                    guard caller == owner;
+                    guard members.contains(claim.who);
+                    send(claim.to, vault.split(claim.amount));
+                }
+            }"#;
         ok(src);
     }
 }
