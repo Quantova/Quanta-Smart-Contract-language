@@ -121,12 +121,15 @@ fn anchor_protected(model: &Model, field: &str, visited: &mut HashSet<String>) -
         return true;
     }
     visited.insert(field.to_string());
+    let mut protected = true;
     for entry in &model.entries {
         if entry_writes_field(entry, field) && !writer_authorized(model, entry, visited) {
-            return false;
+            protected = false;
+            break;
         }
     }
-    true
+    visited.remove(field);
+    protected
 }
 
 fn writer_authorized(model: &Model, entry: &EntryDecl, visited: &mut HashSet<String>) -> bool {
@@ -998,6 +1001,21 @@ mod tests {
                 entry set_owner(order: SetOwner) writes(owner_of) { owner_of.set(order.id, order.who); }
                 entry drain(order: Rel) conserves QTOV writes(vault)
                 { guard owner_of.get(order.id) == caller; send(order.to, vault.split(order.amount)); }
+            }"#;
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn authority_laundered_through_a_primer_gate_is_forged() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { admin: Q_Address; x: Q_Address; owner: Q_Address; vault: Q_Asset<QTOV>; }
+                genesis { admin = deployer; }
+                entry set_x(a: Q_Address) writes(x) { x = a; }
+                entry w1(new: Q_Address) writes(owner) { guard caller == x; guard caller == admin; owner = new; }
+                entry w2(new: Q_Address) writes(owner) { guard caller == x; owner = new; }
+                entry drain(order: Rel) conserves QTOV writes(vault)
+                { guard caller == owner; send(order.to, vault.split(order.amount)); }
             }"#;
         assert!(error_for(src).contains("forgeable"));
     }
