@@ -53,14 +53,33 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
             }
         }
         if let Stmt::Assign { target, value, span, .. } = stmt {
-            let into = expr_asset_kind(model, &kinds, mint_kind, target);
-            let from = expr_asset_kind(model, &kinds, mint_kind, value);
-            if let (Some(into), Some(from)) = (into, from) {
-                if into != from {
-                    return Err(TypeError::new(
-                        format!("asset kinds do not mix: storing `{from}` into a slot of `{into}`"),
-                        *span,
-                    ));
+            if let Some(into) = expr_asset_kind(model, &kinds, mint_kind, target) {
+                match expr_asset_kind(model, &kinds, mint_kind, value) {
+                    None => {
+                        return Err(TypeError::new(
+                            "a value that is not an asset cannot be stored into an asset slot; \
+                             move, merge, or split an asset of this kind instead"
+                                .to_string(),
+                            *span,
+                        ));
+                    }
+                    Some(from) if from != into => {
+                        return Err(TypeError::new(
+                            format!(
+                                "asset kinds do not mix: storing `{from}` into a slot of `{into}`"
+                            ),
+                            *span,
+                        ));
+                    }
+                    Some(_) => {
+                        if !is_movable_asset(&kinds, value) {
+                            return Err(TypeError::new(
+                                "an asset pool cannot be copied by assignment; move or split it"
+                                    .to_string(),
+                                *span,
+                            ));
+                        }
+                    }
                 }
             }
         }
@@ -131,6 +150,18 @@ fn expr_asset_kind(
             None
         }
         _ => None,
+    }
+}
+
+fn is_movable_asset(kinds: &HashMap<String, String>, value: &Expr) -> bool {
+    match value {
+        Expr::Ident(id) => kinds.contains_key(id.text.as_str()),
+        Expr::Call { callee, .. } => match callee.as_ref() {
+            Expr::Field { name, .. } => name.text == "split",
+            Expr::Ident(id) => id.text == "mint",
+            _ => false,
+        },
+        _ => false,
     }
 }
 
@@ -227,6 +258,28 @@ mod tests {
                    entry swap(funds: Q_Asset<DUST>) conserves DUST writes(vault) \
                    { vault = funds; } }";
         assert!(error_for(src).contains("do not mix"));
+    }
+
+    #[test]
+    fn storing_an_asset_amount_scalar_into_an_asset_slot_is_rejected() {
+        let src = "contract C { state { pool: Q_Asset<QTOV>; } \
+                   entry dep(funds: Q_Asset<QTOV>) conserves QTOV writes(pool) \
+                   { pool = funds.amount; } }";
+        assert!(error_for(src).contains("not an asset"));
+    }
+
+    #[test]
+    fn copying_one_asset_pool_into_another_is_rejected() {
+        let src = "contract C { state { pool: Q_Asset<QTOV>; pool2: Q_Asset<QTOV>; } \
+                   entry dup(order: Order) conserves QTOV writes(pool) { pool = pool2; } }";
+        assert!(error_for(src).contains("copied by assignment"));
+    }
+
+    #[test]
+    fn moving_an_asset_into_a_slot_is_accepted() {
+        let src = "contract C { state { pool: Q_Asset<QTOV>; } \
+                   entry dep(funds: Q_Asset<QTOV>) conserves QTOV writes(pool) { pool = funds; } }";
+        ok(src);
     }
 
     #[test]
