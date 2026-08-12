@@ -45,7 +45,7 @@ fn run(
 // opened is field zero (slot 0), done is field one (slot 1). The window opens one hour after opened.
 const TIMED: &str =
     "contract T { state { opened: u64; done: u64; } genesis { opened = 0; done = 0; } \
-     entry act() writes(done) reads(opened) after 1 hours from opened { done = 1; } }";
+     entry act() writes(done) reads(opened) after 1 hours from opened denies opened == 0 { done = 1; } }";
 
 #[test]
 fn an_after_guard_reverts_before_its_window_and_passes_after() {

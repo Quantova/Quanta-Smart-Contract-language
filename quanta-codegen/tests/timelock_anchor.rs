@@ -130,7 +130,7 @@ fn a_quorum_digest_in_an_event_still_compiles() {
 fn a_state_field_anchor_still_compiles() {
     let src = "contract C {\n\
       state { opened: u64; done: u64; }\n\
-      entry act() writes(done) reads(opened) after 1 hours from opened { done = 1; }\n\
+      entry act() writes(done) reads(opened) after 1 hours from opened denies opened == 0 { done = 1; }\n\
     }\n";
     try_compile(src).expect("a delay anchored on state is authenticated and compiles");
 }

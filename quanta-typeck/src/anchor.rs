@@ -2,16 +2,162 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::error::TypeError;
-use crate::model::{is_quorum_param, Model};
-use quanta_ast::{AfterTarget, Clause, EntryDecl, Expr, Stmt};
+use crate::model::{is_asset_type, is_quorum_param, Model};
+use quanta_ast::{AfterTarget, BinOp, Clause, EntryDecl, Expr, Stmt};
 use quanta_lexer::Span;
 use std::collections::HashSet;
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
     for entry in &model.entries {
         check_after_anchors(entry)?;
+        check_anchor_liveness(model, entry)?;
     }
     Ok(())
+}
+
+fn check_anchor_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
+    let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
+    for clause in &entry.clauses {
+        let Clause::After { target, from, span } = clause else {
+            continue;
+        };
+        let mut fields: Vec<String> = Vec::new();
+        if let AfterTarget::Expr(expr) = target {
+            collect_anchor_state_fields(model, &params, expr, &mut fields);
+        }
+        if let Some(expr) = from {
+            collect_anchor_state_fields(model, &params, expr, &mut fields);
+        }
+        for field in &fields {
+            if field_is_asset(model, field)
+                || field_starts_nonzero(model, field)
+                || entry_records_now(entry, field)
+            {
+                continue;
+            }
+            if !entry_requires_nonzero(entry, field) {
+                return Err(liveness_rejection(field, *span));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn collect_anchor_state_fields(
+    model: &Model,
+    params: &HashSet<&str>,
+    expr: &Expr,
+    out: &mut Vec<String>,
+) {
+    if let Expr::Ident(id) = expr {
+        let name = id.text.as_str();
+        if !params.contains(name)
+            && model.state.contains_key(name)
+            && !out.iter().any(|f| f == name)
+        {
+            out.push(id.text.clone());
+        }
+    }
+}
+
+fn field_is_asset(model: &Model, field: &str) -> bool {
+    model.state.get(field).is_some_and(|f| is_asset_type(&f.ty))
+}
+
+fn field_starts_nonzero(model: &Model, field: &str) -> bool {
+    match model.state.get(field).and_then(|f| f.default.as_ref()) {
+        None => false,
+        Some(Expr::Int(lit)) => lit.text.replace('_', "").parse::<u128>() != Ok(0),
+        Some(_) => true,
+    }
+}
+
+fn entry_records_now(entry: &EntryDecl, field: &str) -> bool {
+    for stmt in &entry.body {
+        if let Stmt::Assign { target, value, .. } = stmt {
+            if matches!(target, Expr::Ident(id) if id.text == field)
+                && matches!(value, Expr::Now { .. })
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn entry_requires_nonzero(entry: &EntryDecl, field: &str) -> bool {
+    for clause in &entry.clauses {
+        if let Clause::Denies { expr, .. } = clause {
+            if denies_field_zero(expr, field) {
+                return true;
+            }
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            if guard_field_nonzero(expr, field) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn denies_field_zero(expr: &Expr, field: &str) -> bool {
+    if let Expr::Binary {
+        op: BinOp::Eq,
+        left,
+        right,
+        ..
+    } = expr
+    {
+        return (is_field(left, field) && is_zero(right))
+            || (is_field(right, field) && is_zero(left));
+    }
+    false
+}
+
+fn guard_field_nonzero(expr: &Expr, field: &str) -> bool {
+    match expr {
+        Expr::Binary {
+            op: BinOp::Ne,
+            left,
+            right,
+            ..
+        } => (is_field(left, field) && is_zero(right)) || (is_field(right, field) && is_zero(left)),
+        Expr::Binary {
+            op: BinOp::Gt,
+            left,
+            right,
+            ..
+        } => is_field(left, field) && is_zero(right),
+        Expr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+            ..
+        } => guard_field_nonzero(left, field) || guard_field_nonzero(right, field),
+        _ => false,
+    }
+}
+
+fn is_field(expr: &Expr, field: &str) -> bool {
+    matches!(expr, Expr::Ident(id) if id.text == field)
+}
+
+fn is_zero(expr: &Expr) -> bool {
+    matches!(expr, Expr::Int(lit) if lit.text.replace('_', "").parse::<u128>() == Ok(0))
+}
+
+fn liveness_rejection(field: &str, span: Span) -> TypeError {
+    TypeError::new(
+        format!(
+            "a time gate anchored on `{field}`, which starts at zero, lets the delay pass before \
+             the anchor is set; record `{field}` with `now` in this entry or deny `{field} == 0` \
+             so the cooling off cannot be skipped"
+        ),
+        span,
+    )
 }
 
 fn check_after_anchors(entry: &EntryDecl) -> Result<(), TypeError> {
@@ -238,7 +384,43 @@ mod tests {
             contract C {
                 state { armed_at: u64; vault: Q_Asset<QTOV>; }
                 entry release(order: Rel) conserves QTOV writes(vault)
-                  after 24 hours from armed_at { send(order.to, vault.split(order.amount)); }
+                  after 24 hours from armed_at
+                  denies armed_at == 0 { send(order.to, vault.split(order.amount)); }
+            }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn an_arm_then_act_anchor_without_a_liveness_guard_is_rejected() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { armed: u64; vault: Q_Asset<QTOV>; }
+                entry arm() writes(armed) { armed = now; }
+                entry release(order: Rel) conserves QTOV writes(vault)
+                  after 24 hours from armed { send(order.to, vault.split(order.amount)); }
+            }"#;
+        assert!(error_for(src).contains("starts at zero"));
+    }
+
+    #[test]
+    fn a_self_recording_periodic_anchor_is_accepted() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { period_reset: u64; vault: Q_Asset<QTOV>; }
+                entry roll(order: Rel) conserves QTOV writes(vault, period_reset)
+                  after 30 days from period_reset
+                  { period_reset = now; send(order.to, vault.split(order.amount)); }
+            }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn an_anchor_with_a_non_zero_default_needs_no_liveness_guard() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { start: u64 = 100; vault: Q_Asset<QTOV>; }
+                entry release(order: Rel) conserves QTOV writes(vault)
+                  after 365 days from start { send(order.to, vault.split(order.amount)); }
             }"#;
         ok(src);
     }
