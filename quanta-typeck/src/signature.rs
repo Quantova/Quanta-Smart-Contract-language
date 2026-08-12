@@ -22,27 +22,62 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         .map(|p| p.name.text.as_str())
         .collect();
     let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
+    let derived = param_derived_locals(entry, &params, &signed);
 
     for clause in &entry.clauses {
         let expr = match clause {
             Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => expr,
             _ => continue,
         };
-        if let Some(err) = forged(model, &params, &signed, expr) {
+        if let Some(err) = forged(model, &params, &signed, &derived, expr) {
             return Err(err);
         }
     }
     for stmt in &entry.body {
         if let Stmt::Guard { expr, .. } = stmt {
-            if let Some(err) = forged(model, &params, &signed, expr) {
+            if let Some(err) = forged(model, &params, &signed, &derived, expr) {
                 return Err(err);
             }
         }
     }
-    if let Some(err) = forged_map_authority(model, entry, &params, &signed) {
+    if let Some(err) = forged_map_authority(model, entry, &params, &signed, &derived) {
         return Err(err);
     }
     Ok(())
+}
+
+fn param_derived_locals(
+    entry: &EntryDecl,
+    params: &HashSet<&str>,
+    signed: &HashSet<&str>,
+) -> HashSet<String> {
+    let mut derived: HashSet<String> = HashSet::new();
+    for stmt in &entry.body {
+        if let Stmt::Let { name, value, .. } = stmt {
+            if taints_from_param(value, params, signed, &derived) {
+                derived.insert(name.text.clone());
+            }
+        }
+    }
+    derived
+}
+
+fn taints_from_param(
+    expr: &Expr,
+    params: &HashSet<&str>,
+    signed: &HashSet<&str>,
+    derived: &HashSet<String>,
+) -> bool {
+    let mut tainted = false;
+    walk(expr, &mut |e| {
+        if let Expr::Ident(id) = e {
+            let name = id.text.as_str();
+            if (params.contains(name) && !signed.contains(name)) || derived.contains(name) {
+                tainted = true;
+            }
+        }
+    });
+    tainted
 }
 
 fn forged_map_authority(
@@ -50,11 +85,12 @@ fn forged_map_authority(
     entry: &EntryDecl,
     params: &HashSet<&str>,
     signed: &HashSet<&str>,
+    derived: &HashSet<String>,
 ) -> Option<TypeError> {
     if !entry_sends(entry) || entry_binds_caller(model, entry, signed) {
         return None;
     }
-    let mut gate_expr = |expr: &Expr| map_lookup_on_param(model, params, signed, expr);
+    let mut gate_expr = |expr: &Expr| map_lookup_on_param(model, params, signed, derived, expr);
     for clause in &entry.clauses {
         if let Clause::Limits { expr, .. } | Clause::Denies { expr, .. } = clause {
             if let Some((field, span)) = gate_expr(expr) {
@@ -170,6 +206,7 @@ fn map_lookup_on_param(
     model: &Model,
     params: &HashSet<&str>,
     signed: &HashSet<&str>,
+    derived: &HashSet<String>,
     expr: &Expr,
 ) -> Option<(String, Span)> {
     let mut found = None;
@@ -183,7 +220,7 @@ fn map_lookup_on_param(
                     if let Expr::Ident(map_id) = base.as_ref() {
                         if is_addr_keyed(model, map_id.text.as_str()) {
                             for a in args {
-                                if let Some(field) = param_field(params, signed, a) {
+                                if let Some(field) = param_field(params, signed, derived, a) {
                                     found = Some((field, *span));
                                 }
                             }
@@ -247,6 +284,7 @@ fn forged(
     model: &Model,
     params: &HashSet<&str>,
     signed: &HashSet<&str>,
+    derived: &HashSet<String>,
     expr: &Expr,
 ) -> Option<TypeError> {
     if let Expr::Binary {
@@ -256,7 +294,7 @@ fn forged(
         span,
     } = expr
     {
-        if let Some(field) = authority_gate(model, params, signed, left, right) {
+        if let Some(field) = authority_gate(model, params, signed, derived, left, right) {
             return Some(TypeError::new(
                 format!(
                     "forged authority: gating on `{field}` compares self declared parameter data \
@@ -267,10 +305,9 @@ fn forged(
         }
     }
     match expr {
-        Expr::Unary { expr, .. } => forged(model, params, signed, expr),
-        Expr::Binary { left, right, .. } => {
-            forged(model, params, signed, left).or_else(|| forged(model, params, signed, right))
-        }
+        Expr::Unary { expr, .. } => forged(model, params, signed, derived, expr),
+        Expr::Binary { left, right, .. } => forged(model, params, signed, derived, left)
+            .or_else(|| forged(model, params, signed, derived, right)),
         _ => None,
     }
 }
@@ -279,27 +316,54 @@ fn authority_gate(
     model: &Model,
     params: &HashSet<&str>,
     signed: &HashSet<&str>,
+    derived: &HashSet<String>,
     a: &Expr,
     b: &Expr,
 ) -> Option<String> {
-    param_field(params, signed, a)
+    param_field(params, signed, derived, a)
         .filter(|_| is_state_address(model, b))
-        .or_else(|| param_field(params, signed, b).filter(|_| is_state_address(model, a)))
+        .or_else(|| param_field(params, signed, derived, b).filter(|_| is_state_address(model, a)))
 }
 
-fn param_field(params: &HashSet<&str>, signed: &HashSet<&str>, expr: &Expr) -> Option<String> {
+fn param_field(
+    params: &HashSet<&str>,
+    signed: &HashSet<&str>,
+    derived: &HashSet<String>,
+    expr: &Expr,
+) -> Option<String> {
     match expr {
-        Expr::Field { base, name, .. } => {
-            if let Expr::Ident(id) = base.as_ref() {
-                if params.contains(id.text.as_str()) && !signed.contains(id.text.as_str()) {
-                    return Some(format!("{}.{}", id.text, name.text));
-                }
+        Expr::Field { .. } => {
+            let root = root_ident(expr)?;
+            if (params.contains(root) && !signed.contains(root)) || derived.contains(root) {
+                field_path(expr)
+            } else {
+                None
             }
-            None
         }
-        Expr::Ident(id) if params.contains(id.text.as_str()) && !signed.contains(id.text.as_str()) => {
-            Some(id.text.clone())
+        Expr::Ident(id) => {
+            let name = id.text.as_str();
+            if (params.contains(name) && !signed.contains(name)) || derived.contains(name) {
+                Some(id.text.clone())
+            } else {
+                None
+            }
         }
+        _ => None,
+    }
+}
+
+fn root_ident(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Ident(id) => Some(id.text.as_str()),
+        Expr::Field { base, .. } => root_ident(base),
+        _ => None,
+    }
+}
+
+fn field_path(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Ident(id) => Some(id.text.clone()),
+        Expr::Field { base, name, .. } => Some(format!("{}.{}", field_path(base)?, name.text)),
         _ => None,
     }
 }
@@ -434,5 +498,32 @@ mod tests {
                 }
             }"#;
         ok(src);
+    }
+
+    #[test]
+    fn a_let_aliased_parameter_map_key_is_forged() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { members: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry withdraw(claim: Claim) conserves QTOV writes(vault) {
+                    let who = claim.who;
+                    guard members.contains(who);
+                    send(claim.to, vault.split(claim.amount));
+                }
+            }"#;
+        assert!(error_for(src).contains("forged authority"));
+    }
+
+    #[test]
+    fn a_nested_field_parameter_map_key_is_forged() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { members: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry withdraw(claim: Claim) conserves QTOV writes(vault) {
+                    guard members.contains(claim.inner.who);
+                    send(claim.to, vault.split(claim.amount));
+                }
+            }"#;
+        assert!(error_for(src).contains("forged authority"));
     }
 }
