@@ -17,9 +17,6 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         Some(p) => p,
         None => return Ok(()),
     };
-    if pooled_field_sent(entry, &pooled) {
-        return Ok(());
-    }
     for param in &entry.params {
         if is_asset_param(param) || param.signed_by.is_some() || is_quorum_param(param) {
             continue;
@@ -27,7 +24,9 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         if param.sealed {
             continue;
         }
-        if order_field_gates(entry, &param.name.text) {
+        if order_field_gates(entry, &param.name.text)
+            && !pooled_settles_order(entry, &pooled, &param.name.text)
+        {
             return Err(TypeError::new(
                 format!(
                     "front running: order parameter `{}` competes for a pooled asset yet is \
@@ -61,24 +60,37 @@ fn pooled_field(model: &Model, entry: &EntryDecl) -> Option<String> {
     pooled
 }
 
-fn pooled_field_sent(entry: &EntryDecl, pooled: &str) -> bool {
-    let mut sent = false;
+fn pooled_settles_order(entry: &EntryDecl, pooled: &str, param: &str) -> bool {
+    let mut settles = false;
     for stmt in &entry.body {
         for_each_expr(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
                 if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") {
+                    let mut pays_pool = false;
+                    let mut names_order = false;
                     for a in args {
                         walk(a, &mut |x| {
                             if matches!(x, Expr::Ident(id) if id.text == pooled) {
-                                sent = true;
+                                pays_pool = true;
+                            }
+                            if matches!(x, Expr::Ident(id) if id.text == param) {
+                                names_order = true;
+                            }
+                            if let Expr::Field { base, .. } = x {
+                                if matches!(base.as_ref(), Expr::Ident(id) if id.text == param) {
+                                    names_order = true;
+                                }
                             }
                         });
+                    }
+                    if pays_pool && names_order {
+                        settles = true;
                     }
                 }
             }
         });
     }
-    sent
+    settles
 }
 
 fn order_field_gates(entry: &EntryDecl, param: &str) -> bool {
@@ -190,5 +202,14 @@ mod tests {
                    { guard payment.amount >= order.price; escrowed.merge(payment); \
                      send(order.seller, escrowed.split(order.price)); } }";
         ok(src);
+    }
+
+    #[test]
+    fn a_dust_fee_payout_does_not_settle_an_unsealed_order() {
+        let src = "contract C { state { pot: Q_Asset<QTOV>; feesink: Q_Address; } \
+                   entry bid(offer: Bid, funds: Q_Asset<QTOV>) conserves QTOV writes(pot) \
+                   { guard funds.amount >= offer.amount; pot.merge(funds); \
+                     send(feesink, pot.split(1)); } }";
+        assert!(error_for(src).contains("front running"));
     }
 }
