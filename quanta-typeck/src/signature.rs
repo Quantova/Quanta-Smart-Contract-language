@@ -118,10 +118,6 @@ fn authority_anchor_protected(model: &Model, field: &str) -> bool {
     anchor_protected(model, field, &mut stack, &mut memo).0
 }
 
-// Returns (protected, tainted). `tainted` marks a `true` that relied on the cycle assumption about an
-// in-progress ancestor still on the stack, so it must not be memoized as a stable result. A `false`
-// result never depends on the cycle assumption (the assumption only ever yields `true`), so it is
-// always safe to cache.
 fn anchor_protected(
     model: &Model,
     field: &str,
