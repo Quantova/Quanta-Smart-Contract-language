@@ -5,7 +5,7 @@ use crate::error::TypeError;
 use crate::model::{asset_inner, is_asset_param, Model};
 use quanta_ast::{Clause, EntryDecl, Expr, Stmt};
 use quanta_lexer::Span;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 struct Linear {
     name: String,
@@ -22,6 +22,7 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
 
 fn check_entry(entry: &EntryDecl) -> Result<(), TypeError> {
     let mut linears: Vec<Linear> = Vec::new();
+    let mut asset_names: HashSet<String> = HashSet::new();
 
     for param in &entry.params {
         if is_asset_param(param) {
@@ -30,16 +31,18 @@ fn check_entry(entry: &EntryDecl) -> Result<(), TypeError> {
                 span: param.name.span,
                 consumed: 0,
             });
+            asset_names.insert(param.name.text.clone());
         }
     }
     for stmt in &entry.body {
         if let Stmt::Let { name, value, span } = stmt {
-            if produces_asset(value) {
+            if produces_asset(value) || is_asset_alias(value, &asset_names) {
                 linears.push(Linear {
                     name: name.text.clone(),
                     span: *span,
                     consumed: 0,
                 });
+                asset_names.insert(name.text.clone());
             }
         }
     }
@@ -67,6 +70,13 @@ fn check_entry(entry: &EntryDecl) -> Result<(), TypeError> {
         .collect();
     let mut counts = vec![0usize; linears.len()];
     for stmt in &entry.body {
+        if let Stmt::Let { value, .. } = stmt {
+            if let Expr::Ident(id) = value {
+                if let Some(&i) = names.get(id.text.as_str()) {
+                    counts[i] += 1;
+                }
+            }
+        }
         for_each_expr(stmt, &mut |e| count_consumes(e, &names, &mut counts));
     }
     for (i, l) in linears.iter_mut().enumerate() {
@@ -100,6 +110,10 @@ fn bump(linears: &mut [Linear], name: &str) {
     if let Some(l) = linears.iter_mut().find(|l| l.name == name) {
         l.consumed += 1;
     }
+}
+
+fn is_asset_alias(value: &Expr, asset_names: &HashSet<String>) -> bool {
+    matches!(value, Expr::Ident(id) if asset_names.contains(id.text.as_str()))
 }
 
 fn produces_asset(value: &Expr) -> bool {
@@ -201,6 +215,22 @@ mod tests {
                    entry twice(funds: Q_Asset<QTOV>) conserves QTOV writes(pool) \
                    { pool.merge(funds); send(caller, funds); } }";
         assert!(error_for(src).contains("more than once"));
+    }
+
+    #[test]
+    fn aliasing_an_asset_through_a_let_and_using_both_is_a_copy() {
+        let src = "contract C { state { a: u64; } \
+                   entry dup(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV \
+                   { send(to, funds); let x = funds; send(caller, x); } }";
+        assert!(error_for(src).contains("more than once"));
+    }
+
+    #[test]
+    fn moving_an_asset_into_a_let_then_using_the_alias_once_is_ok() {
+        let src = "contract C { state { a: u64; } \
+                   entry fwd(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV \
+                   { let x = funds; send(to, x); } }";
+        ok(src);
     }
 
     #[test]
