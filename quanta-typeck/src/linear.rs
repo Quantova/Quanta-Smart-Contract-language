@@ -36,7 +36,15 @@ fn check_entry(entry: &EntryDecl) -> Result<(), TypeError> {
     }
     for stmt in &entry.body {
         if let Stmt::Let { name, value, span } = stmt {
-            if produces_asset(value) || is_asset_alias(value, &asset_names) {
+            if is_asset_alias(value, &asset_names) {
+                return Err(TypeError::new(
+                    "a let that aliases an existing asset is not supported; move, split, or send \
+                     the asset directly"
+                        .to_string(),
+                    *span,
+                ));
+            }
+            if produces_asset(value) {
                 linears.push(Linear {
                     name: name.text.clone(),
                     span: *span,
@@ -70,7 +78,7 @@ fn check_entry(entry: &EntryDecl) -> Result<(), TypeError> {
         .collect();
     let mut counts = vec![0usize; linears.len()];
     for stmt in &entry.body {
-        if let Stmt::Let { value, .. } = stmt {
+        if let Stmt::Assign { value, .. } = stmt {
             if let Expr::Ident(id) = value {
                 if let Some(&i) = names.get(id.text.as_str()) {
                     counts[i] += 1;
@@ -218,19 +226,19 @@ mod tests {
     }
 
     #[test]
-    fn aliasing_an_asset_through_a_let_and_using_both_is_a_copy() {
-        let src = "contract C { state { a: u64; } \
-                   entry dup(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV \
-                   { send(to, funds); let x = funds; send(caller, x); } }";
-        assert!(error_for(src).contains("more than once"));
-    }
-
-    #[test]
-    fn moving_an_asset_into_a_let_then_using_the_alias_once_is_ok() {
+    fn a_let_that_aliases_an_asset_is_rejected() {
         let src = "contract C { state { a: u64; } \
                    entry fwd(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV \
                    { let x = funds; send(to, x); } }";
-        ok(src);
+        assert!(error_for(src).contains("aliases an existing asset"));
+    }
+
+    #[test]
+    fn storing_an_asset_into_state_after_sending_it_is_a_copy() {
+        let src = "contract C { state { pool: Q_Asset<QTOV>; } \
+                   entry dup(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV writes(pool) \
+                   { send(to, funds); pool = funds; } }";
+        assert!(error_for(src).contains("more than once"));
     }
 
     #[test]

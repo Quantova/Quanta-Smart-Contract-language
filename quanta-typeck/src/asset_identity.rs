@@ -15,12 +15,15 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
 
 fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     let mut declared: HashSet<&str> = HashSet::new();
+    let mut mint_kind: Option<&str> = None;
     for clause in &entry.clauses {
         match clause {
-            Clause::Conserves { asset, .. }
-            | Clause::Mints { asset, .. }
-            | Clause::Burns { asset, .. } => {
+            Clause::Conserves { asset, .. } | Clause::Burns { asset, .. } => {
                 declared.insert(asset.text.as_str());
+            }
+            Clause::Mints { asset, .. } => {
+                declared.insert(asset.text.as_str());
+                mint_kind = Some(asset.text.as_str());
             }
             _ => {}
         }
@@ -45,8 +48,20 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
 
     for stmt in &entry.body {
         if let Stmt::Let { name, value, .. } = stmt {
-            if let Some(sym) = expr_asset_kind(model, &kinds, value) {
+            if let Some(sym) = expr_asset_kind(model, &kinds, mint_kind, value) {
                 kinds.insert(name.text.clone(), sym);
+            }
+        }
+        if let Stmt::Assign { target, value, span, .. } = stmt {
+            let into = expr_asset_kind(model, &kinds, mint_kind, target);
+            let from = expr_asset_kind(model, &kinds, mint_kind, value);
+            if let (Some(into), Some(from)) = (into, from) {
+                if into != from {
+                    return Err(TypeError::new(
+                        format!("asset kinds do not mix: storing `{from}` into a slot of `{into}`"),
+                        *span,
+                    ));
+                }
             }
         }
         let mut err = None;
@@ -54,7 +69,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
             if err.is_some() {
                 return;
             }
-            err = merge_mismatch(model, &kinds, e);
+            err = merge_mismatch(model, &kinds, mint_kind, e);
         });
         if let Some(e) = err {
             return Err(e);
@@ -63,12 +78,17 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     Ok(())
 }
 
-fn merge_mismatch(model: &Model, kinds: &HashMap<String, String>, expr: &Expr) -> Option<TypeError> {
+fn merge_mismatch(
+    model: &Model,
+    kinds: &HashMap<String, String>,
+    mint_kind: Option<&str>,
+    expr: &Expr,
+) -> Option<TypeError> {
     if let Expr::Call { callee, args, span } = expr {
         if let Expr::Field { base, name, .. } = callee.as_ref() {
             if name.text == "merge" && args.len() == 1 {
-                let into = expr_asset_kind(model, kinds, base);
-                let from = expr_asset_kind(model, kinds, &args[0]);
+                let into = expr_asset_kind(model, kinds, mint_kind, base);
+                let from = expr_asset_kind(model, kinds, mint_kind, &args[0]);
                 if let (Some(into), Some(from)) = (into, from) {
                     if into != from {
                         return Some(TypeError::new(
@@ -88,6 +108,7 @@ fn merge_mismatch(model: &Model, kinds: &HashMap<String, String>, expr: &Expr) -
 fn expr_asset_kind(
     model: &Model,
     kinds: &HashMap<String, String>,
+    mint_kind: Option<&str>,
     expr: &Expr,
 ) -> Option<String> {
     match expr {
@@ -101,8 +122,11 @@ fn expr_asset_kind(
         Expr::Call { callee, .. } => {
             if let Expr::Field { base, name, .. } = callee.as_ref() {
                 if name.text == "split" {
-                    return expr_asset_kind(model, kinds, base);
+                    return expr_asset_kind(model, kinds, mint_kind, base);
                 }
+            }
+            if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "mint") {
+                return mint_kind.map(|s| s.to_string());
             }
             None
         }
@@ -187,6 +211,22 @@ mod tests {
                    entry deposit(funds: Q_Asset<QTOV>) writes(pool) \
                    { pool.merge(funds); } }";
         assert!(error_for(src).contains("accounting is unstated"));
+    }
+
+    #[test]
+    fn minting_into_a_pool_of_a_different_kind_is_rejected() {
+        let src = "contract C { asset GOLD; asset DUST; state { owner: Q_Address; dustp: Q_Asset<DUST>; } \
+                   entry issue(order: Order signed by owner) mints GOLD writes(dustp) \
+                   { dustp.merge(mint(order.amount)); } }";
+        assert!(error_for(src).contains("do not mix"));
+    }
+
+    #[test]
+    fn storing_an_asset_into_a_pool_of_a_different_kind_is_rejected() {
+        let src = "contract C { asset GOLD; asset DUST; state { vault: Q_Asset<GOLD>; } \
+                   entry swap(funds: Q_Asset<DUST>) conserves DUST writes(vault) \
+                   { vault = funds; } }";
+        assert!(error_for(src).contains("do not mix"));
     }
 
     #[test]
