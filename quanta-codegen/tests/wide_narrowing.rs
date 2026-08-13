@@ -67,6 +67,13 @@ fn narrowing_a_wide_parameter_field_into_a_scalar_is_rejected() {
 }
 
 #[test]
+fn a_signed_integer_is_refused_rather_than_lowered_at_the_wrong_size() {
+    let src = "contract W { state { total: i128; } genesis { total = 0; } \
+               entry add(amount: i128) writes(total) { total = checked(total + amount); } }";
+    assert!(compile_error(src).contains("i128"));
+}
+
+#[test]
 fn narrow_division_still_compiles() {
     let src = "contract W { state { a: u64; result: u64; } genesis { a = 0; result = 0; } \
                entry divide(d: u64) writes(result) reads(a) { result = a / d; } }";

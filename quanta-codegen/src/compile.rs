@@ -68,6 +68,53 @@ fn type_words(ty: &Type) -> u64 {
     }
 }
 
+// the code generator has no signed integers: a signed width is stored unsigned, its comparisons lower
+// to unsigned, and i128 would drop its high word, so refuse it rather than emit a value that does not
+// match the source. The unsigned u8..u32 are backed by u64 and are supported.
+const UNSUPPORTED_INT_TYPES: &[&str] = &["i8", "i16", "i32", "i64", "i128"];
+
+fn reject_unsupported_type(ty: &Type) -> Result<(), CodegenError> {
+    if UNSUPPORTED_INT_TYPES.contains(&ty.name.text.as_str()) {
+        return Err(CodegenError::Unsupported {
+            what: format!(
+                "the integer type `{}`; the code generator supports only u64 and u128",
+                ty.name.text
+            ),
+            span: ty.span,
+        });
+    }
+    for arg in &ty.args {
+        if let quanta_ast::GenericArg::Type(inner) = arg {
+            reject_unsupported_type(inner)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_supported_types(contract: &Contract) -> Result<(), CodegenError> {
+    for item in &contract.items {
+        match item {
+            Item::State(block) => {
+                for field in &block.fields {
+                    reject_unsupported_type(&field.ty)?;
+                }
+            }
+            Item::Entry(entry) => {
+                for param in &entry.params {
+                    reject_unsupported_type(&param.ty)?;
+                }
+            }
+            Item::Event(ev) => {
+                for param in &ev.params {
+                    reject_unsupported_type(&param.ty)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 pub fn compile_contract(contract: &Contract) -> Result<CompiledContract, CodegenError> {
     let entries: Vec<&EntryDecl> = contract
         .items
@@ -84,6 +131,7 @@ fn compile_entries(
     contract: &Contract,
     entries: &[&EntryDecl],
 ) -> Result<CompiledContract, CodegenError> {
+    check_supported_types(contract)?;
     let layout = Layout::build(contract);
     crate::lower::check_anchor_state_writes(contract, &layout)?;
     let invariants: Vec<&quanta_ast::Expr> = contract
