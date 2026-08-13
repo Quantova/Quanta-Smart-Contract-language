@@ -3125,10 +3125,25 @@ fn map_key_region_named(
 
 fn id_word_offset(ctx: &mut Ctx, key_expr: &Expr, span: Span) -> Result<u64, CodegenError> {
     match key_expr {
-        Expr::Ident(id) if ctx.params.contains(&id.text) => Ok(ctx.args.offset_of(&id.text)),
+        Expr::Ident(id) if ctx.params.contains(&id.text) => {
+            if ctx.wide_keys.contains(&id.text) {
+                return Err(CodegenError::Unsupported {
+                    what: format!("the u128 value `{}` as a single word token id key, which would drop its high word", id.text),
+                    span,
+                });
+            }
+            Ok(ctx.args.offset_of(&id.text))
+        }
         Expr::Field { base, name, .. } => match base.as_ref() {
             Expr::Ident(id) if ctx.params.contains(&id.text) => {
-                Ok(ctx.args.offset_of(&format!("{}.{}", id.text, name.text)))
+                let key = format!("{}.{}", id.text, name.text);
+                if ctx.wide_keys.contains(&key) {
+                    return Err(CodegenError::Unsupported {
+                        what: format!("the u128 field `{key}` as a single word token id key, which would drop its high word"),
+                        span,
+                    });
+                }
+                Ok(ctx.args.offset_of(&key))
             }
             _ => Err(CodegenError::Unsupported {
                 what: "a token id key that is not a parameter or a parameter field".into(),

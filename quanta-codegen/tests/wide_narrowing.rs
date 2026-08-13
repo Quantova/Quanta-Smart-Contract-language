@@ -67,6 +67,13 @@ fn narrowing_a_wide_parameter_field_into_a_scalar_is_rejected() {
 }
 
 #[test]
+fn a_wide_token_id_key_is_refused_rather_than_truncated() {
+    let src = "contract W { state { seen: Map<Q_Id, u64>; } genesis {} \
+               entry mark(w: u128, v: u64) writes(seen) { seen.set(w, v); } }";
+    assert!(compile_error(src).contains("high word"));
+}
+
+#[test]
 fn a_signed_integer_is_refused_rather_than_lowered_at_the_wrong_size() {
     let src = "contract W { state { total: i128; } genesis { total = 0; } \
                entry add(amount: i128) writes(total) { total = checked(total + amount); } }";
