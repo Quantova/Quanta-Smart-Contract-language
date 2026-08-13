@@ -209,7 +209,6 @@ pub struct Ctx<'a> {
     wide_keys: HashSet<String>,
     name_keys: HashMap<String, u64>,
     state_addr_scratch: HashMap<String, u64>,
-    map_value_scratch: HashMap<String, u64>,
     next_state_addr_scratch: u64,
     trap: Label,
     b: &'a mut Builder,
@@ -240,7 +239,6 @@ impl<'a> Ctx<'a> {
             wide_keys: HashSet::new(),
             name_keys: HashMap::new(),
             state_addr_scratch: HashMap::new(),
-            map_value_scratch: HashMap::new(),
             next_state_addr_scratch: STATE_ADDR_SCRATCH_BASE,
             asset_locals: HashMap::new(),
             next_asset_local: ASSET_LOCAL_BASE,
@@ -267,13 +265,10 @@ impl<'a> Ctx<'a> {
     // A per map scratch region that holds the four words of an address read out of that map. It draws
     // from the same bump pointer as a materialized state address, so the two never overlap, and it is
     // reused across reads of the one map since every read reloads the words before the region is used.
-    fn bind_map_value_scratch(&mut self, name: &str) -> u64 {
-        if let Some(off) = self.map_value_scratch.get(name) {
-            return *off;
-        }
+    // A fresh region per call so a key read and a value read of the same map never share one buffer.
+    fn bind_map_value_scratch(&mut self, _name: &str) -> u64 {
         let off = self.next_state_addr_scratch;
         self.next_state_addr_scratch += ADDR_BYTES;
-        self.map_value_scratch.insert(name.to_string(), off);
         off
     }
 
