@@ -794,8 +794,6 @@ fn wide_sinks_stmt(
             }
         }
         Stmt::Expr { expr, .. } => {
-            // A field written as the value of a credit/debit/set on a wide valued map is a wide sink
-            // too, otherwise a u128 order field feeding a Map<_, u128> is silently lowered at 8 bytes.
             if let Expr::Call { callee, args, .. } = expr {
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
                     if matches!(name.text.as_str(), "credit" | "debit" | "set") {
@@ -1310,9 +1308,6 @@ pub fn lower_entry(
             }
         }
     }
-    // The caller argument region grows from ARG_BASE up toward the fixed asset local base. If a wide
-    // parameter (a large GuardianSet/Quorum) pushes it past that floor, an asset local write would land
-    // inside a signed argument and silently corrupt authenticated data. Fail closed instead.
     if args.end() > ASSET_LOCAL_BASE {
         return Err(CodegenError::Unsupported {
             what: "the entry argument region overruns the scratch memory floor".to_string(),

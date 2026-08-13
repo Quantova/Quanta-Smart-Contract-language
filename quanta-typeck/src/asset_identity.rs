@@ -124,9 +124,6 @@ fn amount_credited_while_sent(
             }
         });
     }
-    // A pool this entry merges a credited asset into now backs that credit, so splitting value back out
-    // of that pool un-backs it, the same leak as sending the asset itself. Map each such pool to the
-    // credited assets merged into it.
     let mut backing: HashMap<String, Vec<String>> = HashMap::new();
     for stmt in &entry.body {
         for_each_expr(stmt, &mut |e| {
@@ -228,8 +225,6 @@ fn sent_asset(expr: &Expr, kinds: &HashMap<String, String>) -> Option<String> {
     }
 }
 
-// The pool a `P.split(..)` draws from, whatever P is; used to catch a split-send out of a pool that
-// backs a credit, which sent_asset misses when the pool is a state field not in `kinds`.
 fn split_pool(expr: &Expr) -> Option<String> {
     if let Expr::Call { callee, .. } = expr {
         if let Expr::Field { base, name, .. } = callee.as_ref() {
@@ -442,9 +437,6 @@ mod tests {
 
     #[test]
     fn crediting_an_asset_then_splitting_value_out_of_its_backing_pool_is_rejected() {
-        // The pool laundered leak: back the credit by merging the asset in as the checker advises, then
-        // quietly split value back out of that same pool so the ledger ends up crediting more than the
-        // pool holds.
         let src = "contract C { state { vault: Q_Asset<QTOV>; balance: Map<Q_Address, u128>; } \
                    entry deposit(funds: Q_Asset<QTOV>, rebate: u128) conserves QTOV writes(vault, balance) \
                    { balance.credit(caller, funds.amount); vault.merge(funds); send(caller, vault.split(rebate)); } }";
