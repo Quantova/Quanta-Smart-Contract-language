@@ -51,7 +51,6 @@ const SCALAR_KEY_SCRATCH: u64 = 41344;
 const MAP_PREIMAGE_SCRATCH: u64 = 41408;
 const MAP_KEY_SCRATCH: u64 = 41472;
 const NAME_KEY_SCRATCH_BASE: u64 = 41536;
-const ID_KEY_SCRATCH: u64 = 42048;
 const STATE_ADDR_SCRATCH_BASE: u64 = 42112;
 
 const NAME_TYPE: &str = "Q_Name";
@@ -275,6 +274,14 @@ impl<'a> Ctx<'a> {
         let off = self.next_state_addr_scratch;
         self.next_state_addr_scratch += ADDR_BYTES;
         self.map_value_scratch.insert(name.to_string(), off);
+        off
+    }
+
+    // A fresh region for one materialized token id key, drawn from the same bump pointer so two live
+    // id keys in one expression never share a buffer.
+    fn bind_id_key_scratch(&mut self) -> u64 {
+        let off = self.next_state_addr_scratch;
+        self.next_state_addr_scratch += ADDR_BYTES;
         off
     }
 }
@@ -3141,16 +3148,17 @@ fn id_word_offset(ctx: &mut Ctx, key_expr: &Expr, span: Span) -> Result<u64, Cod
 }
 
 fn promote_id_key(ctx: &mut Ctx, id_off: u64, span: Span) -> Result<u64, CodegenError> {
+    let scratch = ctx.bind_id_key_scratch();
     let w = load_arg(ctx, id_off, span)?;
-    store_mem_word(ctx, ID_KEY_SCRATCH, w);
+    store_mem_word(ctx, scratch, w);
     ctx.regs.free(w);
     let zero = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi { d: zero, imm: 0 });
     for i in 1..ADDR_WORDS {
-        store_mem_word(ctx, ID_KEY_SCRATCH + i * WORD, zero);
+        store_mem_word(ctx, scratch + i * WORD, zero);
     }
     ctx.regs.free(zero);
-    Ok(ID_KEY_SCRATCH)
+    Ok(scratch)
 }
 
 fn map_base_of(ctx: &Ctx, base: &Expr, span: Span) -> Result<u64, CodegenError> {
