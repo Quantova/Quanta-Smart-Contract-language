@@ -1,9 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A u128 order field credited to a `Map<_, u128>` must be recorded and lowered at the full sixteen
-//! byte width, not silently narrowed to eight bytes.
-
 use quanta_codegen::{compile_contract, CompiledContract};
 
 const GIVE: &str = "contract Give {\n\

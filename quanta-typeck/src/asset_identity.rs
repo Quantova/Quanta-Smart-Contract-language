@@ -109,7 +109,6 @@ fn amount_credited_while_sent(
         }
     }
     let mut credited: HashMap<String, Span> = HashMap::new();
-    let mut sent: HashSet<String> = HashSet::new();
     for stmt in &entry.body {
         for_each_expr(stmt, &mut |e| {
             if let Expr::Call { callee, args, span } = e {
@@ -122,10 +121,42 @@ fn amount_credited_while_sent(
                         }
                     }
                 }
+            }
+        });
+    }
+    let mut backing: HashMap<String, Vec<String>> = HashMap::new();
+    for stmt in &entry.body {
+        for_each_expr(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if name.text == "merge" {
+                        if let Expr::Ident(pool) = base.as_ref() {
+                            if let Some(Expr::Ident(arg)) = args.first() {
+                                if credited.contains_key(arg.text.as_str()) {
+                                    backing.entry(pool.text.clone()).or_default().push(arg.text.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    let mut sent: HashSet<String> = HashSet::new();
+    for stmt in &entry.body {
+        for_each_expr(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
                 if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") {
                     if let Some(value) = args.get(1) {
                         if let Some(asset) = sent_asset(value, kinds) {
                             sent.insert(asset);
+                        }
+                        if let Some(pool) = split_pool(value) {
+                            if let Some(backed) = backing.get(&pool) {
+                                for asset in backed {
+                                    sent.insert(asset.clone());
+                                }
+                            }
                         }
                     }
                 }
@@ -192,6 +223,19 @@ fn sent_asset(expr: &Expr, kinds: &HashMap<String, String>) -> Option<String> {
         }
         _ => None,
     }
+}
+
+fn split_pool(expr: &Expr) -> Option<String> {
+    if let Expr::Call { callee, .. } = expr {
+        if let Expr::Field { base, name, .. } = callee.as_ref() {
+            if name.text == "split" {
+                if let Expr::Ident(id) = base.as_ref() {
+                    return Some(id.text.clone());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn asset_flow_in_expr(
@@ -389,6 +433,14 @@ mod tests {
                    entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(vault, balance) \
                    { balance.credit(caller, funds.amount); vault.merge(funds); } }";
         ok(src);
+    }
+
+    #[test]
+    fn crediting_an_asset_then_splitting_value_out_of_its_backing_pool_is_rejected() {
+        let src = "contract C { state { vault: Q_Asset<QTOV>; balance: Map<Q_Address, u128>; } \
+                   entry deposit(funds: Q_Asset<QTOV>, rebate: u128) conserves QTOV writes(vault, balance) \
+                   { balance.credit(caller, funds.amount); vault.merge(funds); send(caller, vault.split(rebate)); } }";
+        assert!(error_for(src).contains("sent away"));
     }
 
     #[test]
