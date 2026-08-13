@@ -53,7 +53,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
 }
 
 fn forged_signed_authority(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
-    if !entry_sends(entry) {
+    if !entry_moves_value(entry) {
         return None;
     }
     let backing: Vec<(&str, Span)> = entry
@@ -83,7 +83,7 @@ fn forged_signed_authority_error(field: &str, span: Span) -> TypeError {
 }
 
 fn forged_caller_anchor(model: &Model, entry: &EntryDecl, signed: &HashSet<&str>) -> Option<TypeError> {
-    if !entry_sends(entry) || !signed.is_empty() || entry.params.iter().any(is_quorum_param) {
+    if !entry_moves_value(entry) || !signed.is_empty() || entry.params.iter().any(is_quorum_param) {
         return None;
     }
     if entry_binds_caller(model, entry, signed) {
@@ -392,7 +392,7 @@ fn forged_map_authority(
     signed: &HashSet<&str>,
     derived: &HashSet<String>,
 ) -> Option<TypeError> {
-    if !entry_sends(entry) || entry_binds_caller(model, entry, signed) {
+    if !entry_moves_value(entry) || entry_binds_caller(model, entry, signed) {
         return None;
     }
     let mut gate_expr = |expr: &Expr| map_lookup_on_param(model, params, signed, derived, expr);
@@ -424,18 +424,28 @@ fn map_authority_error(field: &str, span: Span) -> TypeError {
     )
 }
 
-fn entry_sends(entry: &EntryDecl) -> bool {
-    let mut sends = false;
+// value leaves through `send`, and moves out of another party's ledger balance through a `debit` whose
+// key is NOT the caller. A self `debit(caller, ...)` (a transfer or an nft count) moves only the
+// caller's own balance and needs no extra authority; debiting someone else's account does.
+fn entry_moves_value(entry: &EntryDecl) -> bool {
+    let mut moves = false;
     for stmt in &entry.body {
         stmt_exprs(stmt, &mut |e| {
-            if let Expr::Call { callee, .. } = e {
-                if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") {
-                    sends = true;
+            if let Expr::Call { callee, args, .. } = e {
+                match callee.as_ref() {
+                    Expr::Ident(id) if id.text == "send" => moves = true,
+                    Expr::Field { name, .. } if name.text == "debit" => {
+                        let self_debit = matches!(args.first(), Some(Expr::Caller { .. }));
+                        if !self_debit {
+                            moves = true;
+                        }
+                    }
+                    _ => {}
                 }
             }
         });
     }
-    sends
+    moves
 }
 
 fn entry_binds_caller(model: &Model, entry: &EntryDecl, _signed: &HashSet<&str>) -> bool {
@@ -866,6 +876,25 @@ mod tests {
         let program = quanta_parser::parse(src).expect("source parses");
         let model = Model::build(&program.contracts[0]);
         super::check(&model).expect("checker should accept");
+    }
+
+    #[test]
+    fn debiting_another_account_under_a_settable_owner_is_forged() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u128>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry seize(order: SeizeOrder) writes(balances) \
+                   { guard caller == owner; balances.debit(order.victim, order.amount); \
+                     balances.credit(caller, order.amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn a_self_debit_transfer_needs_no_extra_authority() {
+        let src = "contract C { state { balances: Map<Q_Address, u128>; } \
+                   entry transfer(to: Q_Address, amount: u128) writes(balances) \
+                   { guard balances.get(caller) >= amount; balances.debit(caller, amount); \
+                     balances.credit(to, amount); } }";
+        ok(src);
     }
 
     #[test]
