@@ -43,6 +43,7 @@ pub struct EntryArtifact {
 pub struct ArgSlot {
     pub key: String,
     pub offset: u64,
+    pub width: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,7 +178,7 @@ fn compile_entries(
             args: args
                 .layout()
                 .into_iter()
-                .map(|(key, offset)| ArgSlot { key, offset })
+                .map(|(key, offset, width)| ArgSlot { key, offset, width })
                 .collect(),
             sealed_params: entry
                 .params
@@ -346,22 +347,27 @@ mod tests {
                 ArgSlot {
                     key: "@caller".to_string(),
                     offset: 0,
+                    width: 32,
                 },
                 ArgSlot {
                     key: "@contract".to_string(),
                     offset: 32,
+                    width: 32,
                 },
                 ArgSlot {
                     key: "@time".to_string(),
                     offset: 64,
+                    width: 8,
                 },
                 ArgSlot {
                     key: "@chain".to_string(),
                     offset: 72,
+                    width: 8,
                 },
                 ArgSlot {
                     key: "step".to_string(),
                     offset: 80,
+                    width: 8,
                 },
             ]
         );

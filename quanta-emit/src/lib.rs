@@ -50,7 +50,7 @@ fn contracts_json(contracts: &[CompiledContract]) -> String {
                 }
                 out.push_str("{\"key\":");
                 json_str(&mut out, &arg.key);
-                out.push_str(&format!(",\"offset\":{}}}", arg.offset));
+                out.push_str(&format!(",\"offset\":{},\"width\":{}}}", arg.offset, arg.width));
             }
             out.push_str("]}");
         }
@@ -132,4 +132,35 @@ fn line_col(src: &str, offset: usize) -> (usize, usize) {
         }
     }
     (line, col)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The width recorded directly after the first occurrence of a given arg key.
+    fn width_of(json: &str, key: &str) -> u64 {
+        let at = json
+            .find(&format!("\"key\":\"{key}\""))
+            .expect("the arg key is present");
+        let tail = &json[at..];
+        let w = tail.find("\"width\":").expect("a width follows the key") + "\"width\":".len();
+        let rest = &tail[w..];
+        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        rest[..end].parse().expect("the width is a number")
+    }
+
+    #[test]
+    fn the_descriptor_records_each_signed_field_width() {
+        // A signer-ordered message the SDK must reproduce byte for byte: a wide amount and a whole
+        // address. Without the width a client packs both as eight byte words and the signature fails.
+        let src = "contract A { state { owner: Q_Address; total: u128; reg: Map<Q_Address, u128>; } \
+                   entry give(order: GiveOrder signed by owner) writes(total, reg) \
+                   { total = checked(total + order.amount); reg.credit(order.to, order.amount); } }";
+        let emit = compile_json(src);
+        assert!(emit.ok, "the contract compiles: {}", emit.json);
+        assert_eq!(width_of(&emit.json, "order.amount"), 16, "a u128 signed field is sixteen bytes");
+        assert_eq!(width_of(&emit.json, "order.to"), 32, "an address signed field is a full word set");
+        assert_eq!(width_of(&emit.json, "@caller"), 32, "the caller context is a full address");
+    }
 }

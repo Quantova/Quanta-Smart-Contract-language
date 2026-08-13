@@ -140,6 +140,7 @@ pub struct EventSig {
 #[derive(Default)]
 pub struct Args {
     offsets: HashMap<String, u64>,
+    widths: HashMap<String, u64>,
     order: Vec<String>,
     next: u64,
     deploy_params: Vec<DeployParamSlot>,
@@ -157,6 +158,7 @@ impl Args {
         let off = ARG_BASE + self.next;
         self.next += bytes;
         self.offsets.insert(key.to_string(), off);
+        self.widths.insert(key.to_string(), bytes);
         self.order.push(key.to_string());
         off
     }
@@ -187,10 +189,10 @@ impl Args {
         &self.deploy_params
     }
 
-    pub fn layout(&self) -> Vec<(String, u64)> {
+    pub fn layout(&self) -> Vec<(String, u64, u64)> {
         self.order
             .iter()
-            .map(|k| (k.clone(), self.offsets[k]))
+            .map(|k| (k.clone(), self.offsets[k], self.widths[k]))
             .collect()
     }
 }
@@ -3909,7 +3911,7 @@ mod tests {
         let argmap: HashMap<String, u64> =
             argvals.iter().map(|(k, v)| (k.to_string(), *v)).collect();
         let mut mem = vec![0u8; 4096];
-        for (key, off) in args.layout() {
+        for (key, off, _width) in args.layout() {
             let val = *argmap.get(&key).unwrap_or(&0);
             let at = off as usize;
             mem[at..at + 8].copy_from_slice(&val.to_be_bytes());
