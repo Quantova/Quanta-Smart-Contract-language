@@ -1292,6 +1292,15 @@ pub fn lower_entry(
             }
         }
     }
+    // The caller argument region grows from ARG_BASE up toward the fixed asset local base. If a wide
+    // parameter (a large GuardianSet/Quorum) pushes it past that floor, an asset local write would land
+    // inside a signed argument and silently corrupt authenticated data. Fail closed instead.
+    if args.end() > ASSET_LOCAL_BASE {
+        return Err(CodegenError::Unsupported {
+            what: "the entry argument region overruns the scratch memory floor".to_string(),
+            span: entry.span,
+        });
+    }
     b.op(Instr::Halt);
     Ok(args)
 }
