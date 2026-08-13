@@ -3,10 +3,12 @@
 
 use crate::error::TypeError;
 use crate::model::Model;
-use quanta_ast::{Clause, EntryDecl, Expr, Item, Stmt};
+use quanta_ast::{Clause, EntryDecl, Expr, GenericArg, Item, Stmt, Type};
 use std::collections::HashSet;
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
+    check_no_duplicate_fields(model)?;
+    check_no_duplicate_entries(model)?;
     for item in &model.contract.items {
         if let Item::Genesis(g) = item {
             for stmt in &g.body {
@@ -18,6 +20,68 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
         check_entry(model, entry)?;
     }
     Ok(())
+}
+
+// A field declared twice makes the type checker and the code generator disagree about it: the model
+// keeps the last declaration while the layout keeps the first. Reject it so the two never diverge.
+fn check_no_duplicate_fields(model: &Model) -> Result<(), TypeError> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    for item in &model.contract.items {
+        if let Item::State(block) = item {
+            for field in &block.fields {
+                if !seen.insert(field.name.text.as_str()) {
+                    return Err(TypeError::new(
+                        format!("state field `{}` is declared more than once", field.name.text),
+                        field.name.span,
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+// Two entries with the same name and parameter types hash to one selector, so dispatch would reach
+// only the first and silently shadow the second. Reject the collision at its source.
+fn check_no_duplicate_entries(model: &Model) -> Result<(), TypeError> {
+    let mut seen: HashSet<String> = HashSet::new();
+    for entry in &model.entries {
+        let signature = entry_signature(entry);
+        if !seen.insert(signature.clone()) {
+            return Err(TypeError::new(
+                format!("entry `{signature}` is declared more than once; it collides on one selector"),
+                entry.name.span,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn entry_signature(entry: &EntryDecl) -> String {
+    let params = entry
+        .params
+        .iter()
+        .map(|p| type_signature(&p.ty))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{}({params})", entry.name.text)
+}
+
+fn type_signature(ty: &Type) -> String {
+    if ty.args.is_empty() {
+        return ty.name.text.clone();
+    }
+    let args = ty
+        .args
+        .iter()
+        .map(|arg| match arg {
+            GenericArg::Type(t) => type_signature(t),
+            GenericArg::Int(i) => i.text.clone(),
+            GenericArg::MofN { m, n, .. } => format!("{} of {}", m.text, n.text),
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{}<{args}>", ty.name.text)
 }
 
 fn check_genesis_stmt(model: &Model, stmt: &Stmt) -> Result<(), TypeError> {
@@ -200,6 +264,28 @@ mod tests {
     fn writes_must_name_a_state_field() {
         let src = "contract C { state { a: u64; } entry f() writes(b) { } }";
         assert!(error_for(src).contains("not a state field"));
+    }
+
+    #[test]
+    fn a_field_declared_twice_is_rejected() {
+        let src = "contract C { state { a: u64; a: Q_Address; } entry f() { } }";
+        assert!(error_for(src).contains("declared more than once"));
+    }
+
+    #[test]
+    fn two_entries_that_collide_on_one_selector_are_rejected() {
+        let src = "contract C { state { a: u64; } \
+                   entry e() writes(a) { a = 1; } entry e() writes(a) { a = 2; } }";
+        assert!(error_for(src).contains("collides on one selector"));
+    }
+
+    #[test]
+    fn entries_overloaded_by_parameter_type_are_accepted() {
+        let src = "contract C { state { a: u64; } \
+                   entry e(x: u64) writes(a) { a = x; } entry e(t: Q_Address) writes(a) { a = 1; } }";
+        let program = quanta_parser::parse(src).expect("source parses");
+        let model = Model::build(&program.contracts[0]);
+        super::check(&model).expect("a valid overload is accepted");
     }
 
     #[test]
