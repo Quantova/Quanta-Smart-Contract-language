@@ -793,7 +793,25 @@ fn wide_sinks_stmt(
                 }
             }
         }
-        Stmt::Guard { expr, .. } | Stmt::Expr { expr, .. } => {
+        Stmt::Expr { expr, .. } => {
+            // A field written as the value of a credit/debit/set on a wide valued map is a wide sink
+            // too, otherwise a u128 order field feeding a Map<_, u128> is silently lowered at 8 bytes.
+            if let Expr::Call { callee, args, .. } = expr {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if matches!(name.text.as_str(), "credit" | "debit" | "set") {
+                        if let Expr::Ident(map) = base.as_ref() {
+                            if layout.map_value_is_wide(&map.text) {
+                                if let Some(value) = args.get(1) {
+                                    mark_wide_field_operands(params, asset_params, value, out);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            mark_wide_compares(layout, params, asset_params, expr, out)
+        }
+        Stmt::Guard { expr, .. } => {
             mark_wide_compares(layout, params, asset_params, expr, out)
         }
         Stmt::Let { value, .. } => mark_wide_compares(layout, params, asset_params, value, out),
