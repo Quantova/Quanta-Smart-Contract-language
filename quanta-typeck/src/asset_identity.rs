@@ -86,7 +86,86 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
             return Err(e);
         }
     }
+    if let Some(err) = amount_credited_while_sent(entry, &kinds) {
+        return Err(err);
+    }
     Ok(())
+}
+
+// An asset's amount written into a persistent ledger records spendable value; if the same asset is also
+// sent away instead of merged into a backing pool, that value is duplicated (the ledger is unbacked).
+fn amount_credited_while_sent(
+    entry: &EntryDecl,
+    kinds: &HashMap<String, String>,
+) -> Option<TypeError> {
+    let mut credited: HashMap<String, Span> = HashMap::new();
+    let mut sent: HashSet<String> = HashSet::new();
+    for stmt in &entry.body {
+        for_each_expr(stmt, &mut |e| {
+            if let Expr::Call { callee, args, span } = e {
+                if let Expr::Field { name, .. } = callee.as_ref() {
+                    if matches!(name.text.as_str(), "credit" | "set" | "insert") {
+                        if let Some(value) = args.last() {
+                            if let Some(asset) = amount_asset(value, kinds) {
+                                credited.entry(asset).or_insert(*span);
+                            }
+                        }
+                    }
+                }
+                if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") {
+                    if let Some(value) = args.get(1) {
+                        if let Some(asset) = sent_asset(value, kinds) {
+                            sent.insert(asset);
+                        }
+                    }
+                }
+            }
+        });
+    }
+    for (asset, span) in &credited {
+        if sent.contains(asset) {
+            return Some(TypeError::new(
+                format!(
+                    "asset `{asset}` has its amount credited to a ledger while the asset itself is sent \
+                     away; back the credit by merging the asset into a pool, do not return it"
+                ),
+                *span,
+            ));
+        }
+    }
+    None
+}
+
+fn amount_asset(expr: &Expr, kinds: &HashMap<String, String>) -> Option<String> {
+    if let Expr::Field { base, name, .. } = expr {
+        if name.text == "amount" {
+            if let Expr::Ident(id) = base.as_ref() {
+                if kinds.contains_key(id.text.as_str()) {
+                    return Some(id.text.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn sent_asset(expr: &Expr, kinds: &HashMap<String, String>) -> Option<String> {
+    match expr {
+        Expr::Ident(id) if kinds.contains_key(id.text.as_str()) => Some(id.text.clone()),
+        Expr::Call { callee, .. } => {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if name.text == "split" {
+                    if let Expr::Ident(id) = base.as_ref() {
+                        if kinds.contains_key(id.text.as_str()) {
+                            return Some(id.text.clone());
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 fn asset_flow_in_expr(
@@ -252,6 +331,22 @@ mod tests {
         let program = quanta_parser::parse(src).expect("source parses");
         let model = Model::build(&program.contracts[0]);
         super::check(&model).expect("checker should accept");
+    }
+
+    #[test]
+    fn crediting_an_asset_amount_while_sending_the_asset_is_rejected() {
+        let src = "contract C { state { balance: Map<Q_Address, u128>; } \
+                   entry inflate(funds: Q_Asset<QTOV>) conserves QTOV writes(balance) \
+                   { balance.credit(caller, funds.amount); send(caller, funds); } }";
+        assert!(error_for(src).contains("sent away"));
+    }
+
+    #[test]
+    fn crediting_an_asset_amount_while_merging_it_into_a_backing_pool_is_accepted() {
+        let src = "contract C { state { vault: Q_Asset<QTOV>; balance: Map<Q_Address, u128>; } \
+                   entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(vault, balance) \
+                   { balance.credit(caller, funds.amount); vault.merge(funds); } }";
+        ok(src);
     }
 
     #[test]
