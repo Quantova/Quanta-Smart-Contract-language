@@ -1924,6 +1924,13 @@ fn lower_name_prologue(
 
         ctx.name_keys.insert(name.clone(), scratch);
     }
+    // Keep the state-address bump allocator past the name-key region so a name key can never alias a
+    // materialized address or a map-value / id-key scratch, whatever the name-param count. The
+    // prologue runs before every other prologue and the body, so every later bump draw starts clear.
+    let name_region_end = NAME_KEY_SCRATCH_BASE + (names.len() as u64) * ADDR_BYTES;
+    if name_region_end > ctx.next_state_addr_scratch {
+        ctx.next_state_addr_scratch = name_region_end;
+    }
     Ok(())
 }
 

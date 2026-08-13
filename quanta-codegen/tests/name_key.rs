@@ -143,3 +143,53 @@ fn a_length_past_the_window_reverts() {
     let r = run_claim(&cc, &w, 33, 1);
     assert!(matches!(r, Err(Fault::DivByZero)), "a length past the 32 byte window reverts");
 }
+
+// Nineteen Q_Name params push name key #18 onto the old scratch-bump base, where a materialized state
+// address also parks. The write keyed by name #18 must still land on its own key, not on the address
+// the emit left in that region. Guards the scratch-bump base is kept past the whole name-key region.
+#[test]
+fn a_name_key_at_the_scratch_boundary_is_not_clobbered_by_a_materialized_address() {
+    const N: usize = 19;
+    let params: Vec<String> = (0..N).map(|i| format!("n{i}: Q_Name")).collect();
+    let src = format!(
+        "contract Alias {{ state {{ admin: Q_Address; reg: Map<Q_Name, u64>; }} \
+         entry e({}) reads(admin) writes(reg) {{ emit Seen(admin); reg.set(n{}, 42); }} \
+         event Seen(a: Q_Address); }}",
+        params.join(", "),
+        N - 1
+    );
+    let program = quanta_parser::parse(&src).expect("parse");
+    quanta_typeck::check(&program).expect("type check");
+    let cc = compile_contract(&program.contracts[0]).expect("compile");
+
+    let admin = [0x42u8; 32];
+    let mut storage = BTreeMap::new();
+    common::put_addr_slots(&mut storage, 0, &admin);
+
+    let mut mem = vec![0u8; 8192];
+    for i in 0..N {
+        let label = format!("name{i}");
+        let w = window(label.as_bytes());
+        let name_off = arg_off(&cc, "e", &format!("n{i}"));
+        let len_off = arg_off(&cc, "e", &format!("n{i}#len"));
+        mem[name_off..name_off + 32].copy_from_slice(&w);
+        mem[len_off..len_off + 8].copy_from_slice(&(label.len() as u64).to_be_bytes());
+    }
+
+    let sel = entry(&cc, "e").selector;
+    let out = Interpreter::for_entry(&cc.container, sel, GAS)
+        .expect("entry")
+        .with_storage(storage)
+        .with_memory(&mem)
+        .run()
+        .expect("halts");
+
+    let label = "name18";
+    let w18 = window(label.as_bytes());
+    let k18 = expected_key(&w18, label.len() as u64);
+    assert_eq!(
+        out.storage.get(&k18).copied(),
+        Some(42),
+        "reg[name18] took the write on its own key, not the slot the emitted admin address clobbered"
+    );
+}
