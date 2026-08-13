@@ -98,6 +98,16 @@ fn amount_credited_while_sent(
     entry: &EntryDecl,
     kinds: &HashMap<String, String>,
 ) -> Option<TypeError> {
+    // locals carrying an asset's amount, tracked through lets and arithmetic so a wrapped `X.amount`
+    // (`X.amount + 0`, `let a = X.amount`) is still recognized
+    let mut tainted: HashMap<String, String> = HashMap::new();
+    for stmt in &entry.body {
+        if let Stmt::Let { name, value, .. } = stmt {
+            if let Some(asset) = credited_asset(value, kinds, &tainted) {
+                tainted.insert(name.text.clone(), asset);
+            }
+        }
+    }
     let mut credited: HashMap<String, Span> = HashMap::new();
     let mut sent: HashSet<String> = HashSet::new();
     for stmt in &entry.body {
@@ -106,7 +116,7 @@ fn amount_credited_while_sent(
                 if let Expr::Field { name, .. } = callee.as_ref() {
                     if matches!(name.text.as_str(), "credit" | "set" | "insert") {
                         if let Some(value) = args.last() {
-                            if let Some(asset) = amount_asset(value, kinds) {
+                            if let Some(asset) = credited_asset(value, kinds, &tainted) {
                                 credited.entry(asset).or_insert(*span);
                             }
                         }
@@ -136,17 +146,33 @@ fn amount_credited_while_sent(
     None
 }
 
-fn amount_asset(expr: &Expr, kinds: &HashMap<String, String>) -> Option<String> {
-    if let Expr::Field { base, name, .. } = expr {
-        if name.text == "amount" {
-            if let Expr::Ident(id) = base.as_ref() {
-                if kinds.contains_key(id.text.as_str()) {
-                    return Some(id.text.clone());
+// the asset whose `.amount` an expression carries, following a tainted local or any wrapping arithmetic
+fn credited_asset(
+    expr: &Expr,
+    kinds: &HashMap<String, String>,
+    tainted: &HashMap<String, String>,
+) -> Option<String> {
+    let mut found = None;
+    walk(expr, &mut |e| {
+        if found.is_some() {
+            return;
+        }
+        if let Expr::Field { base, name, .. } = e {
+            if name.text == "amount" {
+                if let Expr::Ident(id) = base.as_ref() {
+                    if kinds.contains_key(id.text.as_str()) {
+                        found = Some(id.text.clone());
+                    }
                 }
             }
         }
-    }
-    None
+        if let Expr::Ident(id) = e {
+            if let Some(asset) = tainted.get(id.text.as_str()) {
+                found = Some(asset.clone());
+            }
+        }
+    });
+    found
 }
 
 fn sent_asset(expr: &Expr, kinds: &HashMap<String, String>) -> Option<String> {
@@ -338,6 +364,22 @@ mod tests {
         let src = "contract C { state { balance: Map<Q_Address, u128>; } \
                    entry inflate(funds: Q_Asset<QTOV>) conserves QTOV writes(balance) \
                    { balance.credit(caller, funds.amount); send(caller, funds); } }";
+        assert!(error_for(src).contains("sent away"));
+    }
+
+    #[test]
+    fn crediting_a_wrapped_asset_amount_while_sending_the_asset_is_rejected() {
+        let src = "contract C { state { balance: Map<Q_Address, u128>; } \
+                   entry cashback(funds: Q_Asset<QTOV>) conserves QTOV writes(balance) \
+                   { balance.credit(caller, funds.amount + 0); send(caller, funds); } }";
+        assert!(error_for(src).contains("sent away"));
+    }
+
+    #[test]
+    fn crediting_a_let_aliased_asset_amount_while_sending_the_asset_is_rejected() {
+        let src = "contract C { state { balance: Map<Q_Address, u128>; } \
+                   entry cashback(funds: Q_Asset<QTOV>) conserves QTOV writes(balance) \
+                   { let a = funds.amount; balance.credit(caller, a); send(caller, funds); } }";
         assert!(error_for(src).contains("sent away"));
     }
 
