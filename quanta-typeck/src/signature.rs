@@ -395,7 +395,7 @@ fn forged_map_authority(
     if !entry_moves_value(entry) || entry_binds_caller(model, entry, signed) {
         return None;
     }
-    let mut gate_expr = |expr: &Expr| map_lookup_on_param(model, params, signed, derived, expr);
+    let gate_expr = |expr: &Expr| map_lookup_on_param(model, params, signed, derived, expr);
     for clause in &entry.clauses {
         if let Clause::Limits { expr, .. } | Clause::Denies { expr, .. } = clause {
             if let Some((field, span)) = gate_expr(expr) {
