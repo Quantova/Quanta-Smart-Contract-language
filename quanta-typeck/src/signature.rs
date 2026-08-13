@@ -3,7 +3,7 @@
 
 use crate::error::TypeError;
 use crate::model::{is_quorum_param, Model};
-use quanta_ast::{BinOp, Clause, EntryDecl, Expr, GenericArg, Stmt, UnaryOp};
+use quanta_ast::{BinOp, Clause, EntryDecl, Expr, GenericArg, Param, Stmt, UnaryOp};
 use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
 
@@ -46,7 +46,40 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if let Some(err) = forged_caller_anchor(model, entry, &signed) {
         return Err(err);
     }
+    if let Some(err) = forged_signed_authority(model, entry) {
+        return Err(err);
+    }
     Ok(())
+}
+
+fn forged_signed_authority(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
+    if !entry_sends(entry) {
+        return None;
+    }
+    let backing: Vec<(&str, Span)> = entry
+        .params
+        .iter()
+        .filter_map(|p| authority_backing_field(p).map(|f| (f, p.name.span)))
+        .collect();
+    if backing.is_empty() {
+        return None;
+    }
+    if backing.iter().any(|(field, _)| authority_anchor_protected(model, field)) {
+        return None;
+    }
+    let (field, span) = backing[0];
+    Some(forged_signed_authority_error(field, span))
+}
+
+fn forged_signed_authority_error(field: &str, span: Span) -> TypeError {
+    TypeError::new(
+        format!(
+            "forged authority: this entry moves value under a `signed by` or quorum authority grounded \
+             in `{field}`, but an entry with no authority can write `{field}`, so the authority is \
+             forgeable; write `{field}` only from an authorized entry or from genesis"
+        ),
+        span,
+    )
 }
 
 fn forged_caller_anchor(model: &Model, entry: &EntryDecl, signed: &HashSet<&str>) -> Option<TypeError> {
@@ -129,6 +162,36 @@ fn authority_anchor_protected(model: &Model, field: &str) -> bool {
     anchor_protected(model, field, &mut prot).0
 }
 
+// the state field a `signed by X` param authenticates against
+fn signer_field(param: &Param) -> Option<&str> {
+    param.signed_by.as_ref().map(|i| i.text.as_str())
+}
+
+// the guardian set field a `Quorum<M of N, G>` param authenticates against
+fn quorum_set_field(param: &Param) -> Option<&str> {
+    if !is_quorum_param(param) {
+        return None;
+    }
+    param.ty.args.iter().find_map(|arg| match arg {
+        GenericArg::Type(t) => Some(t.name.text.as_str()),
+        _ => None,
+    })
+}
+
+// the state field a signed-by or quorum authority is grounded in
+fn authority_backing_field(param: &Param) -> Option<&str> {
+    signer_field(param).or_else(|| quorum_set_field(param))
+}
+
+// an entry carries real signed-by / quorum authority only when the field it authenticates against is protected
+pub(crate) fn has_protected_signed_authority(model: &Model, entry: &EntryDecl) -> bool {
+    entry
+        .params
+        .iter()
+        .filter_map(authority_backing_field)
+        .any(|field| authority_anchor_protected(model, field))
+}
+
 fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool) {
     prot.steps += 1;
     if prot.steps > AUTHORITY_STEP_BUDGET {
@@ -165,14 +228,14 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
 }
 
 fn writer_authorized(model: &Model, entry: &EntryDecl, prot: &mut Prot) -> (bool, bool) {
-    let signed: HashSet<&str> = entry
-        .params
-        .iter()
-        .filter(|p| p.signed_by.is_some())
-        .map(|p| p.name.text.as_str())
-        .collect();
-    if !signed.is_empty() || entry.params.iter().any(is_quorum_param) {
-        return (true, false);
+    // a signed-by / quorum writer is authorized only when the field it authenticates against is itself protected
+    for param in &entry.params {
+        if let Some(field) = authority_backing_field(param) {
+            let (protected, tainted) = anchor_protected(model, field, prot);
+            if protected {
+                return (true, tainted);
+            }
+        }
     }
     for clause in &entry.clauses {
         match clause {
@@ -375,8 +438,8 @@ fn entry_sends(entry: &EntryDecl) -> bool {
     sends
 }
 
-fn entry_binds_caller(model: &Model, entry: &EntryDecl, signed: &HashSet<&str>) -> bool {
-    if !signed.is_empty() || entry.params.iter().any(is_quorum_param) {
+fn entry_binds_caller(model: &Model, entry: &EntryDecl, _signed: &HashSet<&str>) -> bool {
+    if has_protected_signed_authority(model, entry) {
         return true;
     }
     for clause in &entry.clauses {
@@ -803,6 +866,24 @@ mod tests {
         let program = quanta_parser::parse(src).expect("source parses");
         let model = Model::build(&program.contracts[0]);
         super::check(&model).expect("checker should accept");
+    }
+
+    #[test]
+    fn a_send_signed_by_a_settable_owner_is_forged() {
+        let src = "contract C { state { owner: Q_Address; vault: Q_Asset<QTOV>; } \
+                   entry claim(a: Q_Address) writes(owner) { owner = a; } \
+                   entry drain(order: Rel signed by owner) conserves QTOV writes(vault) \
+                   { send(order.to, vault.split(order.amount)); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn a_send_under_a_quorum_over_a_settable_board_is_forged() {
+        let src = "contract C { state { board: GuardianSet<3>; vault: Q_Asset<QTOV>; } \
+                   entry set_board(nb: GuardianSet<3>) writes(board) { board = nb; } \
+                   entry disburse(order: Disbursement, approvals: Quorum<2 of 3, board>) conserves QTOV writes(vault) \
+                   { send(order.to, vault.split(order.amount)); } }";
+        assert!(error_for(src).contains("forgeable"));
     }
 
     #[test]
