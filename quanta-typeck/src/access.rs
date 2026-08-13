@@ -6,7 +6,7 @@ use crate::model::Model;
 use quanta_ast::{Clause, EntryDecl, Expr, Item, Stmt};
 use std::collections::HashSet;
 
-const MUTATORS: &[&str] = &["merge", "split", "credit", "insert", "remove", "set"];
+const MUTATORS: &[&str] = &["merge", "split", "credit", "debit", "insert", "remove", "set"];
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
     for item in &model.contract.items {
@@ -166,6 +166,13 @@ mod tests {
     fn a_mutating_method_needs_the_field_declared() {
         let src = "contract C { state { pool: Q_Asset<QTOV>; } \
                    entry f(funds: Q_Asset<QTOV>) conserves QTOV { pool.merge(funds); } }";
+        assert!(error_for(src).contains("without declaring it"));
+    }
+
+    #[test]
+    fn an_undeclared_debit_needs_the_field_declared() {
+        let src = "contract C { state { balances: Map<Q_Address, u64>; } \
+                   entry f(amt: u64) { balances.debit(caller, amt); } }";
         assert!(error_for(src).contains("without declaring it"));
     }
 
