@@ -52,6 +52,22 @@ fn contracts_json(contracts: &[CompiledContract]) -> String {
                 json_str(&mut out, &arg.key);
                 out.push_str(&format!(",\"offset\":{},\"width\":{}}}", arg.offset, arg.width));
             }
+            out.push_str("],\"signed_orders\":[");
+            for (s, order) in entry.signed_orders.iter().enumerate() {
+                if s > 0 {
+                    out.push(',');
+                }
+                out.push_str("{\"param\":");
+                json_str(&mut out, &order.param);
+                out.push_str(",\"fields\":[");
+                for (fi, field) in order.fields.iter().enumerate() {
+                    if fi > 0 {
+                        out.push(',');
+                    }
+                    json_str(&mut out, field);
+                }
+                out.push_str("]}");
+            }
             out.push_str("]}");
         }
         out.push_str("],\"events\":[");
@@ -162,5 +178,12 @@ mod tests {
         assert_eq!(width_of(&emit.json, "order.amount"), 16, "a u128 signed field is sixteen bytes");
         assert_eq!(width_of(&emit.json, "order.to"), 32, "an address signed field is a full word set");
         assert_eq!(width_of(&emit.json, "@caller"), 32, "the caller context is a full address");
+        // The message order the owner signs is amount then to (amount is read first in the body); the
+        // argument offsets put `to` first, so only this explicit list conveys the true preimage order.
+        assert!(
+            emit.json.contains("\"signed_orders\":[{\"param\":\"order\",\"fields\":[\"order.amount\",\"order.to\"]}]"),
+            "the descriptor exposes the signed fields in message order: {}",
+            emit.json
+        );
     }
 }

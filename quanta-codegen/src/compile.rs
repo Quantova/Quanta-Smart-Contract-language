@@ -4,7 +4,7 @@
 use crate::emit::{Builder, LinkError};
 use crate::error::CodegenError;
 use crate::layout::{Layout, ADDR_WORDS};
-use crate::lower::{lower_entry, EventSig};
+use crate::lower::{collect_signed_fields, lower_entry, EventSig};
 use crate::selector::{entry_selector, entry_signature, event_selector, event_signature};
 use qtv_vm::container::{Container, Entry, SELECTOR_BYTES};
 use qtv_vm::isa::Instr;
@@ -37,6 +37,15 @@ pub struct EntryArtifact {
     pub args: Vec<ArgSlot>,
     /// Names of the parameters declared `sealed`. Their bytes travel under key encapsulation and are
     pub sealed_params: Vec<String>,
+    /// For each `signed by` parameter, the fields the owner signs over, in the message order the
+    /// contract reconstructs them. A client must pack the preimage in exactly this order.
+    pub signed_orders: Vec<SignedOrder>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedOrder {
+    pub param: String,
+    pub fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +194,15 @@ fn compile_entries(
                 .iter()
                 .filter(|p| p.sealed)
                 .map(|p| p.name.text.clone())
+                .collect(),
+            signed_orders: entry
+                .params
+                .iter()
+                .filter(|p| p.signed_by.is_some())
+                .map(|p| SignedOrder {
+                    param: p.name.text.clone(),
+                    fields: collect_signed_fields(entry, &p.name.text),
+                })
                 .collect(),
         });
     }

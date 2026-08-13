@@ -2033,7 +2033,7 @@ fn copy_words_fixed(
 }
 
 // The signed field set is exactly the parameter fields the entry reads, in first read order.
-fn collect_signed_fields(entry: &EntryDecl, param: &str) -> Vec<String> {
+pub(crate) fn collect_signed_fields(entry: &EntryDecl, param: &str) -> Vec<String> {
     let mut out = Vec::new();
     for clause in &entry.clauses {
         match clause {
