@@ -2,32 +2,29 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::error::TypeError;
-use crate::model::{is_quorum_param, Model};
+use crate::model::Model;
+use crate::signature::has_protected_signed_authority;
 use quanta_ast::{Clause, EntryDecl, Expr, Stmt};
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
     for entry in &model.entries {
-        check_entry(entry)?;
+        check_entry(model, entry)?;
     }
     Ok(())
 }
 
-fn check_entry(entry: &EntryDecl) -> Result<(), TypeError> {
+fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     let mints = entry.clauses.iter().find_map(|c| match c {
         Clause::Mints { span, .. } => Some(*span),
         _ => None,
     });
 
     if let Some(span) = mints {
-        let gated = entry
-            .params
-            .iter()
-            .any(|p| p.signed_by.is_some() || is_quorum_param(p));
-        if !gated {
+        if !has_protected_signed_authority(model, entry) {
             return Err(TypeError::new(
                 format!(
-                    "conservation: entry `{}` mints supply without authority; a mint must be \
-                     gated by a signed party or a quorum",
+                    "conservation: entry `{}` mints supply without protected authority; a mint must be \
+                     gated by a signed party or quorum whose key is set only from an authorized entry or genesis",
                     entry.name.text
                 ),
                 span,
@@ -117,7 +114,16 @@ mod tests {
         let src = "contract C { asset BAD; state { supply: u128; } \
                    entry inflate(order: MintOrder) mints BAD writes(supply) \
                    { supply += order.amount; } }";
-        assert!(error_for(src).contains("without authority"));
+        assert!(error_for(src).contains("without protected authority"));
+    }
+
+    #[test]
+    fn a_mint_signed_by_a_settable_owner_is_rejected() {
+        let src = "contract C { asset TKN; state { owner: Q_Address; s: u128; } \
+                   entry claim(a: Q_Address) writes(owner) { owner = a; } \
+                   entry mint_to(order: MintOrder signed by owner) mints TKN writes(s) \
+                   { s += order.amount; } }";
+        assert!(error_for(src).contains("without protected authority"));
     }
 
     #[test]
