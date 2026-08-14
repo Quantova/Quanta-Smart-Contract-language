@@ -3286,11 +3286,16 @@ fn map_key_region_named(
     key_expr: &Expr,
     span: Span,
 ) -> Result<u64, CodegenError> {
-    if ctx.layout.map_key_is_id(map_name) {
-        let id_off = id_word_offset(ctx, key_expr, span)?;
-        return promote_id_key(ctx, id_off, span);
+    if ctx.layout.map_key_is_addr(map_name) {
+        return map_key_source(ctx, key_expr, span);
     }
-    map_key_source(ctx, key_expr, span)
+    if let Expr::Ident(id) = key_expr {
+        if let Some(off) = ctx.name_keys.get(&id.text).copied() {
+            return Ok(off);
+        }
+    }
+    let id_off = id_word_offset(ctx, key_expr, span)?;
+    promote_id_key(ctx, id_off, span)
 }
 
 fn id_word_offset(ctx: &mut Ctx, key_expr: &Expr, span: Span) -> Result<u64, CodegenError> {
@@ -3774,6 +3779,10 @@ fn is_scalar_addr(ctx: &Ctx, expr: &Expr) -> bool {
                 || id.text == "deployer"
                 || ctx.addr_params.contains(&id.text)
         }
+        Expr::Field { base, name, .. } => matches!(
+            base.as_ref(),
+            Expr::Ident(id) if ctx.address_keys.contains(&format!("{}.{}", id.text, name.text))
+        ),
         _ => false,
     }
 }
