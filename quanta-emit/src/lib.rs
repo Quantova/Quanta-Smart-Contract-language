@@ -186,4 +186,31 @@ mod tests {
             emit.json
         );
     }
+
+    #[test]
+    fn a_bare_signed_address_parameter_is_bound_at_full_width() {
+        let src = "import { Q_Asset } from \"quantova/primitives\"; \
+                   contract C { state { admin: Q_Address; vault: Q_Asset<QTOV>; } \
+                   genesis { admin = deployer; } \
+                   entry pay(who: Q_Address signed by admin) conserves QTOV writes(vault) \
+                   { send(who, vault.split(1000)); } }";
+        let emit = compile_json(src);
+        assert!(emit.ok, "the contract compiles: {}", emit.json);
+        assert_eq!(width_of(&emit.json, "who"), 32, "the recipient is a full address");
+        assert!(
+            emit.json.contains("\"signed_orders\":[{\"param\":\"who\",\"fields\":[\"who\"]}]"),
+            "the signer binds the bare address parameter it authorizes: {}",
+            emit.json
+        );
+    }
+
+    #[test]
+    fn a_signed_address_in_a_scalar_guard_is_bound_at_full_width() {
+        let src = "contract C { state { admin: Q_Address; owner: Q_Address; flag: u64; } \
+                   entry act(who: Q_Address signed by admin) writes(flag) \
+                   { guard who == owner; flag = 1; } }";
+        let emit = compile_json(src);
+        assert!(emit.ok, "the contract compiles: {}", emit.json);
+        assert_eq!(width_of(&emit.json, "who"), 32, "a scalar address compare binds the full address");
+    }
 }
