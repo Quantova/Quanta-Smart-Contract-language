@@ -344,6 +344,23 @@ mod tests {
     }
 
     #[test]
+    fn an_argument_read_narrow_then_as_an_address_is_rejected() {
+        // order.k is first lowered as a narrow scalar map key, sizing its argument slot to one
+        // word, then stored to a Q_Address field. Reading it back as a full address would over
+        // read the next argument, so the compiler must refuse the entry rather than emit that read.
+        let src = "contract C { state { owner: Q_Address; idx: Map<u64, u64>; nxt: u64; } \
+            entry op(order: Thing, filler: u64) writes(owner, idx, nxt) { \
+            idx.set(order.k, 1); nxt = filler; owner = order.k; } }";
+        let program = quanta_parser::parse(src).expect("parse");
+        quanta_typeck::check(&program).expect("typecheck");
+        let result = compile(&program);
+        assert!(
+            matches!(&result, Err(CodegenError::Rejected { .. })),
+            "an argument read narrow then as an address must be rejected, got {result:?}"
+        );
+    }
+
+    #[test]
     fn the_entry_carries_its_selector_and_writes() {
         let cc = compile_one(METER);
         assert_eq!(cc.container.entries.len(), 1);

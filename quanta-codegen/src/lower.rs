@@ -144,6 +144,9 @@ pub struct Args {
     order: Vec<String>,
     next: u64,
     deploy_params: Vec<DeployParamSlot>,
+    // The name of an argument whose slot was later read wider than it was first sized, which would
+    // over read the next argument. The entry is rejected rather than emit that read.
+    oversize: Option<String>,
 }
 
 impl Args {
@@ -153,6 +156,9 @@ impl Args {
 
     fn offset_of_width(&mut self, key: &str, bytes: u64) -> u64 {
         if let Some(off) = self.offsets.get(key) {
+            if self.widths.get(key).is_some_and(|locked| *locked < bytes) {
+                self.oversize.get_or_insert_with(|| key.to_string());
+            }
             return *off;
         }
         let off = ARG_BASE + self.next;
@@ -183,6 +189,10 @@ impl Args {
 
     fn end(&self) -> u64 {
         ARG_BASE + self.next
+    }
+
+    fn oversized_arg(&self) -> Option<&str> {
+        self.oversize.as_deref()
     }
 
     pub fn deploy_params(&self) -> &[DeployParamSlot] {
@@ -1319,6 +1329,14 @@ pub fn lower_entry(
                 ctx.regs.free(r);
             }
         }
+    }
+    if let Some(field) = args.oversized_arg() {
+        return Err(CodegenError::Rejected {
+            what: format!(
+                "the argument `{field}` is read both as a narrow value and as a full address, so its slot cannot carry the address without over reading the next argument"
+            ),
+            span: entry.span,
+        });
     }
     if args.end() > ASSET_LOCAL_BASE {
         return Err(CodegenError::Unsupported {
