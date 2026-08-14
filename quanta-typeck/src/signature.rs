@@ -428,6 +428,7 @@ fn map_authority_error(field: &str, span: Span) -> TypeError {
 // key is NOT the caller. A self `debit(caller, ...)` (a transfer or an nft count) moves only the
 // caller's own balance and needs no extra authority; debiting someone else's account does.
 fn entry_moves_value(entry: &EntryDecl) -> bool {
+    let (reads_of, sub_locals) = local_seize_taint(entry);
     let mut moves = false;
     for stmt in &entry.body {
         stmt_exprs(stmt, &mut |e| {
@@ -446,7 +447,7 @@ fn entry_moves_value(entry: &EntryDecl) -> bool {
                         let foreign_key = !matches!(args.first(), Some(Expr::Caller { .. }));
                         if foreign_key {
                             if let (Expr::Ident(map), Some(value)) = (base.as_ref(), args.get(1)) {
-                                if decreases_map_read(&map.text, value) {
+                                if set_seizes_map(&map.text, value, &reads_of, &sub_locals) {
                                     moves = true;
                                 }
                             }
@@ -460,16 +461,76 @@ fn entry_moves_value(entry: &EntryDecl) -> bool {
     moves
 }
 
-fn decreases_map_read(map: &str, value: &Expr) -> bool {
+fn set_seizes_map(
+    map: &str,
+    value: &Expr,
+    reads_of: &HashMap<String, HashSet<String>>,
+    sub_locals: &HashSet<String>,
+) -> bool {
+    expr_reads_map(map, value, reads_of) && expr_has_sub(value, sub_locals)
+}
+
+fn expr_reads_map(map: &str, expr: &Expr, reads_of: &HashMap<String, HashSet<String>>) -> bool {
     let mut found = false;
-    walk(value, &mut |e| {
-        if let Expr::Binary { op: BinOp::Sub, left, .. } = e {
-            if reads_map(map, left.as_ref()) {
+    walk(expr, &mut |e| {
+        if reads_map(map, e) {
+            found = true;
+        }
+        if let Expr::Ident(id) = e {
+            if reads_of.get(id.text.as_str()).is_some_and(|s| s.contains(map)) {
                 found = true;
             }
         }
     });
     found
+}
+
+fn expr_has_sub(expr: &Expr, sub_locals: &HashSet<String>) -> bool {
+    let mut found = false;
+    walk(expr, &mut |e| {
+        if matches!(e, Expr::Binary { op: BinOp::Sub, .. }) {
+            found = true;
+        }
+        if let Expr::Ident(id) = e {
+            if sub_locals.contains(id.text.as_str()) {
+                found = true;
+            }
+        }
+    });
+    found
+}
+
+fn local_seize_taint(entry: &EntryDecl) -> (HashMap<String, HashSet<String>>, HashSet<String>) {
+    let mut reads_of: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut sub_locals: HashSet<String> = HashSet::new();
+    for stmt in &entry.body {
+        if let Stmt::Let { name, value, .. } = stmt {
+            let mut maps: HashSet<String> = HashSet::new();
+            walk(value, &mut |e| {
+                if let Expr::Call { callee, .. } = e {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if name.text == "get" {
+                            if let Expr::Ident(id) = base.as_ref() {
+                                maps.insert(id.text.clone());
+                            }
+                        }
+                    }
+                }
+                if let Expr::Ident(id) = e {
+                    if let Some(s) = reads_of.get(id.text.as_str()) {
+                        maps.extend(s.iter().cloned());
+                    }
+                }
+            });
+            if !maps.is_empty() {
+                reads_of.insert(name.text.clone(), maps);
+            }
+            if expr_has_sub(value, &sub_locals) {
+                sub_locals.insert(name.text.clone());
+            }
+        }
+    }
+    (reads_of, sub_locals)
 }
 
 fn reads_map(map: &str, expr: &Expr) -> bool {
@@ -941,6 +1002,42 @@ mod tests {
                    entry seize(order: SeizeOrder) writes(balances) \
                    { guard caller == owner; \
                      balances.insert(order.victim, balances.get(order.victim) - order.amount); \
+                     balances.credit(caller, order.amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn seizing_another_account_via_a_let_aliased_map_read_is_forged() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry seize(order: SeizeOrder) writes(balances) \
+                   { guard caller == owner; \
+                     let cur = balances.get(order.victim); \
+                     balances.set(order.victim, cur - order.amount); \
+                     balances.credit(caller, order.amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn seizing_another_account_via_a_split_statement_debit_is_forged() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry seize(order: SeizeOrder) writes(balances) \
+                   { guard caller == owner; \
+                     let cur = balances.get(order.victim); \
+                     let newbal = cur - order.amount; \
+                     balances.set(order.victim, newbal); \
+                     balances.credit(caller, order.amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn seizing_another_account_via_arithmetic_wrapped_map_read_is_forged() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry seize(order: SeizeOrder) writes(balances) \
+                   { guard caller == owner; \
+                     balances.insert(order.victim, (balances.get(order.victim) + 0) - order.amount); \
                      balances.credit(caller, order.amount); } }";
         assert!(error_for(src).contains("forgeable"));
     }
