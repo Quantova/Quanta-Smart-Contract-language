@@ -440,12 +440,47 @@ fn entry_moves_value(entry: &EntryDecl) -> bool {
                             moves = true;
                         }
                     }
+                    Expr::Field { base, name, .. }
+                        if matches!(name.text.as_str(), "set" | "insert") =>
+                    {
+                        let foreign_key = !matches!(args.first(), Some(Expr::Caller { .. }));
+                        if foreign_key {
+                            if let (Expr::Ident(map), Some(value)) = (base.as_ref(), args.get(1)) {
+                                if decreases_map_read(&map.text, value) {
+                                    moves = true;
+                                }
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
         });
     }
     moves
+}
+
+fn decreases_map_read(map: &str, value: &Expr) -> bool {
+    let mut found = false;
+    walk(value, &mut |e| {
+        if let Expr::Binary { op: BinOp::Sub, left, .. } = e {
+            if reads_map(map, left.as_ref()) {
+                found = true;
+            }
+        }
+    });
+    found
+}
+
+fn reads_map(map: &str, expr: &Expr) -> bool {
+    if let Expr::Call { callee, .. } = expr {
+        if let Expr::Field { base, name, .. } = callee.as_ref() {
+            if name.text == "get" {
+                return matches!(base.as_ref(), Expr::Ident(id) if id.text == map);
+            }
+        }
+    }
+    false
 }
 
 fn entry_binds_caller(model: &Model, entry: &EntryDecl, _signed: &HashSet<&str>) -> bool {
@@ -886,6 +921,38 @@ mod tests {
                    { guard caller == owner; balances.debit(order.victim, order.amount); \
                      balances.credit(caller, order.amount); } }";
         assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn seizing_another_account_via_a_set_debit_under_a_settable_owner_is_forged() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry seize(order: SeizeOrder) writes(balances) \
+                   { guard caller == owner; \
+                     balances.set(order.victim, balances.get(order.victim) - order.amount); \
+                     balances.credit(caller, order.amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn seizing_another_account_via_an_insert_debit_under_a_settable_owner_is_forged() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry seize(order: SeizeOrder) writes(balances) \
+                   { guard caller == owner; \
+                     balances.insert(order.victim, balances.get(order.victim) - order.amount); \
+                     balances.credit(caller, order.amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn a_self_set_decrement_transfer_needs_no_extra_authority() {
+        let src = "contract C { state { balances: Map<Q_Address, u64>; } \
+                   entry transfer(to: Q_Address, amount: u64) writes(balances) \
+                   { guard balances.get(caller) >= amount; \
+                     balances.set(caller, balances.get(caller) - amount); \
+                     balances.credit(to, amount); } }";
+        ok(src);
     }
 
     #[test]
