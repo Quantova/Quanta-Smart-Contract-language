@@ -1239,6 +1239,9 @@ pub fn lower_entry(
         ctx.is_genesis = is_genesis;
         let address_key_list = collect_address_keys(layout, &params, entry);
         ctx.address_keys = address_key_list.iter().cloned().collect();
+        for key in collect_address_valued_fields(layout, &params, events, entry) {
+            ctx.address_keys.insert(key);
+        }
         ctx.name_params = entry
             .params
             .iter()
@@ -3118,6 +3121,97 @@ fn address_keys_expr(expr: &Expr, layout: &Layout, params: &HashSet<String>, out
     {
         address_keys_expr(expr, layout, params, out);
     }
+}
+
+fn collect_address_valued_fields(
+    layout: &Layout,
+    params: &HashSet<String>,
+    events: &HashMap<String, EventSig>,
+    entry: &EntryDecl,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => {
+                addr_valued_expr(layout, params, expr, &mut out)
+            }
+            Clause::After { target, from, .. } => {
+                if let AfterTarget::Expr(expr) = target {
+                    addr_valued_expr(layout, params, expr, &mut out);
+                }
+                if let Some(expr) = from {
+                    addr_valued_expr(layout, params, expr, &mut out);
+                }
+            }
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        match stmt {
+            Stmt::Assign { target, value, .. } => {
+                if let Expr::Ident(id) = target {
+                    if layout.is_addr(&id.text) {
+                        push_addr_key(value, params, &mut out);
+                    }
+                }
+                addr_valued_expr(layout, params, value, &mut out);
+            }
+            Stmt::Emit { name, args, .. } => {
+                if let Some(sig) = events.get(&name.text) {
+                    for (i, arg) in args.iter().enumerate() {
+                        if sig.field_words.get(i).copied() == Some(ADDR_WORDS) {
+                            push_addr_key(arg, params, &mut out);
+                        }
+                        addr_valued_expr(layout, params, arg, &mut out);
+                    }
+                }
+            }
+            Stmt::Guard { expr, .. } | Stmt::Expr { expr, .. } => {
+                addr_valued_expr(layout, params, expr, &mut out)
+            }
+            Stmt::Let { value, .. } => addr_valued_expr(layout, params, value, &mut out),
+        }
+    }
+    out
+}
+
+fn addr_valued_expr(layout: &Layout, params: &HashSet<String>, expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::Binary { op, left, right, .. } => {
+            if matches!(op, BinOp::Eq | BinOp::Ne) {
+                if is_addr_map_get(layout, left) {
+                    push_addr_key(right, params, out);
+                }
+                if is_addr_map_get(layout, right) {
+                    push_addr_key(left, params, out);
+                }
+            }
+            addr_valued_expr(layout, params, left, out);
+            addr_valued_expr(layout, params, right, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            addr_valued_expr(layout, params, expr, out)
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                addr_valued_expr(layout, params, arg, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_addr_map_get(layout: &Layout, expr: &Expr) -> bool {
+    if let Expr::Call { callee, .. } = expr {
+        if let Expr::Field { base, name, .. } = callee.as_ref() {
+            if name.text == "get" {
+                if let Expr::Ident(id) = base.as_ref() {
+                    return layout.map_value_is_addr(&id.text);
+                }
+            }
+        }
+    }
+    false
 }
 
 fn map_key_source(ctx: &mut Ctx, key_expr: &Expr, span: Span) -> Result<u64, CodegenError> {
