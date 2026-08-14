@@ -53,7 +53,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
 }
 
 fn forged_signed_authority(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
-    if !entry_moves_value(entry) {
+    if !entry_moves_value(model, entry) {
         return None;
     }
     let backing: Vec<(&str, Span)> = entry
@@ -83,7 +83,7 @@ fn forged_signed_authority_error(field: &str, span: Span) -> TypeError {
 }
 
 fn forged_caller_anchor(model: &Model, entry: &EntryDecl, signed: &HashSet<&str>) -> Option<TypeError> {
-    if !entry_moves_value(entry) || !signed.is_empty() || entry.params.iter().any(is_quorum_param) {
+    if !entry_moves_value(model, entry) || !signed.is_empty() || entry.params.iter().any(is_quorum_param) {
         return None;
     }
     if entry_binds_caller(model, entry, signed) {
@@ -392,7 +392,7 @@ fn forged_map_authority(
     signed: &HashSet<&str>,
     derived: &HashSet<String>,
 ) -> Option<TypeError> {
-    if !entry_moves_value(entry) || entry_binds_caller(model, entry, signed) {
+    if !entry_moves_value(model, entry) || entry_binds_caller(model, entry, signed) {
         return None;
     }
     let gate_expr = |expr: &Expr| map_lookup_on_param(model, params, signed, derived, expr);
@@ -427,8 +427,9 @@ fn map_authority_error(field: &str, span: Span) -> TypeError {
 // value leaves through `send`, and moves out of another party's ledger balance through a `debit` whose
 // key is NOT the caller. A self `debit(caller, ...)` (a transfer or an nft count) moves only the
 // caller's own balance and needs no extra authority; debiting someone else's account does.
-fn entry_moves_value(entry: &EntryDecl) -> bool {
+fn entry_moves_value(model: &Model, entry: &EntryDecl) -> bool {
     let (reads_of, sub_locals) = local_seize_taint(entry);
+    let ledgers = ledger_maps(model);
     let mut moves = false;
     for stmt in &entry.body {
         stmt_exprs(stmt, &mut |e| {
@@ -442,13 +443,18 @@ fn entry_moves_value(entry: &EntryDecl) -> bool {
                         }
                     }
                     Expr::Field { base, name, .. }
-                        if matches!(name.text.as_str(), "set" | "insert") =>
+                        if matches!(name.text.as_str(), "set" | "insert" | "remove") =>
                     {
                         let foreign_key = !matches!(args.first(), Some(Expr::Caller { .. }));
                         if foreign_key {
-                            if let (Expr::Ident(map), Some(value)) = (base.as_ref(), args.get(1)) {
-                                if set_seizes_map(&map.text, value, &reads_of, &sub_locals) {
+                            if let Expr::Ident(map) = base.as_ref() {
+                                if ledgers.contains(&map.text) {
                                     moves = true;
+                                }
+                                if let Some(value) = args.get(1) {
+                                    if set_seizes_map(&map.text, value, &reads_of, &sub_locals) {
+                                        moves = true;
+                                    }
                                 }
                             }
                         }
@@ -459,6 +465,26 @@ fn entry_moves_value(entry: &EntryDecl) -> bool {
         });
     }
     moves
+}
+
+fn ledger_maps(model: &Model) -> HashSet<String> {
+    let mut maps = HashSet::new();
+    for entry in &model.entries {
+        for stmt in &entry.body {
+            stmt_exprs(stmt, &mut |e| {
+                if let Expr::Call { callee, .. } = e {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if matches!(name.text.as_str(), "credit" | "debit") {
+                            if let Expr::Ident(id) = base.as_ref() {
+                                maps.insert(id.text.clone());
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+    maps
 }
 
 fn set_seizes_map(
@@ -1040,6 +1066,50 @@ mod tests {
                      balances.insert(order.victim, (balances.get(order.victim) + 0) - order.amount); \
                      balances.credit(caller, order.amount); } }";
         assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn zeroing_another_ledger_entry_under_a_settable_owner_is_forged() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry seize(order: SeizeOrder) writes(balances) \
+                   { guard caller == owner; \
+                     balances.credit(caller, balances.get(order.victim)); \
+                     balances.set(order.victim, 0); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn removing_another_ledger_entry_under_a_settable_owner_is_forged() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry seize(order: SeizeOrder) writes(balances) \
+                   { guard caller == owner; \
+                     balances.credit(caller, balances.get(order.victim)); \
+                     balances.remove(order.victim); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn reducing_a_ledger_entry_from_a_mirror_map_under_a_settable_owner_is_forged() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; shadow: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry seize(order: SeizeOrder) writes(balances) \
+                   { guard caller == owner; \
+                     balances.set(order.victim, shadow.get(order.victim) - order.amount); \
+                     balances.credit(caller, order.amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn a_non_ledger_foreign_set_to_zero_is_not_a_value_move() {
+        // a flag or price map cleared with set(k,0) is not a ledger without a credit or debit, so
+        // zeroing a non caller entry under a settable owner stays accepted and is not over flagged
+        let src = "contract C { state { owner: Q_Address; listings: Map<Q_Id, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry delist(order: Delist) writes(listings) \
+                   { guard caller == owner; listings.set(order.id, 0); } }";
+        ok(src);
     }
 
     #[test]
