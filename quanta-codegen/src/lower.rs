@@ -2102,6 +2102,14 @@ fn collect_fields_stmt(stmt: &Stmt, param: &str, out: &mut Vec<String>) {
 
 fn collect_fields_expr(expr: &Expr, param: &str, out: &mut Vec<String>) {
     match expr {
+        Expr::Ident(id) => {
+            if id.text == param {
+                let key = param.to_string();
+                if !out.contains(&key) {
+                    out.push(key);
+                }
+            }
+        }
         Expr::Field { base, name, .. } => {
             if let Expr::Ident(id) = base.as_ref() {
                 if id.text == param {
@@ -3129,18 +3137,24 @@ fn collect_address_valued_fields(
     events: &HashMap<String, EventSig>,
     entry: &EntryDecl,
 ) -> Vec<String> {
+    let addr_params: HashSet<String> = entry
+        .params
+        .iter()
+        .filter(|p| p.ty.name.text == ADDR_TYPE)
+        .map(|p| p.name.text.clone())
+        .collect();
     let mut out = Vec::new();
     for clause in &entry.clauses {
         match clause {
             Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => {
-                addr_valued_expr(layout, params, expr, &mut out)
+                addr_valued_expr(layout, params, &addr_params, expr, &mut out)
             }
             Clause::After { target, from, .. } => {
                 if let AfterTarget::Expr(expr) = target {
-                    addr_valued_expr(layout, params, expr, &mut out);
+                    addr_valued_expr(layout, params, &addr_params, expr, &mut out);
                 }
                 if let Some(expr) = from {
-                    addr_valued_expr(layout, params, expr, &mut out);
+                    addr_valued_expr(layout, params, &addr_params, expr, &mut out);
                 }
             }
             _ => {}
@@ -3154,7 +3168,7 @@ fn collect_address_valued_fields(
                         push_addr_key(value, params, &mut out);
                     }
                 }
-                addr_valued_expr(layout, params, value, &mut out);
+                addr_valued_expr(layout, params, &addr_params, value, &mut out);
             }
             Stmt::Emit { name, args, .. } => {
                 if let Some(sig) = events.get(&name.text) {
@@ -3162,20 +3176,26 @@ fn collect_address_valued_fields(
                         if sig.field_words.get(i).copied() == Some(ADDR_WORDS) {
                             push_addr_key(arg, params, &mut out);
                         }
-                        addr_valued_expr(layout, params, arg, &mut out);
+                        addr_valued_expr(layout, params, &addr_params, arg, &mut out);
                     }
                 }
             }
             Stmt::Guard { expr, .. } | Stmt::Expr { expr, .. } => {
-                addr_valued_expr(layout, params, expr, &mut out)
+                addr_valued_expr(layout, params, &addr_params, expr, &mut out)
             }
-            Stmt::Let { value, .. } => addr_valued_expr(layout, params, value, &mut out),
+            Stmt::Let { value, .. } => addr_valued_expr(layout, params, &addr_params, value, &mut out),
         }
     }
     out
 }
 
-fn addr_valued_expr(layout: &Layout, params: &HashSet<String>, expr: &Expr, out: &mut Vec<String>) {
+fn addr_valued_expr(
+    layout: &Layout,
+    params: &HashSet<String>,
+    addr_params: &HashSet<String>,
+    expr: &Expr,
+    out: &mut Vec<String>,
+) {
     match expr {
         Expr::Binary { op, left, right, .. } => {
             if matches!(op, BinOp::Eq | BinOp::Ne) {
@@ -3185,19 +3205,35 @@ fn addr_valued_expr(layout: &Layout, params: &HashSet<String>, expr: &Expr, out:
                 if is_addr_map_get(layout, right) {
                     push_addr_key(left, params, out);
                 }
+                if is_addr_scalar_form(layout, addr_params, left)
+                    && is_addr_scalar_form(layout, addr_params, right)
+                {
+                    push_addr_key(left, params, out);
+                    push_addr_key(right, params, out);
+                }
             }
-            addr_valued_expr(layout, params, left, out);
-            addr_valued_expr(layout, params, right, out);
+            addr_valued_expr(layout, params, addr_params, left, out);
+            addr_valued_expr(layout, params, addr_params, right, out);
         }
         Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
-            addr_valued_expr(layout, params, expr, out)
+            addr_valued_expr(layout, params, addr_params, expr, out)
         }
         Expr::Call { args, .. } => {
             for arg in args {
-                addr_valued_expr(layout, params, arg, out);
+                addr_valued_expr(layout, params, addr_params, arg, out);
             }
         }
         _ => {}
+    }
+}
+
+fn is_addr_scalar_form(layout: &Layout, addr_params: &HashSet<String>, expr: &Expr) -> bool {
+    match expr {
+        Expr::Caller { .. } => true,
+        Expr::Ident(id) => {
+            id.text == "deployer" || layout.is_addr(&id.text) || addr_params.contains(&id.text)
+        }
+        _ => false,
     }
 }
 
