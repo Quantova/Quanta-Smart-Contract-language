@@ -436,7 +436,7 @@ fn entry_moves_value(model: &Model, entry: &EntryDecl) -> bool {
         .filter(|p| p.ty.name.text == "Q_Asset")
         .map(|p| p.name.text.as_str())
         .collect();
-    let self_spend = entry_self_spends(&ledgers, entry, &reads_of, &sub_locals);
+    let spends = self_spend_amounts(&ledgers, entry, &reads_of, &sub_locals);
     let mut moves = false;
     for stmt in &entry.body {
         if let Stmt::Assign { target, .. } = stmt {
@@ -458,8 +458,10 @@ fn entry_moves_value(model: &Model, entry: &EntryDecl) -> bool {
                     }
                     Expr::Field { base, name, .. } if name.text == "credit" => {
                         if let Expr::Ident(map) = base.as_ref() {
-                            let backed = self_spend
-                                || args.get(1).is_some_and(|v| value_reads_asset(v, &asset_params));
+                            let backed = args.get(1).is_some_and(|v| {
+                                value_reads_asset(v, &asset_params)
+                                    || spends.iter().any(|s| expr_eq(s, v))
+                            });
                             if !backed && ledgers.contains(&map.text) {
                                 moves = true;
                             }
@@ -483,8 +485,7 @@ fn entry_moves_value(model: &Model, entry: &EntryDecl) -> bool {
                                 if let Some(value) = args.get(1) {
                                     let reads = expr_reads_map(&map.text, value, &reads_of);
                                     let decrement = reads && expr_has_sub(value, &sub_locals);
-                                    let backed =
-                                        self_spend || value_reads_asset(value, &asset_params);
+                                    let backed = value_reads_asset(value, &asset_params);
                                     if !decrement && !backed && (ledgers.contains(&map.text) || reads)
                                     {
                                         moves = true;
@@ -513,13 +514,13 @@ fn value_reads_asset(value: &Expr, asset_params: &HashSet<&str>) -> bool {
     found
 }
 
-fn entry_self_spends(
+fn self_spend_amounts(
     ledgers: &HashSet<String>,
     entry: &EntryDecl,
     reads_of: &HashMap<String, HashSet<String>>,
     sub_locals: &HashSet<String>,
-) -> bool {
-    let mut spends = false;
+) -> Vec<Expr> {
+    let mut amounts = Vec::new();
     for stmt in &entry.body {
         stmt_exprs(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
@@ -528,7 +529,9 @@ fn entry_self_spends(
                         return;
                     }
                     if name.text == "debit" {
-                        spends = true;
+                        if let Some(amt) = args.get(1) {
+                            amounts.push(amt.clone());
+                        }
                     }
                     if matches!(name.text.as_str(), "set" | "insert") {
                         if let Expr::Ident(map) = base.as_ref() {
@@ -537,7 +540,9 @@ fn entry_self_spends(
                                     if expr_reads_map(&map.text, value, reads_of)
                                         && expr_has_sub(value, sub_locals)
                                     {
-                                        spends = true;
+                                        if let Some(sub) = subtracted_amount(value) {
+                                            amounts.push(sub.clone());
+                                        }
                                     }
                                 }
                             }
@@ -547,7 +552,45 @@ fn entry_self_spends(
             }
         });
     }
-    spends
+    amounts
+}
+
+fn subtracted_amount(expr: &Expr) -> Option<&Expr> {
+    if let Expr::Binary {
+        op: BinOp::Sub,
+        right,
+        ..
+    } = expr
+    {
+        return Some(right);
+    }
+    None
+}
+
+fn expr_eq(a: &Expr, b: &Expr) -> bool {
+    match (a, b) {
+        (Expr::Int(x), Expr::Int(y)) => x.text.replace('_', "") == y.text.replace('_', ""),
+        (Expr::Str(x), Expr::Str(y)) => x.value == y.value,
+        (Expr::Ident(x), Expr::Ident(y)) => x.text == y.text,
+        (Expr::Caller { .. }, Expr::Caller { .. }) => true,
+        (Expr::Now { .. }, Expr::Now { .. }) => true,
+        (Expr::Field { base: ba, name: na, .. }, Expr::Field { base: bb, name: nb, .. }) => {
+            na.text == nb.text && expr_eq(ba, bb)
+        }
+        (Expr::Unary { op: oa, expr: ea, .. }, Expr::Unary { op: ob, expr: eb, .. }) => {
+            oa == ob && expr_eq(ea, eb)
+        }
+        (
+            Expr::Binary { op: oa, left: la, right: ra, .. },
+            Expr::Binary { op: ob, left: lb, right: rb, .. },
+        ) => oa == ob && expr_eq(la, lb) && expr_eq(ra, rb),
+        (Expr::Call { callee: ca, args: aa, .. }, Expr::Call { callee: cb, args: ab, .. }) => {
+            expr_eq(ca, cb) && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| expr_eq(x, y))
+        }
+        (Expr::Checked { expr: ea, .. }, Expr::Checked { expr: eb, .. }) => expr_eq(ea, eb),
+        (Expr::Wrapping { expr: ea, .. }, Expr::Wrapping { expr: eb, .. }) => expr_eq(ea, eb),
+        _ => false,
+    }
 }
 
 fn ledger_maps(model: &Model) -> HashSet<String> {
@@ -1281,6 +1324,68 @@ mod tests {
                     stakes.credit(caller, funds.amount);
                 }
             }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn a_zero_self_debit_does_not_back_a_self_credit() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry seize(order: SeizeOrder) writes(balances) \
+                   { guard caller == owner; balances.debit(caller, 0); \
+                     balances.credit(caller, order.amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn a_zero_self_debit_does_not_back_a_mint_to_another_account() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry mint(order: MintOrder) writes(balances) \
+                   { guard caller == owner; balances.debit(caller, 0); \
+                     balances.credit(order.to, order.amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn a_self_debit_of_a_mismatched_amount_does_not_back_a_credit() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry seize(order: SeizeOrder) writes(balances) \
+                   { guard caller == owner; balances.debit(caller, order.pad); \
+                     balances.credit(caller, order.amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn a_zero_self_set_decrement_does_not_back_a_credit() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry seize(order: SeizeOrder) writes(balances) \
+                   { guard caller == owner; \
+                     balances.set(caller, balances.get(caller) - 0); \
+                     balances.credit(caller, order.amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn a_self_spend_does_not_back_an_absolute_self_overwrite() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry give(to: Q_Address, amount: u64) writes(balances) { balances.credit(to, amount); } \
+                   entry inflate(order: In) writes(balances) \
+                   { guard caller == owner; balances.debit(caller, 0); \
+                     balances.set(caller, order.amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn a_matched_self_debit_transfer_under_a_settable_owner_is_allowed() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry pay(order: PayOrder) writes(balances) \
+                   { guard caller == owner; balances.debit(caller, order.amount); \
+                     balances.credit(order.to, order.amount); } }";
         ok(src);
     }
 
