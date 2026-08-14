@@ -587,7 +587,8 @@ fn lower_unary(
     match op {
         UnaryOp::Not => {
             let r = lower_expr(ctx, expr, wrapping)?;
-            logical_not(ctx, r);
+            ctx.b.op(Instr::Ldi { d: SCRATCH, imm: 0 });
+            ctx.b.op(Instr::Eq { d: r, a: r, b: SCRATCH });
             Ok(r)
         }
         UnaryOp::Neg => {
@@ -696,6 +697,7 @@ fn lower_short_circuit(
     wrapping: bool,
 ) -> Result<Reg, CodegenError> {
     let l = lower_expr(ctx, left, wrapping)?;
+    bool_normalize(ctx, l);
     let done = ctx.b.label();
     match op {
         BinOp::And => {
@@ -703,6 +705,7 @@ fn lower_short_circuit(
             // right; a true left falls through to combine with it.
             ctx.b.jz(l, done);
             let r = lower_expr(ctx, right, wrapping)?;
+            bool_normalize(ctx, r);
             ctx.b.op(Instr::And { d: l, a: l, b: r });
             ctx.regs.free(r);
         }
@@ -711,6 +714,7 @@ fn lower_short_circuit(
             // the right; a false left falls through to combine with it.
             ctx.b.jnz(l, done);
             let r = lower_expr(ctx, right, wrapping)?;
+            bool_normalize(ctx, r);
             ctx.b.op(Instr::Or { d: l, a: l, b: r });
             ctx.regs.free(r);
         }
@@ -1121,6 +1125,11 @@ fn logical_not(ctx: &mut Ctx, r: Reg) {
         a: r,
         b: SCRATCH,
     });
+}
+
+fn bool_normalize(ctx: &mut Ctx, r: Reg) {
+    ctx.b.op(Instr::Ldi { d: SCRATCH, imm: 0 });
+    ctx.b.op(Instr::GtU { d: r, a: r, b: SCRATCH });
 }
 
 fn parse_int(text: &str, span: Span) -> Result<u64, CodegenError> {
