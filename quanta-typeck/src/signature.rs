@@ -430,8 +430,22 @@ fn map_authority_error(field: &str, span: Span) -> TypeError {
 fn entry_moves_value(model: &Model, entry: &EntryDecl) -> bool {
     let (reads_of, sub_locals) = local_seize_taint(entry);
     let ledgers = ledger_maps(model);
+    let asset_params: HashSet<&str> = entry
+        .params
+        .iter()
+        .filter(|p| p.ty.name.text == "Q_Asset")
+        .map(|p| p.name.text.as_str())
+        .collect();
+    let self_spend = entry_self_spends(&ledgers, entry, &reads_of, &sub_locals);
     let mut moves = false;
     for stmt in &entry.body {
+        if let Stmt::Assign { target, .. } = stmt {
+            if let Expr::Ident(id) = target {
+                if ledgers.contains(&id.text) || is_addr_keyed(model, id.text.as_str()) {
+                    moves = true;
+                }
+            }
+        }
         stmt_exprs(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
                 match callee.as_ref() {
@@ -442,17 +456,37 @@ fn entry_moves_value(model: &Model, entry: &EntryDecl) -> bool {
                             moves = true;
                         }
                     }
+                    Expr::Field { base, name, .. } if name.text == "credit" => {
+                        if let Expr::Ident(map) = base.as_ref() {
+                            let backed = self_spend
+                                || args.get(1).is_some_and(|v| value_reads_asset(v, &asset_params));
+                            if !backed && ledgers.contains(&map.text) {
+                                moves = true;
+                            }
+                        }
+                    }
                     Expr::Field { base, name, .. }
                         if matches!(name.text.as_str(), "set" | "insert" | "remove") =>
                     {
                         let foreign_key = !matches!(args.first(), Some(Expr::Caller { .. }));
-                        if foreign_key {
-                            if let Expr::Ident(map) = base.as_ref() {
+                        if let Expr::Ident(map) = base.as_ref() {
+                            if foreign_key {
                                 if ledgers.contains(&map.text) {
                                     moves = true;
                                 }
                                 if let Some(value) = args.get(1) {
                                     if set_seizes_map(&map.text, value, &reads_of, &sub_locals) {
+                                        moves = true;
+                                    }
+                                }
+                            } else if matches!(name.text.as_str(), "set" | "insert") {
+                                if let Some(value) = args.get(1) {
+                                    let reads = expr_reads_map(&map.text, value, &reads_of);
+                                    let decrement = reads && expr_has_sub(value, &sub_locals);
+                                    let backed =
+                                        self_spend || value_reads_asset(value, &asset_params);
+                                    if !decrement && !backed && (ledgers.contains(&map.text) || reads)
+                                    {
                                         moves = true;
                                     }
                                 }
@@ -465,6 +499,55 @@ fn entry_moves_value(model: &Model, entry: &EntryDecl) -> bool {
         });
     }
     moves
+}
+
+fn value_reads_asset(value: &Expr, asset_params: &HashSet<&str>) -> bool {
+    let mut found = false;
+    walk(value, &mut |e| {
+        if let Expr::Ident(id) = e {
+            if asset_params.contains(id.text.as_str()) {
+                found = true;
+            }
+        }
+    });
+    found
+}
+
+fn entry_self_spends(
+    ledgers: &HashSet<String>,
+    entry: &EntryDecl,
+    reads_of: &HashMap<String, HashSet<String>>,
+    sub_locals: &HashSet<String>,
+) -> bool {
+    let mut spends = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if !matches!(args.first(), Some(Expr::Caller { .. })) {
+                        return;
+                    }
+                    if name.text == "debit" {
+                        spends = true;
+                    }
+                    if matches!(name.text.as_str(), "set" | "insert") {
+                        if let Expr::Ident(map) = base.as_ref() {
+                            if ledgers.contains(&map.text) {
+                                if let Some(value) = args.get(1) {
+                                    if expr_reads_map(&map.text, value, reads_of)
+                                        && expr_has_sub(value, sub_locals)
+                                    {
+                                        spends = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    spends
 }
 
 fn ledger_maps(model: &Model) -> HashSet<String> {
@@ -1129,6 +1212,85 @@ mod tests {
                    { guard balances.get(caller) >= amount; balances.debit(caller, amount); \
                      balances.credit(to, amount); } }";
         ok(src);
+    }
+
+    #[test]
+    fn inflating_your_own_ledger_via_credit_under_a_settable_owner_is_forged() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry inflate(amount: u64) writes(balances) \
+                   { guard caller == owner; balances.credit(caller, amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn minting_ledger_balance_to_any_account_under_a_settable_owner_is_forged() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry transfer(to: Q_Address, amount: u64) writes(balances) \
+                   { balances.debit(caller, amount); balances.credit(to, amount); } \
+                   entry mint(to: Q_Address, amount: u64) writes(balances) \
+                   { guard caller == owner; balances.credit(to, amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn inflating_your_own_entry_via_a_self_set_increment_under_a_settable_owner_is_forged() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry inflate(amount: u64) writes(balances) \
+                   { guard caller == owner; balances.set(caller, balances.get(caller) + amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn overwriting_your_own_ledger_entry_to_a_chosen_amount_under_a_settable_owner_is_forged() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry give(to: Q_Address, amount: u64) writes(balances) { balances.credit(to, amount); } \
+                   entry inflate(amount: u64) writes(balances) \
+                   { guard caller == owner; balances.set(caller, amount); } }";
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn an_unrelated_credit_in_an_asset_taking_entry_under_a_settable_owner_is_forged() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { owner: Q_Address; vault: Q_Asset<QTOV>; rewards: Map<Q_Address, u128>; }
+                entry set_owner(a: Q_Address) writes(owner) { owner = a; }
+                entry give(to: Q_Address, amount: u128) writes(rewards) { rewards.credit(to, amount); }
+                entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(vault, rewards) {
+                    guard caller == owner;
+                    vault.merge(funds);
+                    rewards.credit(caller, 100);
+                }
+            }"#;
+        assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn a_self_credit_backed_by_an_incoming_asset_is_not_a_forged_move() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { owner: Q_Address; pool: Q_Asset<QTOV>; stakes: Map<Q_Address, u128>; }
+                entry set_owner(a: Q_Address) writes(owner) { owner = a; }
+                entry stake(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, stakes) {
+                    guard caller == owner;
+                    pool.merge(funds);
+                    stakes.credit(caller, funds.amount);
+                }
+            }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn overwriting_a_whole_ledger_by_assignment_under_a_settable_owner_is_forged() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; other: Map<Q_Address, u64>; } \
+                   entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
+                   entry give(to: Q_Address, amount: u64) writes(balances) { balances.credit(to, amount); } \
+                   entry swap() writes(balances) { guard caller == owner; balances = other; } }";
+        assert!(error_for(src).contains("forgeable"));
     }
 
     #[test]
