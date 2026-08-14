@@ -124,23 +124,58 @@ fn amount_credited_while_sent(
             }
         });
     }
-    let mut backing: HashMap<String, Vec<String>> = HashMap::new();
+    if credited.is_empty() {
+        return None;
+    }
+    let mut edges: Vec<(String, String)> = Vec::new();
     for stmt in &entry.body {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                if let Some(src) = flow_source(value) {
+                    edges.push((name.text.clone(), src));
+                }
+            }
+            Stmt::Assign { target, value, .. } => {
+                if let Expr::Ident(dest) = target {
+                    if let Some(src) = flow_source(value) {
+                        edges.push((dest.text.clone(), src));
+                    }
+                }
+            }
+            _ => {}
+        }
         for_each_expr(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
                     if name.text == "merge" {
-                        if let Expr::Ident(pool) = base.as_ref() {
-                            if let Some(Expr::Ident(arg)) = args.first() {
-                                if credited.contains_key(arg.text.as_str()) {
-                                    backing.entry(pool.text.clone()).or_default().push(arg.text.clone());
-                                }
+                        if let Expr::Ident(dest) = base.as_ref() {
+                            if let Some(src) = args.first().and_then(flow_source) {
+                                edges.push((dest.text.clone(), src));
                             }
                         }
                     }
                 }
             }
         });
+    }
+    let mut backing: HashMap<String, HashSet<String>> = HashMap::new();
+    for asset in credited.keys() {
+        backing.entry(asset.clone()).or_default().insert(asset.clone());
+    }
+    loop {
+        let mut changed = false;
+        for (dest, src) in &edges {
+            let inherit: Vec<String> = backing.get(src).into_iter().flatten().cloned().collect();
+            let slot = backing.entry(dest.clone()).or_default();
+            for asset in inherit {
+                if slot.insert(asset) {
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
     }
     let mut sent: HashSet<String> = HashSet::new();
     for stmt in &entry.body {
@@ -151,11 +186,9 @@ fn amount_credited_while_sent(
                         if let Some(asset) = sent_asset(value, kinds) {
                             sent.insert(asset);
                         }
-                        if let Some(pool) = split_pool(value) {
-                            if let Some(backed) = backing.get(&pool) {
-                                for asset in backed {
-                                    sent.insert(asset.clone());
-                                }
+                        if let Some(backed) = flow_source(value).and_then(|p| backing.get(&p)) {
+                            for asset in backed {
+                                sent.insert(asset.clone());
                             }
                         }
                     }
@@ -236,6 +269,14 @@ fn split_pool(expr: &Expr) -> Option<String> {
         }
     }
     None
+}
+
+fn flow_source(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Ident(id) => Some(id.text.clone()),
+        Expr::Call { .. } => split_pool(expr),
+        _ => None,
+    }
 }
 
 fn asset_flow_in_expr(
@@ -441,6 +482,30 @@ mod tests {
                    entry deposit(funds: Q_Asset<QTOV>, rebate: u128) conserves QTOV writes(vault, balance) \
                    { balance.credit(caller, funds.amount); vault.merge(funds); send(caller, vault.split(rebate)); } }";
         assert!(error_for(src).contains("sent away"));
+    }
+
+    #[test]
+    fn laundering_a_credited_asset_through_a_second_pool_is_rejected() {
+        let src = "contract C { state { vault: Q_Asset<QTOV>; treasury: Q_Asset<QTOV>; balance: Map<Q_Address, u128>; } \
+                   entry deposit(funds: Q_Asset<QTOV>, amt: u128) conserves QTOV writes(vault, treasury, balance) \
+                   { balance.credit(caller, funds.amount); vault.merge(funds); treasury.merge(vault.split(amt)); send(caller, treasury.split(amt)); } }";
+        assert!(error_for(src).contains("sent away"));
+    }
+
+    #[test]
+    fn sending_a_credited_pools_value_through_a_local_split_is_rejected() {
+        let src = "contract C { state { vault: Q_Asset<QTOV>; balance: Map<Q_Address, u128>; } \
+                   entry deposit(funds: Q_Asset<QTOV>, amt: u128) conserves QTOV writes(vault, balance) \
+                   { balance.credit(caller, funds.amount); vault.merge(funds); let out = vault.split(amt); send(caller, out); } }";
+        assert!(error_for(src).contains("sent away"));
+    }
+
+    #[test]
+    fn moving_credited_value_between_backing_pools_without_sending_is_accepted() {
+        let src = "contract C { state { vault: Q_Asset<QTOV>; treasury: Q_Asset<QTOV>; balance: Map<Q_Address, u128>; } \
+                   entry deposit(funds: Q_Asset<QTOV>, amt: u128) conserves QTOV writes(vault, treasury, balance) \
+                   { balance.credit(caller, funds.amount); vault.merge(funds); treasury.merge(vault.split(amt)); } }";
+        ok(src);
     }
 
     #[test]
