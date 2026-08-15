@@ -273,6 +273,12 @@ fn compile_entries(
             })
             .collect();
         let selector = qtv_vm::container::selector(qtv_vm::container::GENESIS_SIGNATURE);
+        if let Some(previous) = seen_selectors.get(&selector) {
+            return Err(CodegenError::Rejected {
+                what: format!("the entry `{}` collides with the reserved genesis selector", previous),
+                span: gspan,
+            });
+        }
         // Genesis is the constructor, it initialises the whole state and may seed any map, so it
         // declares every scalar slot and its init guard as writes, and every map base as a keyed domain.
         // This is a real manifest, it lists exactly the contract's own storage, not a bypass.
