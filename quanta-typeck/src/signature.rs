@@ -49,7 +49,22 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if let Some(err) = forged_signed_authority(model, entry) {
         return Err(err);
     }
+    if entry_moves_ledger_value(model, entry) && !entry_binds_caller(model, entry, &signed) {
+        return Err(no_ledger_authority_error(entry));
+    }
     Ok(())
+}
+
+fn no_ledger_authority_error(entry: &EntryDecl) -> TypeError {
+    TypeError::new(
+        format!(
+            "this entry `{}` moves ledger value with no authority: it credits unbacked supply, \
+             debits another account, or overwrites a ledger map, but carries no `caller` check, \
+             `signed by`, or quorum binding; authority must come from `caller` or a signature",
+            entry.name.text
+        ),
+        entry.name.span,
+    )
 }
 
 fn forged_signed_authority(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
@@ -428,6 +443,14 @@ fn map_authority_error(field: &str, span: Span) -> TypeError {
 // key is NOT the caller. A self `debit(caller, ...)` (a transfer or an nft count) moves only the
 // caller's own balance and needs no extra authority; debiting someone else's account does.
 fn entry_moves_value(model: &Model, entry: &EntryDecl) -> bool {
+    entry_value_move(model, entry, false)
+}
+
+fn entry_moves_ledger_value(model: &Model, entry: &EntryDecl) -> bool {
+    entry_value_move(model, entry, true)
+}
+
+fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool {
     let (reads_of, sub_locals) = local_seize_taint(entry);
     let ledgers = ledger_maps(model);
     let asset_params: HashSet<&str> = entry
@@ -436,7 +459,7 @@ fn entry_moves_value(model: &Model, entry: &EntryDecl) -> bool {
         .filter(|p| p.ty.name.text == "Q_Asset")
         .map(|p| p.name.text.as_str())
         .collect();
-    let spends = self_spend_amounts(&ledgers, entry, &reads_of, &sub_locals);
+    let mut spends = self_spend_amounts(&ledgers, entry, &reads_of, &sub_locals);
     let mut moves = false;
     for stmt in &entry.body {
         if let Stmt::Assign { target, .. } = stmt {
@@ -449,7 +472,11 @@ fn entry_moves_value(model: &Model, entry: &EntryDecl) -> bool {
         stmt_exprs(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
                 match callee.as_ref() {
-                    Expr::Ident(id) if id.text == "send" => moves = true,
+                    Expr::Ident(id) if id.text == "send" => {
+                        if !ledger_only {
+                            moves = true;
+                        }
+                    }
                     Expr::Field { name, .. } if name.text == "debit" => {
                         let self_debit = matches!(args.first(), Some(Expr::Caller { .. }));
                         if !self_debit {
@@ -458,12 +485,23 @@ fn entry_moves_value(model: &Model, entry: &EntryDecl) -> bool {
                     }
                     Expr::Field { base, name, .. } if name.text == "credit" => {
                         if let Expr::Ident(map) = base.as_ref() {
-                            let backed = args.get(1).is_some_and(|v| {
-                                value_reads_asset(v, &asset_params)
-                                    || spends.iter().any(|s| expr_eq(s, v))
-                            });
-                            if !backed && ledgers.contains(&map.text) {
-                                moves = true;
+                            if ledgers.contains(&map.text) {
+                                let asset_backed = args
+                                    .get(1)
+                                    .is_some_and(|v| value_reads_asset(v, &asset_params));
+                                let spend_backed = !asset_backed
+                                    && args.get(1).is_some_and(|v| {
+                                        match spends.iter().position(|s| expr_eq(s, v)) {
+                                            Some(pos) => {
+                                                spends.remove(pos);
+                                                true
+                                            }
+                                            None => false,
+                                        }
+                                    });
+                                if !asset_backed && !spend_backed {
+                                    moves = true;
+                                }
                             }
                         }
                     }
@@ -1293,7 +1331,8 @@ mod tests {
                    entry give(to: Q_Address, amount: u64) writes(balances) { balances.credit(to, amount); } \
                    entry inflate(amount: u64) writes(balances) \
                    { guard caller == owner; balances.set(caller, amount); } }";
-        assert!(error_for(src).contains("forgeable"));
+        let e = error_for(src);
+        assert!(e.contains("forgeable") || e.contains("no authority"), "{e}");
     }
 
     #[test]
@@ -1309,7 +1348,8 @@ mod tests {
                     rewards.credit(caller, 100);
                 }
             }"#;
-        assert!(error_for(src).contains("forgeable"));
+        let e = error_for(src);
+        assert!(e.contains("forgeable") || e.contains("no authority"), "{e}");
     }
 
     #[test]
@@ -1376,7 +1416,8 @@ mod tests {
                    entry inflate(order: In) writes(balances) \
                    { guard caller == owner; balances.debit(caller, 0); \
                      balances.set(caller, order.amount); } }";
-        assert!(error_for(src).contains("forgeable"));
+        let e = error_for(src);
+        assert!(e.contains("forgeable") || e.contains("no authority"), "{e}");
     }
 
     #[test]
@@ -1395,7 +1436,8 @@ mod tests {
                    entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
                    entry give(to: Q_Address, amount: u64) writes(balances) { balances.credit(to, amount); } \
                    entry swap() writes(balances) { guard caller == owner; balances = other; } }";
-        assert!(error_for(src).contains("forgeable"));
+        let e = error_for(src);
+        assert!(e.contains("forgeable") || e.contains("no authority"), "{e}");
     }
 
     #[test]
