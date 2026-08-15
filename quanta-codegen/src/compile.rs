@@ -174,11 +174,22 @@ fn compile_entries(
     let mut artifacts = Vec::new();
     let mut placed = Vec::new();
     let mut deploy_params = Vec::new();
+    let mut seen_selectors: HashMap<[u8; SELECTOR_BYTES], String> = HashMap::new();
     for entry in entries {
         let start = b.label();
         b.mark(start);
         let args = lower_entry(&layout, entry, &invariants, &events_map, &mut b, trap, false)?;
         let selector = entry_selector(entry);
+        if let Some(previous) = seen_selectors.get(&selector) {
+            return Err(CodegenError::Rejected {
+                what: format!(
+                    "two entries that share a selector, `{}` collides with `{}`",
+                    entry.name.text, previous
+                ),
+                span: entry.span,
+            });
+        }
+        seen_selectors.insert(selector, entry.name.text.clone());
         placed.push((selector, layout.access(entry), start));
         artifacts.push(EntryArtifact {
             name: entry.name.text.clone(),
