@@ -12,6 +12,7 @@ contract Payroll {
   genesis {
     employer = deployer;
     paid_this_period = 0;
+    period_reset = now;
   }
   invariant paid_this_period <= period_cap;
   entry fund(funds: Q_Asset<QTOV>)

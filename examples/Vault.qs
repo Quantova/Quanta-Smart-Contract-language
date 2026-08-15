@@ -9,6 +9,7 @@ contract Vault {
   }
   genesis {
     owner = deployer;
+    last_reset = now;
   }
   invariant spent_today <= daily_cap;
   entry deposit(funds: Q_Asset<QTOV>)
