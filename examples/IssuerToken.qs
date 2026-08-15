@@ -24,24 +24,23 @@ contract IssuerToken {
     balances.credit(order.to, mint(order.amount));
     emit Minted(order.to, order.amount, approvals.digest);
   }
-  entry burn(units: Q_Asset<TOKEN>, approvals: Quorum<3 of 5, guardians>)
-    burns TOKEN
-    writes(total_supply)
+  entry burn(order: BurnOrder, approvals: Quorum<3 of 5, guardians>)
+    writes(total_supply, balances)
   {
-    total_supply -= units.amount;
-    emit Burned(units.amount, approvals.digest);
+    balances.debit(order.holder, order.amount);
+    total_supply -= order.amount;
+    emit Burned(order.amount, approvals.digest);
   }
-  entry transfer(funds: Q_Asset<TOKEN>, to: Q_Address)
-    conserves TOKEN
+  entry transfer(to: Q_Address, amount: u64)
     reads(paused, frozen)
     writes(balances)
   {
     guard !paused;
     guard !frozen.contains(caller);
     guard !frozen.contains(to);
-    balances.debit(caller, funds.amount);
-    balances.credit(to, funds);
-    emit Transferred(caller, to, funds.amount);
+    balances.debit(caller, amount);
+    balances.credit(to, amount);
+    emit Transferred(caller, to, amount);
   }
   entry freeze(target: FreezeOrder, approvals: Quorum<3 of 5, guardians>)
     writes(frozen)

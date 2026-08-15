@@ -233,7 +233,7 @@ fn a_transfer_moves_ledger_balance_between_accounts() {
     let transfer = find_entry(&cc, "transfer");
 
     let mut mem = vec![0u8; 65536];
-    put_arg(&mut mem, transfer, "funds", 200);
+    put_arg(&mut mem, transfer, "amount", 200);
     put_addr(&mut mem, transfer, "to", &account_b());
     put_addr(&mut mem, transfer, "@caller", &account_a());
 
