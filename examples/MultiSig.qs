@@ -3,7 +3,6 @@ contract MultiSig {
   state {
     signers: GuardianSet<5>;
     threshold: u8 = 3;
-    nonce: u64;
     vault: Q_Asset<QTOV>;
     rotation_armed: u64;
   }
@@ -11,12 +10,11 @@ contract MultiSig {
     signers = deploy_params.signers;
   }
   entry execute(payment: Payment, approvals: Quorum<3 of 5, signers>)
-    writes(nonce, vault)
+    writes(vault)
     conserves QTOV
     reads(signers)
   {
     guard payment.amount <= vault.amount;
-    nonce += 1;
     let out = vault.split(payment.amount);
     send(payment.to, out);
     emit Executed(payment.to, payment.amount, approvals.digest);
