@@ -5,7 +5,6 @@ contract NameRegistry {
     admin: Q_Address;
     names: Registry<Q_Name>;
     owners: Map<Q_Name, Q_Address>;
-    fee: u64 = 100;
   }
   genesis {
     admin = deployer;
