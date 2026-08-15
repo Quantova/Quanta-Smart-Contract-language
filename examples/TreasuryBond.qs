@@ -25,6 +25,7 @@ contract TreasuryBond {
     writes(treasury)
     denies !holders.contains(order.investor)
   {
+    guard payment.amount >= order.units * face_value;
     treasury.merge(payment);
     send(order.investor, mint(order.units));
     emit Subscribed(order.investor, order.units);

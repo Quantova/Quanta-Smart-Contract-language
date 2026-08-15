@@ -27,6 +27,7 @@ contract SovereignStable {
   entry transfer(funds: Q_Asset<QSGD>, to: Q_Address)
     conserves QSGD
     denies sanctions.contains(to)
+    denies sanctions.contains(caller)
   {
     send(to, funds);
   }

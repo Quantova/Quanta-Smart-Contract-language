@@ -22,20 +22,21 @@ contract Token {
     balances.credit(order.to, order.amount);
     emit Minted(order.to, order.amount);
   }
-  entry transfer(funds: Q_Asset<TKN>, to: Q_Address)
-    conserves TKN
+  entry transfer(to: Q_Address, amount: u64)
     writes(balances)
   {
-    guard funds.amount > 0;
-    send(to, funds);
-    emit Transferred(caller, to, funds.amount);
+    guard amount > 0;
+    balances.debit(caller, amount);
+    balances.credit(to, amount);
+    emit Transferred(caller, to, amount);
   }
-  entry burn(funds: Q_Asset<TKN>)
-    burns TKN
-    writes(total_supply)
+  entry burn(amount: u64)
+    writes(total_supply, balances)
   {
-    total_supply -= funds.amount;
-    emit Burned(caller, funds.amount);
+    guard amount > 0;
+    balances.debit(caller, amount);
+    total_supply -= amount;
+    emit Burned(caller, amount);
   }
   event Minted(to: Q_Address, amount: u128);
   event Transferred(sender: Q_Address, to: Q_Address, amount: u128);
