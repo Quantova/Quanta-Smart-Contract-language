@@ -13,6 +13,7 @@ contract SovereignStable {
   genesis {
     issuance_board = deploy_params.board;
     monthly_ceiling = deploy_params.ceiling;
+    month_reset = now;
   }
   invariant issued_this_month <= monthly_ceiling;
   entry issue(order: IssuanceOrder, approvals: Quorum<3 of 5, issuance_board>)

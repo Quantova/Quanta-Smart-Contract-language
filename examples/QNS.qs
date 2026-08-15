@@ -67,6 +67,7 @@ contract QNS {
     guard reserved.get(label) == 0;
     guard now >= expiry_of.get(label) + grace_period;
     guard now < expiry_of.get(label) + grace_period + auction_duration;
+    guard interval > 0;
     guard payment.amount >= (start_premium >> ((now - (expiry_of.get(label) + grace_period)) / interval)) + (base_3 * (3 / label.len) + base_4 * ((4 / label.len) - (3 / label.len)) + base_5_plus * (1 - (4 / label.len))) * years;
     owner_of.set(label, caller);
     resolved_of.set(label, caller);
