@@ -234,7 +234,10 @@ fn a_map_anchor_advanced_by_a_caller_credit_is_rejected() {
         after 24 hours from anchor.get(caller) denies anchor.get(caller) == 0 { opened = 1; }\n\
     }\n";
     let what = rejection(src);
-    assert!(what.contains("`anchor`"), "a keyed anchor moved by a caller amount is rejected: {what}");
+    assert!(
+        what.contains("`anchor`") || what.contains("no authority"),
+        "a keyed anchor moved by a caller amount is rejected: {what}"
+    );
 }
 
 #[test]

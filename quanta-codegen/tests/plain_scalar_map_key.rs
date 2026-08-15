@@ -10,8 +10,10 @@ use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 
 const GAS: u64 = 4_000_000;
 
-const SRC: &str = "contract C { state { total: u64; m: Map<u64, u64>; } \
+const SRC: &str = "contract C { state { owner: Q_Address; total: u64; m: Map<u64, u64>; } \
+    genesis { owner = deployer; } \
     entry act(order: M) writes(total, m) { \
+      guard caller == owner; \
       total = wrapping(total + order.k); \
       m.credit(order.k, order.v); \
     } }";
