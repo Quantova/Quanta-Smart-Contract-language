@@ -24,9 +24,12 @@ const SRC: &str = "contract C { \
         owner_of: Map<Q_Id, Q_Address>; \
         holdings: Map<Q_Address, u64>; \
         content_of: Map<Q_Id, Q_Address>; \
+        admin: Q_Address; \
     } \
+    genesis { admin = deployer; } \
     entry mint(id: Q_Id, to: Q_Address, content: Q_Address) \
-        reads(owner_of) writes(owner_of, content_of, supply, holdings) { \
+        reads(admin, owner_of) writes(owner_of, content_of, supply, holdings) { \
+        guard caller == admin; \
         guard !owner_of.contains(id); \
         owner_of.set(id, to); \
         content_of.set(id, content); \
@@ -82,9 +85,8 @@ fn holding(storage: &BTreeMap<[u8; 32], u64>, who: &[u8; 32]) -> u64 {
     storage.get(&map_key(HOLDINGS_BASE, who)).copied().unwrap_or(0)
 }
 
-fn mem_mint(cc: &CompiledContract, caller: &[u8; 32], id: u64, to: &[u8; 32], content: &[u8; 32]) -> Vec<u8> {
+fn mem_mint(cc: &CompiledContract, _caller: &[u8; 32], id: u64, to: &[u8; 32], content: &[u8; 32]) -> Vec<u8> {
     let mut mem = vec![0u8; 4096];
-    mem[0..32].copy_from_slice(caller);
     let ido = arg_off(cc, "mint", "id");
     mem[ido..ido + 8].copy_from_slice(&id.to_be_bytes());
     let too = arg_off(cc, "mint", "to");
