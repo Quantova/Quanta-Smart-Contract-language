@@ -6,12 +6,10 @@ contract Marketplace {
     escrowed: Q_Asset<QTOV>;
     listings: Map<Q_Id, u64>;
     item_owner: Map<Q_Id, Q_Address>;
-    fee_bps: u16 = 250;
   }
   genesis {
     owner = deployer;
   }
-  invariant fee_bps <= 10_000;
   entry list_item(order: ListOrder signed by owner)
     writes(listings, item_owner)
   {
