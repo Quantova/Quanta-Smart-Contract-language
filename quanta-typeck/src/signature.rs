@@ -459,7 +459,7 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
         .filter(|p| p.ty.name.text == "Q_Asset")
         .map(|p| p.name.text.as_str())
         .collect();
-    let spends = self_spend_amounts(&ledgers, entry, &reads_of, &sub_locals);
+    let mut spends = self_spend_amounts(&ledgers, entry, &reads_of, &sub_locals);
     let mut moves = false;
     for stmt in &entry.body {
         if let Stmt::Assign { target, .. } = stmt {
@@ -485,12 +485,23 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                     }
                     Expr::Field { base, name, .. } if name.text == "credit" => {
                         if let Expr::Ident(map) = base.as_ref() {
-                            let backed = args.get(1).is_some_and(|v| {
-                                value_reads_asset(v, &asset_params)
-                                    || spends.iter().any(|s| expr_eq(s, v))
-                            });
-                            if !backed && ledgers.contains(&map.text) {
-                                moves = true;
+                            if ledgers.contains(&map.text) {
+                                let asset_backed = args
+                                    .get(1)
+                                    .is_some_and(|v| value_reads_asset(v, &asset_params));
+                                let spend_backed = !asset_backed
+                                    && args.get(1).is_some_and(|v| {
+                                        match spends.iter().position(|s| expr_eq(s, v)) {
+                                            Some(pos) => {
+                                                spends.remove(pos);
+                                                true
+                                            }
+                                            None => false,
+                                        }
+                                    });
+                                if !asset_backed && !spend_backed {
+                                    moves = true;
+                                }
                             }
                         }
                     }
