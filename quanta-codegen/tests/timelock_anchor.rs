@@ -265,6 +265,22 @@ fn a_map_anchor_recorded_with_now_still_compiles() {
 }
 
 #[test]
+fn a_map_anchor_armed_by_insert_is_rejected() {
+    let src = "contract C {\n\
+      state { owner: Q_Address; anchor: Map<Q_Address, u64>; opened: u64; }\n\
+      genesis { owner = deployer; }\n\
+      entry arm() writes(anchor) { anchor.insert(caller); }\n\
+      entry open(order: OpenOrder signed by owner) writes(opened)\n\
+        after 24 hours from anchor.get(caller) denies anchor.get(caller) == 0 { opened = 1; }\n\
+    }\n";
+    let what = rejection(src);
+    assert!(
+        what.contains("`anchor`") && what.contains("pre-date the delay"),
+        "arming a time anchor with insert stores a flag not a timestamp and is rejected: {what}"
+    );
+}
+
+#[test]
 fn a_caller_write_to_a_non_anchor_map_still_compiles() {
     let src = "contract Bank {\n\
       state { bal: Map<Q_Address, u64>; }\n\
