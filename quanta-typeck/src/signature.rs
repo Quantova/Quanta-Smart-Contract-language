@@ -460,6 +460,7 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
         .map(|p| p.name.text.as_str())
         .collect();
     let mut spends = self_spend_amounts(&ledgers, entry, &reads_of, &sub_locals);
+    let mut used_asset_backers: HashSet<&str> = HashSet::new();
     let mut moves = false;
     for stmt in &entry.body {
         if let Stmt::Assign { target, .. } = stmt {
@@ -488,7 +489,8 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                             if ledgers.contains(&map.text) {
                                 let asset_backed = args
                                     .get(1)
-                                    .is_some_and(|v| value_reads_asset(v, &asset_params));
+                                    .and_then(|v| asset_amount_backer(v, &asset_params))
+                                    .is_some_and(|a| used_asset_backers.insert(a));
                                 let spend_backed = !asset_backed
                                     && args.get(1).is_some_and(|v| {
                                         match spends.iter().position(|s| expr_eq(s, v)) {
@@ -523,7 +525,8 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                 if let Some(value) = args.get(1) {
                                     let reads = expr_reads_map(&map.text, value, &reads_of);
                                     let decrement = reads && expr_has_sub(value, &sub_locals);
-                                    let backed = value_reads_asset(value, &asset_params);
+                                    let backed = asset_amount_backer(value, &asset_params)
+                                        .is_some_and(|a| used_asset_backers.insert(a));
                                     if !decrement && !backed && (ledgers.contains(&map.text) || reads)
                                     {
                                         moves = true;
@@ -540,16 +543,15 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
     moves
 }
 
-fn value_reads_asset(value: &Expr, asset_params: &HashSet<&str>) -> bool {
-    let mut found = false;
-    walk(value, &mut |e| {
-        if let Expr::Ident(id) = e {
-            if asset_params.contains(id.text.as_str()) {
-                found = true;
+fn asset_amount_backer<'a>(value: &Expr, asset_params: &HashSet<&'a str>) -> Option<&'a str> {
+    if let Expr::Field { base, name, .. } = value {
+        if name.text == "amount" {
+            if let Expr::Ident(id) = base.as_ref() {
+                return asset_params.get(id.text.as_str()).copied();
             }
         }
-    });
-    found
+    }
+    None
 }
 
 fn self_spend_amounts(
@@ -1365,6 +1367,39 @@ mod tests {
                 }
             }"#;
         ok(src);
+    }
+
+    #[test]
+    fn a_credit_above_the_incoming_asset_amount_is_a_forged_move() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { owner: Q_Address; pool: Q_Asset<QTOV>; stakes: Map<Q_Address, u128>; }
+                entry set_owner(a: Q_Address) writes(owner) { owner = a; }
+                entry stake(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, stakes) {
+                    guard caller == owner;
+                    pool.merge(funds);
+                    stakes.credit(caller, funds.amount * 2);
+                }
+            }"#;
+        let e = error_for(src);
+        assert!(e.contains("forgeable") || e.contains("no authority"), "{e}");
+    }
+
+    #[test]
+    fn an_incoming_asset_backs_only_one_credit() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { owner: Q_Address; pool: Q_Asset<QTOV>; stakes: Map<Q_Address, u128>; }
+                entry set_owner(a: Q_Address) writes(owner) { owner = a; }
+                entry stake(other: Q_Address, funds: Q_Asset<QTOV>) conserves QTOV writes(pool, stakes) {
+                    guard caller == owner;
+                    pool.merge(funds);
+                    stakes.credit(caller, funds.amount);
+                    stakes.credit(other, funds.amount);
+                }
+            }"#;
+        let e = error_for(src);
+        assert!(e.contains("forgeable") || e.contains("no authority"), "{e}");
     }
 
     #[test]
