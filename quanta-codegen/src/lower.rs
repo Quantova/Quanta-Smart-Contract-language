@@ -2469,7 +2469,6 @@ fn check_anchor_map_write(
             }
             Ok(())
         }
-        "insert" | "remove" => Ok(()),
         _ => Err(anchor_write_rejection(&id.text, span)),
     }
 }
