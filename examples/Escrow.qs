@@ -29,8 +29,10 @@ contract Escrow {
   }
   entry release(order: ReleaseOrder signed by arbiter)
     conserves QTOV
+    reads(funded)
     writes(holding, released)
     denies released == 1
+    denies funded == 0
   {
     released = 1;
     let out = holding.split(price);
@@ -39,8 +41,10 @@ contract Escrow {
   }
   entry refund(order: RefundOrder signed by arbiter)
     conserves QTOV
+    reads(funded)
     writes(holding, released)
     denies released == 1
+    denies funded == 0
   {
     released = 1;
     let out = holding.split(price);

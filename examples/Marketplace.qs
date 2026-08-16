@@ -14,6 +14,7 @@ contract Marketplace {
     writes(listings, item_owner)
   {
     guard order.price > 0;
+    guard !item_owner.contains(order.id) || item_owner.get(order.id) == owner;
     item_owner.set(order.id, owner);
     listings.set(order.id, order.price);
     emit Listed(order.id, order.price);
