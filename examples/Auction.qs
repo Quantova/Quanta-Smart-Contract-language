@@ -22,9 +22,9 @@ contract Auction {
     let refund = pot.split(highest_bid);
     send(highest_bidder, refund);
     highest_bid = offer.amount;
-    highest_bidder = offer.bidder;
+    highest_bidder = caller;
     pot.merge(funds);
-    emit BidPlaced(offer.bidder, offer.amount);
+    emit BidPlaced(caller, offer.amount);
   }
   entry settle(order: SettleOrder signed by seller)
     conserves QTOV
