@@ -676,7 +676,16 @@ fn lower_binary(
         BinOp::Mul => ctx.b.op(Instr::Mul { d: l, a: l, b: r }),
         BinOp::Div => ctx.b.op(Instr::Div { d: l, a: l, b: r }),
         BinOp::Rem => ctx.b.op(Instr::Rem { d: l, a: l, b: r }),
-        BinOp::Shr => ctx.b.op(Instr::Shr { d: l, a: l, b: r }),
+        BinOp::Shr => {
+            let mask = ctx.regs.alloc(left.span())?;
+            ctx.b.op(Instr::Ldi { d: mask, imm: 64 });
+            ctx.b.op(Instr::LtU { d: mask, a: r, b: mask });
+            ctx.b.op(Instr::Ldi { d: SCRATCH, imm: 0 });
+            ctx.b.op(Instr::SubW { d: mask, a: SCRATCH, b: mask });
+            ctx.b.op(Instr::Shr { d: l, a: l, b: r });
+            ctx.b.op(Instr::And { d: l, a: l, b: mask });
+            ctx.regs.free(mask);
+        }
         BinOp::And | BinOp::Or => unreachable!("logical and or short circuit above"),
         BinOp::Eq => ctx.b.op(Instr::Eq { d: l, a: l, b: r }),
         BinOp::Lt => ctx.b.op(Instr::LtU { d: l, a: l, b: r }),
@@ -4149,6 +4158,9 @@ mod tests {
         assert_eq!(eval("a >> b", &[], &[("a", 1), ("b", 0)]), 1);
         assert_eq!(eval("a >> b", &[], &[("a", u64::MAX), ("b", 63)]), 1);
         assert_eq!(eval("a >> b", &[], &[("a", 0xFF00), ("b", 8)]), 0xFF);
+        assert_eq!(eval("a >> b", &[], &[("a", u64::MAX), ("b", 64)]), 0);
+        assert_eq!(eval("a >> b", &[], &[("a", u64::MAX), ("b", 100)]), 0);
+        assert_eq!(eval("a >> b", &[], &[("a", 12345), ("b", 64)]), 0);
     }
 
     #[test]
