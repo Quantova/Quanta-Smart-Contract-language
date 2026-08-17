@@ -1,9 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A send_asset call lowers to a single transfer effect whose target is the issuer address followed
-//! by the holder address, sixty four bytes, the shape the ledger reads to move a non native asset.
-
 use qtv_vm::interp::{Effect, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 
