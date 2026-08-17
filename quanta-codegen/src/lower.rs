@@ -3088,6 +3088,7 @@ fn addr_key_of(expr: &Expr, params: &HashSet<String>) -> Option<String> {
     match expr {
         Expr::Caller { .. } => Some(CALLER_KEY.to_string()),
         Expr::Ident(id) if id.text == "deployer" => Some(CALLER_KEY.to_string()),
+        Expr::Ident(id) if id.text == "self" => Some(CONTRACT_KEY.to_string()),
         Expr::Ident(id) if params.contains(&id.text) => Some(id.text.clone()),
         Expr::Field { base, name, .. } => match base.as_ref() {
             Expr::Ident(id) if params.contains(&id.text) => {
