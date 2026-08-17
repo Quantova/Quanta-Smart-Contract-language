@@ -2916,6 +2916,9 @@ fn lower_call_effect(
     if matches!(callee, Expr::Ident(id) if id.text == "send") {
         return lower_send(ctx, args, span);
     }
+    if matches!(callee, Expr::Ident(id) if id.text == "send_asset") {
+        return lower_send_asset(ctx, args, span);
+    }
     Err(CodegenError::Unsupported {
         what: "this call statement".into(),
         span,
@@ -2943,6 +2946,36 @@ fn lower_send(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), CodegenErr
     });
     ctx.regs.free(rlen);
     ctx.regs.free(raddr);
+    ctx.regs.free(amount);
+    Ok(())
+}
+
+fn lower_send_asset(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), CodegenError> {
+    let (issuer, to, value) = three_args(args, span)?;
+    let amount = narrow_amount(ctx, value)?;
+    let issuer_off = lower_address(ctx, issuer, span)?;
+    let to_off = lower_address(ctx, to, span)?;
+    let region = ctx.next_state_addr_scratch;
+    ctx.next_state_addr_scratch += 2 * ADDR_BYTES;
+    copy_words_fixed(ctx, issuer_off, region, ADDR_WORDS, span)?;
+    copy_words_fixed(ctx, to_off, region + ADDR_BYTES, ADDR_WORDS, span)?;
+    let rptr = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: rptr,
+        imm: region,
+    });
+    let rlen = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: rlen,
+        imm: 2 * ADDR_BYTES,
+    });
+    ctx.b.op(Instr::Send {
+        a: rptr,
+        b: rlen,
+        c: amount,
+    });
+    ctx.regs.free(rlen);
+    ctx.regs.free(rptr);
     ctx.regs.free(amount);
     Ok(())
 }
@@ -3387,6 +3420,16 @@ fn map_base_of(ctx: &Ctx, base: &Expr, span: Span) -> Result<u64, CodegenError> 
 fn two_args(args: &[Expr], span: Span) -> Result<(&Expr, &Expr), CodegenError> {
     match args {
         [a, b] => Ok((a, b)),
+        _ => Err(CodegenError::Unsupported {
+            what: "a ledger operation with an unexpected argument count".into(),
+            span,
+        }),
+    }
+}
+
+fn three_args(args: &[Expr], span: Span) -> Result<(&Expr, &Expr, &Expr), CodegenError> {
+    match args {
+        [a, b, c] => Ok((a, b, c)),
         _ => Err(CodegenError::Unsupported {
             what: "a ledger operation with an unexpected argument count".into(),
             span,
