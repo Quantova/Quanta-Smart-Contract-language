@@ -2919,6 +2919,9 @@ fn lower_call_effect(
     if matches!(callee, Expr::Ident(id) if id.text == "send_asset") {
         return lower_send_asset(ctx, args, span);
     }
+    if matches!(callee, Expr::Ident(id) if id.text == "mint_asset") {
+        return lower_mint_asset(ctx, args, span);
+    }
     Err(CodegenError::Unsupported {
         what: "this call statement".into(),
         span,
@@ -2946,6 +2949,50 @@ fn lower_send(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), CodegenErr
     });
     ctx.regs.free(rlen);
     ctx.regs.free(raddr);
+    ctx.regs.free(amount);
+    Ok(())
+}
+
+/// The reserved event selector the ledger reads as an instruction to mint the contract's own asset.
+const MINT_SELECTOR: u64 = 0x4d494e54;
+
+fn lower_mint_asset(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), CodegenError> {
+    if !ctx.entry_mints && !ctx.is_genesis {
+        return Err(CodegenError::Unsupported {
+            what: "a mint outside an entry that declares mints".into(),
+            span,
+        });
+    }
+    let (to, value) = two_args(args, span)?;
+    let amount = narrow_amount(ctx, value)?;
+    let to_off = lower_address(ctx, to, span)?;
+    let region = ctx.next_state_addr_scratch;
+    ctx.next_state_addr_scratch += ADDR_BYTES + WORD;
+    copy_words_fixed(ctx, to_off, region, ADDR_WORDS, span)?;
+    store_mem_word(ctx, region + ADDR_BYTES, amount);
+    let rptr = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: rptr,
+        imm: region,
+    });
+    let rlen = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: rlen,
+        imm: ADDR_BYTES + WORD,
+    });
+    let rsel = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: rsel,
+        imm: MINT_SELECTOR,
+    });
+    ctx.b.op(Instr::Emit {
+        a: rptr,
+        b: rlen,
+        c: rsel,
+    });
+    ctx.regs.free(rsel);
+    ctx.regs.free(rlen);
+    ctx.regs.free(rptr);
     ctx.regs.free(amount);
     Ok(())
 }

@@ -21,6 +21,40 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 
 const SELF_PAY: &str = "contract SelfPay { entry claim() { send_asset(caller, caller, 40); } }";
 
+const MINTER: &str = "contract Minter { asset MTK; state { total_supply: u128; } \
+     genesis { total_supply = 100; mint_asset(deployer, 100); } }";
+
+#[test]
+fn mint_asset_emits_a_mint_control_event_with_the_holder_and_amount() {
+    let cc = compile(MINTER);
+    let caller = [7u8; 32];
+    let mut mem = vec![0u8; 4096];
+    mem[0..32].copy_from_slice(&caller);
+
+    let genesis = qtv_vm::container::selector(qtv_vm::container::GENESIS_SIGNATURE);
+    let out = Interpreter::for_entry(&cc.container, genesis, GAS)
+        .expect("genesis entry")
+        .with_memory(&mem)
+        .run()
+        .expect("the genesis halts");
+
+    let mint = out
+        .effects
+        .iter()
+        .find_map(|e| match e {
+            Effect::Event { selector, data } if selector == b"MINT" => Some(data),
+            _ => None,
+        })
+        .expect("a MINT control event");
+    assert_eq!(mint.len(), 40, "the mint data is a holder then an amount");
+    assert_eq!(&mint[0..32], &caller, "the deployer holder leads the mint data");
+    assert_eq!(
+        u64::from_be_bytes(mint[32..40].try_into().unwrap()),
+        100,
+        "the amount follows as a big endian word"
+    );
+}
+
 #[test]
 fn send_asset_emits_a_sixty_four_byte_issuer_and_holder_transfer() {
     let cc = compile(SELF_PAY);
