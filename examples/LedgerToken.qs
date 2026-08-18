@@ -1,11 +1,15 @@
 contract LedgerToken {
   asset LTK;
   state {
+    decimals: u64;
+    symbol: u64;
     owner: Q_Address;
     total_supply: u128;
     max_supply: u128 = 1_000_000_000;
   }
   genesis {
+    decimals = deploy_params.decimals;
+    symbol = deploy_params.symbol;
     owner = deployer;
     total_supply = 0;
   }
