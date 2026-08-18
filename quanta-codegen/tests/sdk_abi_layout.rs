@@ -16,7 +16,7 @@ mod common;
 use common::{map_addr_word_key, map_key, signer_address, slot_key};
 
 // The client and host canonical layout, frozen.
-const SDK_CONTEXT_BYTES: u64 = 80;
+const SDK_CONTEXT_BYTES: u64 = 88;
 const SDK_WORD: u64 = 8;
 const SDK_ADDR: u64 = 32;
 const SDK_U128: u64 = 16;
@@ -24,6 +24,7 @@ const CTX_CALLER_OFF: u64 = 0;
 const CTX_CONTRACT_OFF: u64 = 32;
 const CTX_TIME_OFF: u64 = 64;
 const CTX_CHAIN_OFF: u64 = 72;
+const CTX_VALUE_OFF: u64 = 80;
 
 const GAS: u64 = 8_000_000;
 const CONTRACT: [u8; 32] = [0x99; 32];
@@ -72,7 +73,8 @@ fn assert_host_context(cc: &CompiledContract, name: &str) {
     assert_eq!(offset(cc, name, "@time"), CTX_TIME_OFF, "@time follows the two addresses");
     assert_eq!(offset(cc, name, "@chain"), CTX_CHAIN_OFF, "@chain is the last context word");
     // The context is exactly the eighty byte prefix; no caller argument may land inside it.
-    assert_eq!(CTX_CHAIN_OFF + SDK_WORD, SDK_CONTEXT_BYTES, "the four context words span eighty bytes");
+    assert_eq!(offset(cc, name, "@value"), CTX_VALUE_OFF, "@value is the last context word");
+    assert_eq!(CTX_VALUE_OFF + SDK_WORD, SDK_CONTEXT_BYTES, "the five context words span eighty eight bytes");
     for slot in &entry(cc, name).args {
         if slot.key.starts_with('@') {
             continue;
@@ -100,7 +102,7 @@ fn the_qasset_mint_offsets_equal_the_sdk_canonical_layout() {
     assert_eq!(ptr, scheme + SDK_WORD, "the region pointer follows the scheme word");
     assert_eq!(amount, ptr + SDK_WORD, "the amount follows the pointer word");
     // The absolute numbers, frozen, so a silent context shift fails here.
-    assert_eq!((to, scheme, ptr, amount), (80, 112, 120, 128), "the frozen QAsset mint layout");
+    assert_eq!((to, scheme, ptr, amount), (88, 120, 128, 136), "the frozen QAsset mint layout");
 }
 
 #[test]
@@ -112,7 +114,7 @@ fn the_qasset_transfer_offsets_equal_the_sdk_canonical_layout() {
     let amount = offset(&cc, "transfer", "amount");
     assert_eq!(to, SDK_CONTEXT_BYTES, "the destination address opens the argument region");
     assert_eq!(amount, to + SDK_ADDR, "the amount sits one whole address past the destination");
-    assert_eq!((to, amount), (80, 112), "the frozen QAsset transfer layout");
+    assert_eq!((to, amount), (88, 120), "the frozen QAsset transfer layout");
 }
 
 #[test]
@@ -135,7 +137,7 @@ fn scalar_argument_widths_equal_the_sdk_field_widths() {
     assert_eq!(a, SDK_CONTEXT_BYTES, "the first scalar opens the region");
     assert_eq!(b - a, SDK_U128, "a u128 argument is sixteen bytes wide");
     assert_eq!(d - b, SDK_WORD, "a u64 argument is eight bytes wide");
-    assert_eq!((a, b, d), (80, 96, 104), "the frozen width probe layout");
+    assert_eq!((a, b, d), (88, 104, 112), "the frozen width probe layout");
 }
 
 // An end to end proof: an order at the emitted offsets verifies, and the stale shifted offsets are rejected.
@@ -159,9 +161,9 @@ fn run(
 
 fn deploy(cc: &CompiledContract, owner: &[u8; 32]) -> BTreeMap<[u8; 32], u64> {
     // The genesis deploy region: owner address, then the u128 initial supply, then the sentinel.
-    let mut mem = vec![0u8; 80 + 32 + 16 + 8];
-    mem[80..112].copy_from_slice(owner);
-    mem[128..136].copy_from_slice(&SENTINEL);
+    let mut mem = vec![0u8; 88 + 32 + 16 + 8];
+    mem[88..120].copy_from_slice(owner);
+    mem[136..144].copy_from_slice(&SENTINEL);
     run(cc, selector(GENESIS_SIGNATURE), BTreeMap::new(), &mem)
         .expect("genesis initializes from the deploy parameters")
         .0

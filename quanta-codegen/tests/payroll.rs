@@ -32,6 +32,8 @@ fn fund(cc: &CompiledContract, treasury: u64, funds: u64) -> Result<BTreeMap<[u8
     let mut mem = vec![0u8; 4096];
     let off = entry(cc, "fund").args.iter().find(|s| s.key == "funds").expect("funds arg").offset as usize;
     mem[off..off + 8].copy_from_slice(&funds.to_be_bytes());
+    let voff = entry(cc, "fund").args.iter().find(|s| s.key == "@value").expect("value arg").offset as usize;
+    mem[voff..voff + 8].copy_from_slice(&funds.to_be_bytes());
     Interpreter::for_entry(&cc.container, sel, GAS)?
         .with_storage(storage)
         .with_memory(&mem)

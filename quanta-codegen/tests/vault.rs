@@ -32,6 +32,8 @@ fn deposit(cc: &CompiledContract, reserve: u64, funds: u64) -> Result<BTreeMap<[
     let mut mem = vec![0u8; 4096];
     let off = entry(cc, "deposit").args.iter().find(|s| s.key == "funds").expect("funds arg").offset as usize;
     mem[off..off + 8].copy_from_slice(&funds.to_be_bytes());
+    let vo = entry(cc, "deposit").args.iter().find(|s| s.key == "@value").expect("@value ctx").offset as usize;
+    mem[vo..vo + 8].copy_from_slice(&funds.to_be_bytes());
     Interpreter::for_entry(&cc.container, sel, GAS)?
         .with_storage(storage)
         .with_memory(&mem)

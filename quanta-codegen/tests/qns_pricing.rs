@@ -123,6 +123,8 @@ fn run_paid(
     mem[yo..yo + 8].copy_from_slice(&years.to_be_bytes());
     let po = arg_off(cc, name, "payment");
     mem[po..po + 8].copy_from_slice(&payment.to_be_bytes());
+    let vo = arg_off(cc, name, "@value");
+    mem[vo..vo + 8].copy_from_slice(&payment.to_be_bytes());
     Interpreter::for_entry(&cc.container, sel, GAS)?
         .with_storage(storage)
         .with_memory(&mem)
