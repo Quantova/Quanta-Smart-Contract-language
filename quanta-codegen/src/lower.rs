@@ -1292,10 +1292,6 @@ pub fn lower_entry(
         // supplied argument region. This word is what binds a signed or quorum order to one chain, so an
         // order captured on one chain does not verify on another.
         ctx.args.offset_of_width(CHAIN_KEY, WORD);
-        // The host injects the transaction's real transferred value at @value, a fixed context word
-        // reserved right after @chain and ahead of any parameter. An asset parameter's amount reads
-        // this word, never the caller supplied calldata, so a contract can never be told it was paid
-        // more than the value the chain actually moved.
         ctx.args.offset_of_width(VALUE_KEY, WORD);
         for param in &entry.params {
             if param.ty.name.text == NAME_TYPE {
@@ -1314,10 +1310,6 @@ pub fn lower_entry(
         lower_quorum_prologue(&mut ctx, entry, trap)?;
         lower_after_prologue(&mut ctx, entry, trap)?;
         lower_bounds_prologue(&mut ctx, entry, trap)?;
-        // Bind every asset parameter's declared amount to the value the chain actually moved at
-        // @value, or the whole call reverts. Merge, split, and field reads all use the parameter's
-        // amount word, so this one equality gate stops a contract from ever booking a payment larger
-        // than the transaction paid, and it stops an unbounded amount from being asserted.
         {
             let value_off = ctx.args.offset_of(VALUE_KEY);
             let asset_names: Vec<String> = entry

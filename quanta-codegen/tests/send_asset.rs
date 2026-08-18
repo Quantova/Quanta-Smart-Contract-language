@@ -63,7 +63,6 @@ fn send_asset_emits_a_sixty_four_byte_issuer_and_holder_transfer() {
     let mut mem = vec![0u8; 4096];
     mem[0..32].copy_from_slice(&caller);
 
-    // The deployer becomes owner, so the caller gate on claim is grounded in a genesis set field.
     let genesis = qtv_vm::container::selector(qtv_vm::container::GENESIS_SIGNATURE);
     let deployed = Interpreter::for_entry(&cc.container, genesis, GAS)
         .expect("genesis entry")
