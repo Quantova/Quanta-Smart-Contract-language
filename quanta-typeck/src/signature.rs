@@ -58,9 +58,6 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     Ok(())
 }
 
-// An asset move (`send_asset` off the contract's own holding, or `mint_asset` issuing new units)
-// carries no state-field accounting the ledger analysis can track, so it must stand on an explicit
-// authority: a `signed by` order over a genesis grounded field, a quorum, or a `caller` gate.
 fn entry_moves_asset(entry: &EntryDecl) -> bool {
     let mut found = false;
     for stmt in &entry.body {
