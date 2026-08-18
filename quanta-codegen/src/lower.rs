@@ -2953,7 +2953,6 @@ fn lower_send(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), CodegenErr
     Ok(())
 }
 
-/// The reserved event selector the ledger reads as an instruction to mint the contract's own asset.
 const MINT_SELECTOR: u64 = 0x4d494e54;
 
 fn lower_mint_asset(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), CodegenError> {
