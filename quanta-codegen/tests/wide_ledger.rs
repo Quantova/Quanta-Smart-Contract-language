@@ -103,11 +103,11 @@ fn holder_b() -> [u8; 32] {
 }
 
 fn deploy(cc: &CompiledContract, owner: &[u8; 32], initial_supply: u128) -> BTreeMap<[u8; 32], u64> {
-    let mut mem = vec![0u8; 80 + 32 + 16 + 8];
-    mem[80..112].copy_from_slice(owner);
-    mem[112..120].copy_from_slice(&(initial_supply as u64).to_be_bytes());
-    mem[120..128].copy_from_slice(&((initial_supply >> 64) as u64).to_be_bytes());
-    mem[128..136].copy_from_slice(&SENTINEL);
+    let mut mem = vec![0u8; 88 + 32 + 16 + 8];
+    mem[88..120].copy_from_slice(owner);
+    mem[120..128].copy_from_slice(&(initial_supply as u64).to_be_bytes());
+    mem[128..136].copy_from_slice(&((initial_supply >> 64) as u64).to_be_bytes());
+    mem[136..144].copy_from_slice(&SENTINEL);
     run(cc, selector(GENESIS_SIGNATURE), BTreeMap::new(), &mem)
         .expect("genesis initializes from the deploy parameters")
         .0

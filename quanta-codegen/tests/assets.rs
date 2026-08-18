@@ -65,7 +65,7 @@ fn merge_adds_the_incoming_amount_to_the_pooled_balance() {
     let cc = compile(MERGE);
     let mut storage = BTreeMap::new();
     storage.insert(slot_key(0), 100u64); // the pool balance slot
-    let mem = memory_with(&cc, 0, &[("funds", 5)]);
+    let mem = memory_with(&cc, 0, &[("funds", 5), ("@value", 5)]);
     let out = run(&cc, storage, &mem).expect("clean halt");
     assert_eq!(out.get(&slot_key(0)), Some(&105), "the pool must absorb the merge");
 }
@@ -75,7 +75,7 @@ fn merge_overflow_reverts_and_keeps_state() {
     let cc = compile(MERGE);
     let mut storage = BTreeMap::new();
     storage.insert(slot_key(0), u64::MAX);
-    let mem = memory_with(&cc, 0, &[("funds", 1)]);
+    let mem = memory_with(&cc, 0, &[("funds", 1), ("@value", 1)]);
     assert_eq!(
         run(&cc, storage, &mem),
         Err(Fault::Overflow),
@@ -349,7 +349,7 @@ const SENDER: &str = "contract Sender {\n\
 fn a_send_lowers_and_the_machine_records_the_transfer_effect() {
     let cc = compile(SENDER);
     let to = addr(0x7B);
-    let mut mem = memory_with(&cc, 0, &[("funds", 750)]);
+    let mut mem = memory_with(&cc, 0, &[("funds", 750), ("@value", 750)]);
     set_addr_arg(&mut mem, &cc, 0, "to", &to);
     let out = Interpreter::for_entry(&cc.container, cc.entries[0].selector, 300_000)
         .expect("the payout selector resolves")

@@ -95,6 +95,8 @@ fn buy_mem(cc: &CompiledContract, buyer: &[u8; 32], id: u64, payment: u64) -> Ve
     mem[ido..ido + 8].copy_from_slice(&id.to_be_bytes());
     let po = arg_off(cc, "buy", "payment");
     mem[po..po + 8].copy_from_slice(&payment.to_be_bytes());
+    let vo = arg_off(cc, "buy", "@value");
+    mem[vo..vo + 8].copy_from_slice(&payment.to_be_bytes());
     mem
 }
 

@@ -417,8 +417,13 @@ mod tests {
                     width: 8,
                 },
                 ArgSlot {
-                    key: "step".to_string(),
+                    key: "@value".to_string(),
                     offset: 80,
+                    width: 8,
+                },
+                ArgSlot {
+                    key: "step".to_string(),
+                    offset: 88,
                     width: 8,
                 },
             ]

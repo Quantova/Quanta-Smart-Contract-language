@@ -27,7 +27,7 @@ fn run_genesis(cc: &CompiledContract, mem: &[u8]) -> Result<std::collections::BT
 }
 
 fn params_memory(param_bytes: &[u8]) -> Vec<u8> {
-    let context = 80usize;
+    let context = 88usize;
     let mut mem = vec![0u8; context + param_bytes.len() + 8];
     mem[context..context + param_bytes.len()].copy_from_slice(param_bytes);
     mem[context + param_bytes.len()..].copy_from_slice(&SENTINEL);
@@ -48,8 +48,8 @@ fn genesis_stores_an_address_param_in_full_and_a_wide_param_across_two_slots() {
             .map(|p| (p.key.as_str(), p.offset, p.width))
             .collect::<Vec<_>>(),
         vec![
-            ("deploy_params.owner", 80, 32),
-            ("deploy_params.initial_supply", 112, 16),
+            ("deploy_params.owner", 88, 32),
+            ("deploy_params.initial_supply", 120, 16),
         ]
     );
 
@@ -82,7 +82,7 @@ fn a_deploy_that_omits_the_sentinel_reverts_and_stores_nothing() {
     bytes.extend_from_slice(&owner);
     bytes.extend_from_slice(&(supply as u64).to_be_bytes());
     bytes.extend_from_slice(&((supply >> 64) as u64).to_be_bytes());
-    let context = 80usize;
+    let context = 88usize;
     let mut mem = vec![0u8; context + bytes.len()];
     mem[context..].copy_from_slice(&bytes);
     assert_eq!(
@@ -96,7 +96,7 @@ fn a_deploy_that_omits_the_sentinel_reverts_and_stores_nothing() {
 fn a_deploy_that_omits_a_required_param_reverts() {
     let cc = compile(OWNER_SUPPLY);
     let owner = [0x22u8; 32];
-    let context = 80usize;
+    let context = 88usize;
     let mut mem = vec![0u8; context + 32];
     mem[context..].copy_from_slice(&owner);
     assert_eq!(
@@ -138,7 +138,7 @@ fn a_u64_deploy_param_is_read_as_one_word() {
             .iter()
             .map(|p| (p.key.as_str(), p.offset, p.width))
             .collect::<Vec<_>>(),
-        vec![("deploy_params.limit", 80, 8)]
+        vec![("deploy_params.limit", 88, 8)]
     );
     let value: u64 = 9_000_000_000_000;
     let storage = run_genesis(&cc, &params_memory(&value.to_be_bytes())).expect("genesis halts");
@@ -158,7 +158,7 @@ fn a_guardian_set_deploy_param_seeds_the_whole_set() {
             .iter()
             .map(|p| (p.key.as_str(), p.offset, p.width))
             .collect::<Vec<_>>(),
-        vec![("deploy_params.guardians", 80, 96)]
+        vec![("deploy_params.guardians", 88, 96)]
     );
     let g: [[u8; 32]; 3] = [[0xA1; 32], [0xB2; 32], [0xC3; 32]];
     let mut bytes = Vec::new();
