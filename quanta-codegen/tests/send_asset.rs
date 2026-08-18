@@ -16,7 +16,9 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
     cc.entries.iter().find(|e| e.name == name).expect("entry")
 }
 
-const SELF_PAY: &str = "contract SelfPay { entry claim() { send_asset(caller, caller, 40); } }";
+const SELF_PAY: &str = "contract SelfPay { state { owner: Q_Address; } \
+     genesis { owner = deployer; } \
+     entry claim() { guard caller == owner; send_asset(caller, caller, 40); } }";
 
 const MINTER: &str = "contract Minter { asset MTK; state { total_supply: u128; } \
      genesis { total_supply = 100; mint_asset(deployer, 100); } }";
@@ -61,8 +63,17 @@ fn send_asset_emits_a_sixty_four_byte_issuer_and_holder_transfer() {
     let mut mem = vec![0u8; 4096];
     mem[0..32].copy_from_slice(&caller);
 
+    // The deployer becomes owner, so the caller gate on claim is grounded in a genesis set field.
+    let genesis = qtv_vm::container::selector(qtv_vm::container::GENESIS_SIGNATURE);
+    let deployed = Interpreter::for_entry(&cc.container, genesis, GAS)
+        .expect("genesis entry")
+        .with_memory(&mem)
+        .run()
+        .expect("the genesis halts");
+
     let out = Interpreter::for_entry(&cc.container, claim.selector, GAS)
         .expect("entry")
+        .with_storage(deployed.storage)
         .with_memory(&mem)
         .run()
         .expect("the entry halts");
