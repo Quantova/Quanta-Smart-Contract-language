@@ -52,7 +52,41 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if entry_moves_ledger_value(model, entry) && !entry_binds_caller(model, entry, &signed) {
         return Err(no_ledger_authority_error(entry));
     }
+    if entry_moves_asset(entry) && !entry_binds_caller(model, entry, &signed) {
+        return Err(no_asset_authority_error(entry));
+    }
     Ok(())
+}
+
+// An asset move (`send_asset` off the contract's own holding, or `mint_asset` issuing new units)
+// carries no state-field accounting the ledger analysis can track, so it must stand on an explicit
+// authority: a `signed by` order over a genesis grounded field, a quorum, or a `caller` gate.
+fn entry_moves_asset(entry: &EntryDecl) -> bool {
+    let mut found = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, .. } = e {
+                if let Expr::Ident(id) = callee.as_ref() {
+                    if matches!(id.text.as_str(), "send_asset" | "mint_asset") {
+                        found = true;
+                    }
+                }
+            }
+        });
+    }
+    found
+}
+
+fn no_asset_authority_error(entry: &EntryDecl) -> TypeError {
+    TypeError::new(
+        format!(
+            "this entry `{}` moves asset value with no authority: it sends the contract's own asset \
+             holding or mints new units, but carries no `caller` check, `signed by`, or quorum \
+             binding; authority must come from `caller` or a signature",
+            entry.name.text
+        ),
+        entry.name.span,
+    )
 }
 
 fn no_ledger_authority_error(entry: &EntryDecl) -> TypeError {
@@ -473,7 +507,9 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
         stmt_exprs(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
                 match callee.as_ref() {
-                    Expr::Ident(id) if id.text == "send" => {
+                    Expr::Ident(id)
+                        if matches!(id.text.as_str(), "send" | "send_asset" | "mint_asset") =>
+                    {
                         if !ledger_only {
                             moves = true;
                         }
@@ -1482,6 +1518,29 @@ mod tests {
                    entry drain(order: Rel signed by owner) conserves QTOV writes(vault) \
                    { send(order.to, vault.split(order.amount)); } }";
         assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn an_unauthenticated_asset_send_is_rejected() {
+        let src = "contract C { asset TKN; state { owner: Q_Address; } genesis { owner = deployer; } \
+                   entry transfer(order: sealed TransferOrder) { send_asset(self, order.to, order.amount); } }";
+        assert!(error_for(src).contains("no authority"), "{}", error_for(src));
+    }
+
+    #[test]
+    fn an_owner_signed_asset_send_is_accepted() {
+        let src = "contract C { asset TKN; state { owner: Q_Address; } genesis { owner = deployer; } \
+                   entry transfer(order: TransferOrder signed by owner) { send_asset(self, order.to, order.amount); } }";
+        ok(src);
+    }
+
+    #[test]
+    fn an_unauthenticated_asset_mint_is_rejected() {
+        let src = "contract C { asset TKN; state { owner: Q_Address; supply: u128; } \
+                   genesis { owner = deployer; supply = 0; } \
+                   entry issue(order: MintOrder) mints TKN writes(supply) \
+                   { supply += order.amount; mint_asset(order.to, order.amount); } }";
+        assert!(error_for(src).contains("no authority"), "{}", error_for(src));
     }
 
     #[test]

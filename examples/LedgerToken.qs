@@ -23,7 +23,7 @@ contract LedgerToken {
     mint_asset(order.to, order.amount);
     emit Minted(order.to, order.amount);
   }
-  entry transfer(order: sealed TransferOrder) {
+  entry transfer(order: TransferOrder signed by owner) {
     send_asset(self, order.to, order.amount);
     emit Transferred(order.to, order.amount);
   }
