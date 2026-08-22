@@ -3022,7 +3022,11 @@ fn lower_mint_asset(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), Code
 
 fn lower_send_asset(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), CodegenError> {
     let (issuer, to, value) = three_args(args, span)?;
-    let amount = narrow_amount(ctx, value)?;
+    let amount = if is_asset_value(ctx, value) {
+        asset_amount(ctx, value, span)?
+    } else {
+        narrow_amount(ctx, value)?
+    };
     let issuer_off = lower_address(ctx, issuer, span)?;
     let to_off = lower_address(ctx, to, span)?;
     let region = ctx.next_state_addr_scratch;
