@@ -24,3 +24,6 @@ license = "Apache-2.0 OR MIT"
 # compiler crates fast to build and debug while the cryptographic tests stay tractable.
 [profile.dev.package.qtv-crypto]
 opt-level = 3
+
+[profile.release]
+overflow-checks = true
