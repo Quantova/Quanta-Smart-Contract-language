@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::error::TypeError;
-use crate::model::{is_quorum_param, Model};
+use crate::model::{asset_inner, is_quorum_param, Model};
 use quanta_ast::{BinOp, Clause, EntryDecl, Expr, GenericArg, Param, Stmt, UnaryOp};
 use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
@@ -15,6 +15,27 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
 }
 
 fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
+    if entry
+        .params
+        .iter()
+        .filter(|p| crate::model::is_asset_param(p))
+        .count()
+        > 1
+    {
+        if let Some(second) = entry
+            .params
+            .iter()
+            .filter(|p| crate::model::is_asset_param(p))
+            .nth(1)
+        {
+            return Err(TypeError::new(
+                "more than one incoming asset parameter: the call carries a single value word, so each \
+                 asset param binds the same inflow; take at most one asset parameter per entry"
+                    .to_string(),
+                second.name.span,
+            ));
+        }
+    }
     let signed: HashSet<&str> = entry
         .params
         .iter()
@@ -90,8 +111,9 @@ fn no_ledger_authority_error(entry: &EntryDecl) -> TypeError {
     TypeError::new(
         format!(
             "this entry `{}` moves ledger value with no authority: it credits unbacked supply, \
-             debits another account, or overwrites a ledger map, but carries no `caller` check, \
-             `signed by`, or quorum binding; authority must come from `caller` or a signature",
+             debits another account, overwrites a ledger map, or sends the contract's asset pool \
+             without a matching inflow, but carries no `caller` check, `signed by`, or quorum \
+             binding; authority must come from `caller`, an incoming asset, or a signature",
             entry.name.text
         ),
         entry.name.span,
@@ -492,6 +514,15 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
         .collect();
     let mut spends = self_spend_amounts(&ledgers, entry, &reads_of, &sub_locals);
     let mut used_asset_backers: HashSet<&str> = HashSet::new();
+    let mut pool_locals: HashMap<&str, Option<&Expr>> = HashMap::new();
+    let entry_takes_asset = entry.params.iter().any(crate::model::is_asset_param);
+    for stmt in &entry.body {
+        if let Stmt::Let { name, value, .. } = stmt {
+            if let Some(amt) = pool_send_amount(model, value) {
+                pool_locals.insert(name.text.as_str(), amt);
+            }
+        }
+    }
     let mut moves = false;
     for stmt in &entry.body {
         if let Stmt::Assign { target, .. } = stmt {
@@ -509,6 +540,35 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                     {
                         if !ledger_only {
                             moves = true;
+                        } else if id.text == "send" {
+                            let pool_amt = args.get(1).and_then(|v| {
+                                pool_send_amount(model, v).or_else(|| {
+                                    if let Expr::Ident(vid) = v {
+                                        pool_locals.get(vid.text.as_str()).copied()
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
+                            if let Some(amt_opt) = pool_amt {
+                                let backed = match amt_opt {
+                                    Some(amt) => {
+                                        let self_backed =
+                                            match spends.iter().position(|sp| expr_eq(sp, amt)) {
+                                                Some(pos) => {
+                                                    spends.remove(pos);
+                                                    true
+                                                }
+                                                None => false,
+                                            };
+                                        self_backed || entry_takes_asset
+                                    }
+                                    None => false,
+                                };
+                                if !backed {
+                                    moves = true;
+                                }
+                            }
                         }
                     }
                     Expr::Field { name, .. } if name.text == "debit" => {
@@ -574,6 +634,33 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
         });
     }
     moves
+}
+
+fn state_asset_field(model: &Model, name: &str) -> bool {
+    model
+        .state
+        .get(name)
+        .and_then(|f| asset_inner(&f.ty))
+        .is_some()
+}
+
+fn pool_send_amount<'a>(model: &Model, e: &'a Expr) -> Option<Option<&'a Expr>> {
+    match e {
+        Expr::Call { callee, args, .. } => {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if name.text == "split" {
+                    if let Expr::Ident(id) = base.as_ref() {
+                        if state_asset_field(model, id.text.as_str()) {
+                            return Some(args.first());
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Expr::Ident(id) if state_asset_field(model, id.text.as_str()) => Some(None),
+        _ => None,
+    }
 }
 
 fn asset_amount_backer<'a>(value: &Expr, asset_params: &HashSet<&'a str>) -> Option<&'a str> {
