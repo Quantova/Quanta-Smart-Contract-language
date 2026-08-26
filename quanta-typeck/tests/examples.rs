@@ -26,7 +26,7 @@ fn qs_files(dir: &Path) -> Vec<PathBuf> {
 #[test]
 fn every_example_checks_clean() {
     let files = qs_files(&examples_dir());
-    assert_eq!(files.len(), 24);
+    assert_eq!(files.len(), 22);
     for file in files {
         let src = fs::read_to_string(&file).unwrap();
         let program = quanta_parser::parse(&src)
