@@ -67,6 +67,9 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if let Some(err) = forged_caller_anchor(model, entry, &signed) {
         return Err(err);
     }
+    if let Some(err) = forged_recipient(model, entry) {
+        return Err(err);
+    }
     if let Some(err) = forged_signed_authority(model, entry) {
         return Err(err);
     }
@@ -208,6 +211,90 @@ fn forgeable_anchor_error(anchor: &str, span: Span) -> TypeError {
             "forged authority: this entry moves value gated on `caller` against `{anchor}`, but an \
              entry with no authority can write `{anchor}`, so the check is forgeable; write the \
              authority only from an authorized entry or from genesis"
+        ),
+        span,
+    )
+}
+
+// The authority analysis protects who triggers a value move and when, but not where the value lands.
+// A `send` / `send_asset` recipient read from a state field an unauthorized entry can rewrite lets an
+// attacker redirect an otherwise authorized payout, so every state recipient must be authority protected.
+fn forged_recipient(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
+    if !entry_moves_value(model, entry) && !entry_moves_asset(entry) {
+        return None;
+    }
+    let mut alias: HashMap<&str, &str> = HashMap::new();
+    for stmt in &entry.body {
+        if let Stmt::Let { name, value, .. } = stmt {
+            if let Some(field) = recipient_state_field(model, value) {
+                alias.insert(name.text.as_str(), field);
+            }
+        }
+    }
+    let mut found: Option<(String, Span)> = None;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if found.is_some() {
+                return;
+            }
+            if let Expr::Call { callee, args, span } = e {
+                if let Expr::Ident(id) = callee.as_ref() {
+                    let recip = match id.text.as_str() {
+                        "send" => args.first(),
+                        "send_asset" => args.get(1),
+                        _ => None,
+                    };
+                    if let Some(recip) = recip {
+                        let field = recipient_state_field(model, recip).or_else(|| match recip {
+                            Expr::Ident(rid) => alias.get(rid.text.as_str()).copied(),
+                            _ => None,
+                        });
+                        if let Some(field) = field {
+                            if !authority_anchor_protected(model, field) {
+                                found = Some((field.to_string(), *span));
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        if found.is_some() {
+            break;
+        }
+    }
+    found.map(|(field, span)| forged_recipient_error(&field, span))
+}
+
+// the state field a `send` recipient reads from, either directly, through one field access, or through a
+// `get` / `at` lookup on a state map; a param field or `caller` recipient is authenticated and returns None
+fn recipient_state_field<'e>(model: &Model, recip: &'e Expr) -> Option<&'e str> {
+    match recip {
+        Expr::Ident(id) if model.state.contains_key(id.text.as_str()) => Some(id.text.as_str()),
+        Expr::Field { base, .. } => match base.as_ref() {
+            Expr::Ident(id) if model.state.contains_key(id.text.as_str()) => Some(id.text.as_str()),
+            _ => None,
+        },
+        Expr::Call { callee, .. } => match callee.as_ref() {
+            Expr::Field { base, name, .. } if matches!(name.text.as_str(), "get" | "at") => {
+                match base.as_ref() {
+                    Expr::Ident(id) if model.state.contains_key(id.text.as_str()) => {
+                        Some(id.text.as_str())
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn forged_recipient_error(field: &str, span: Span) -> TypeError {
+    TypeError::new(
+        format!(
+            "forged recipient: this entry moves value to a destination read from state `{field}`, but \
+             an entry with no authority can write `{field}`, so the destination is forgeable; write the \
+             recipient only from an authorized entry or from genesis"
         ),
         span,
     )
@@ -1350,6 +1437,25 @@ mod tests {
         let program = quanta_parser::parse(src).expect("source parses");
         let model = Model::build(&program.contracts[0]);
         super::check(&model).expect("checker should accept");
+    }
+
+    #[test]
+    fn a_payout_to_a_settable_recipient_is_a_forged_destination() {
+        let src = "contract C { state { owner: Q_Address; beneficiary: Q_Address; pool: Q_Asset<QTOV>; } \
+                   genesis { owner = deployer; } \
+                   entry setben(b: Q_Address) writes(beneficiary) { beneficiary = b; } \
+                   entry payout(order: PayOrder) conserves QTOV writes(pool) \
+                   { guard caller == owner; let out = pool.split(order.amount); send(beneficiary, out); } }";
+        assert!(error_for(src).contains("forged recipient"));
+    }
+
+    #[test]
+    fn a_payout_to_a_genesis_set_recipient_is_accepted() {
+        let src = "contract C { state { owner: Q_Address; beneficiary: Q_Address; pool: Q_Asset<QTOV>; } \
+                   genesis { owner = deployer; beneficiary = deployer; } \
+                   entry payout(order: PayOrder) conserves QTOV writes(pool) \
+                   { guard caller == owner; let out = pool.split(order.amount); send(beneficiary, out); } }";
+        ok(src);
     }
 
     #[test]
