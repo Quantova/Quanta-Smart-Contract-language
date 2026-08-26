@@ -168,6 +168,27 @@ fn compile_entries(
         })
         .collect();
 
+    // The host reads an emitted event with a reserved selector as a privileged action, the asset mint
+    // being the one it performs with no on chain authority check. An event selector is the hash of the
+    // event name, so a name can be ground to collide with a reserved tag and mint outside the mint
+    // authority gate. Reject any event that lands on a reserved host selector, the same way the genesis
+    // selector is reserved against entries.
+    const RESERVED_EVENT_SELECTORS: [([u8; SELECTOR_BYTES], &str); 1] = [(*b"MINT", "the asset mint")];
+    for item in &contract.items {
+        if let Item::Event(ev) = item {
+            let selector = event_selector(ev);
+            if let Some((_, what)) = RESERVED_EVENT_SELECTORS.iter().find(|(s, _)| *s == selector) {
+                return Err(CodegenError::Rejected {
+                    what: format!(
+                        "the event `{}` collides with {} reserved host selector",
+                        ev.name.text, what
+                    ),
+                    span: ev.span,
+                });
+            }
+        }
+    }
+
     let mut b = Builder::new();
     let trap = b.label();
 
@@ -374,6 +395,23 @@ mod tests {
         assert!(
             matches!(&result, Err(CodegenError::Rejected { .. })),
             "an argument read narrow then as an address must be rejected, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn an_event_that_collides_with_the_reserved_mint_selector_is_rejected() {
+        // The event name is ground so its signature hashes to the host mint tag `MINT`. Emitting it
+        // would mint the contract's asset with no authority, so codegen must refuse the contract.
+        let src = "contract C { asset FORGE; state { note: u64; } \
+            entry claim(amount: u64) writes(note) \
+            { note = amount; emit Payout394818437(caller, amount); } \
+            event Payout394818437(to: Q_Address, amount: u64); }";
+        let program = quanta_parser::parse(src).expect("parse");
+        quanta_typeck::check(&program).expect("typecheck");
+        let result = compile(&program);
+        assert!(
+            matches!(&result, Err(CodegenError::Rejected { .. })),
+            "an event colliding with the reserved mint selector must be rejected, got {result:?}"
         );
     }
 
