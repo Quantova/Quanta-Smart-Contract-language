@@ -105,13 +105,15 @@ fn buy(cc: &CompiledContract, storage: BTreeMap<[u8; 32], u64>, buyer: &[u8; 32]
 }
 
 #[test]
-fn the_old_unbound_buy_accepts_a_zero_price_purchase() {
-    let cc = compile(UNBOUND);
-    let mut storage = BTreeMap::new();
-    storage.insert(slot_key(ESCROWED_SLOT), 0);
-    let mem = vec![0u8; 4096];
-    let out = run(&cc.container, entry(&cc, "buy").selector, storage, &mem);
-    assert!(out.is_ok(), "the old buy accepts a zero price purchase bound to no listing");
+fn the_old_unbound_buy_no_longer_compiles() {
+    // The unbound buy sends the escrow pool split by an order supplied price that is not tied to the
+    // buyer's paid in amount, the pool drain shape. The authority analysis now refuses it, so the zero
+    // price purchase bound to no listing that it used to accept can never be built or deployed.
+    let program = quanta_parser::parse(UNBOUND).expect("parse");
+    assert!(
+        quanta_typeck::check(&program).is_err(),
+        "the unbound buy that splits the escrow pool by an order price must be rejected"
+    );
 }
 
 #[test]
