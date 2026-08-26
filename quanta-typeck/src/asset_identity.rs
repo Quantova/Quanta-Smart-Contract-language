@@ -320,7 +320,7 @@ fn sent_value_error(
             "an asset pool cannot be sent directly; split the amount to send".to_string(),
             span,
         )),
-        Some(kind) if kind != NATIVE_ASSET => Some(TypeError::new(
+        Some(kind) if kind != NATIVE_ASSET || model.is_declared_asset(&kind) => Some(TypeError::new(
             format!(
                 "a non native asset `{kind}` cannot be moved with send which transfers the native token, move it with send_asset naming its issuer"
             ),
@@ -457,6 +457,15 @@ mod tests {
     fn a_non_native_asset_sent_with_send_is_rejected() {
         let src = "contract C { asset TKN; state { x: u64; } \
                    entry transfer(funds: Q_Asset<TKN>, to: Q_Address) conserves TKN writes(x) \
+                   { x = funds.amount; send(to, funds); } }";
+        let msg = error_for(src);
+        assert!(msg.contains("send_asset"), "got: {msg}");
+    }
+
+    #[test]
+    fn a_declared_asset_that_shadows_the_native_name_cannot_be_sent_with_send() {
+        let src = "contract C { asset QTOV; state { x: u64; } \
+                   entry t(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV writes(x) \
                    { x = funds.amount; send(to, funds); } }";
         let msg = error_for(src);
         assert!(msg.contains("send_asset"), "got: {msg}");
