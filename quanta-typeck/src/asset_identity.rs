@@ -7,6 +7,9 @@ use quanta_ast::{Clause, EntryDecl, Expr, Stmt};
 use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
 
+// the ledger reads a 32 byte send recipient as the native token so a send only ever moves it
+const NATIVE_ASSET: &str = "QTOV";
+
 pub fn check(model: &Model) -> Result<(), TypeError> {
     for entry in &model.entries {
         check_entry(model, entry)?;
@@ -317,6 +320,12 @@ fn sent_value_error(
             "an asset pool cannot be sent directly; split the amount to send".to_string(),
             span,
         )),
+        Some(kind) if kind != NATIVE_ASSET => Some(TypeError::new(
+            format!(
+                "a non native asset `{kind}` cannot be moved with send which transfers the native token, move it with send_asset naming its issuer"
+            ),
+            span,
+        )),
         Some(_) => None,
     }
 }
@@ -442,6 +451,23 @@ mod tests {
         let program = quanta_parser::parse(src).expect("source parses");
         let model = Model::build(&program.contracts[0]);
         super::check(&model).expect("checker should accept");
+    }
+
+    #[test]
+    fn a_non_native_asset_sent_with_send_is_rejected() {
+        let src = "contract C { asset TKN; state { x: u64; } \
+                   entry transfer(funds: Q_Asset<TKN>, to: Q_Address) conserves TKN writes(x) \
+                   { x = funds.amount; send(to, funds); } }";
+        let msg = error_for(src);
+        assert!(msg.contains("send_asset"), "got: {msg}");
+    }
+
+    #[test]
+    fn sending_the_native_asset_with_send_still_compiles() {
+        let src = "contract C { state { x: u64; } \
+                   entry pay(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV writes(x) \
+                   { x = funds.amount; send(to, funds); } }";
+        ok(src);
     }
 
     #[test]
