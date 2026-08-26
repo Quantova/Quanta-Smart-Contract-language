@@ -514,17 +514,21 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
         .collect();
     let mut spends = self_spend_amounts(&ledgers, entry, &reads_of, &sub_locals);
     let mut used_asset_backers: HashSet<&str> = HashSet::new();
-    let mut pool_locals: HashMap<&str, Option<&Expr>> = HashMap::new();
+    let mut pool_locals: HashMap<&str, (&str, Option<&Expr>)> = HashMap::new();
     let asset_param_name: Option<&str> = entry
         .params
         .iter()
         .find(|p| crate::model::is_asset_param(p))
         .map(|p| p.name.text.as_str());
     let mut asset_inflow_unspent = asset_param_name.is_some();
+    // An incoming asset only backs a pool send if it is actually merged into that same pool. Diverting
+    // it elsewhere or handing it back leaves the pool short, so record which pool it enters.
+    let merged_pool: Option<&str> =
+        asset_param_name.and_then(|param| asset_merged_into(model, entry, param));
     for stmt in &entry.body {
         if let Stmt::Let { name, value, .. } = stmt {
-            if let Some(amt) = pool_send_amount(model, value) {
-                pool_locals.insert(name.text.as_str(), amt);
+            if let Some(target) = pool_send_target(model, value) {
+                pool_locals.insert(name.text.as_str(), target);
             }
         }
     }
@@ -546,8 +550,8 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                         if !ledger_only {
                             moves = true;
                         } else if id.text == "send" {
-                            let pool_amt = args.get(1).and_then(|v| {
-                                pool_send_amount(model, v).or_else(|| {
+                            let target = args.get(1).and_then(|v| {
+                                pool_send_target(model, v).or_else(|| {
                                     if let Expr::Ident(vid) = v {
                                         pool_locals.get(vid.text.as_str()).copied()
                                     } else {
@@ -555,7 +559,7 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                     }
                                 })
                             });
-                            if let Some(amt_opt) = pool_amt {
+                            if let Some((pool, amt_opt)) = target {
                                 let backed = match amt_opt {
                                     Some(amt) => {
                                         let self_backed =
@@ -569,6 +573,7 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                         if self_backed {
                                             true
                                         } else if asset_inflow_unspent
+                                            && merged_pool == Some(pool)
                                             && asset_param_name
                                                 .map(|n| is_asset_amount_expr(amt, n))
                                                 .unwrap_or(false)
@@ -671,23 +676,57 @@ fn state_asset_field(model: &Model, name: &str) -> bool {
         .is_some()
 }
 
-fn pool_send_amount<'a>(model: &Model, e: &'a Expr) -> Option<Option<&'a Expr>> {
+fn pool_send_target<'a>(model: &Model, e: &'a Expr) -> Option<(&'a str, Option<&'a Expr>)> {
     match e {
         Expr::Call { callee, args, .. } => {
             if let Expr::Field { base, name, .. } = callee.as_ref() {
                 if name.text == "split" {
                     if let Expr::Ident(id) = base.as_ref() {
                         if state_asset_field(model, id.text.as_str()) {
-                            return Some(args.first());
+                            return Some((id.text.as_str(), args.first()));
                         }
                     }
                 }
             }
             None
         }
-        Expr::Ident(id) if state_asset_field(model, id.text.as_str()) => Some(None),
+        Expr::Ident(id) if state_asset_field(model, id.text.as_str()) => {
+            Some((id.text.as_str(), None))
+        }
         _ => None,
     }
+}
+
+fn merge_pool_in<'a>(model: &Model, e: &'a Expr, param: &str) -> Option<&'a str> {
+    if let Expr::Call { callee, args, .. } = e {
+        if let Expr::Field { base, name, .. } = callee.as_ref() {
+            if name.text == "merge" {
+                if let Expr::Ident(pool) = base.as_ref() {
+                    let arg_is_param =
+                        matches!(args.first(), Some(Expr::Ident(a)) if a.text == param);
+                    if arg_is_param && state_asset_field(model, pool.text.as_str()) {
+                        return Some(pool.text.as_str());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn asset_merged_into<'a>(model: &Model, entry: &'a EntryDecl, param: &str) -> Option<&'a str> {
+    for stmt in &entry.body {
+        let expr = match stmt {
+            Stmt::Expr { expr, .. } => Some(expr),
+            Stmt::Let { value, .. } => Some(value),
+            Stmt::Assign { value, .. } => Some(value),
+            _ => None,
+        };
+        if let Some(pool) = expr.and_then(|e| merge_pool_in(model, e, param)) {
+            return Some(pool);
+        }
+    }
+    None
 }
 
 fn asset_amount_backer<'a>(value: &Expr, asset_params: &HashSet<&'a str>) -> Option<&'a str> {
@@ -1652,6 +1691,29 @@ mod tests {
                    entry issue(order: MintOrder) mints TKN writes(supply) \
                    { supply += order.amount; mint_asset(order.to, order.amount); } }";
         assert!(error_for(src).contains("no authority"), "{}", error_for(src));
+    }
+
+    #[test]
+    fn a_pool_send_backed_by_an_asset_that_is_handed_back_is_rejected() {
+        let src = "contract C { state { pool: Q_Asset<QTOV>; } \
+                   entry drain(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV writes(pool) \
+                   { send(to, pool.split(funds.amount)); send(caller, funds); } }";
+        assert!(error_for(src).contains("no authority"), "{}", error_for(src));
+    }
+
+    #[test]
+    fn a_pool_send_backed_by_an_asset_merged_into_another_pool_is_rejected() {
+        let src = "contract C { state { pool: Q_Asset<QTOV>; sink: Q_Asset<QTOV>; } \
+                   entry drain(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV writes(pool, sink) \
+                   { send(to, pool.split(funds.amount)); sink.merge(funds); } }";
+        assert!(error_for(src).contains("no authority"), "{}", error_for(src));
+    }
+
+    #[test]
+    fn a_pool_send_of_an_asset_merged_into_that_pool_is_accepted() {
+        ok("contract C { state { pool: Q_Asset<QTOV>; } \
+            entry route(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV writes(pool) \
+            { pool.merge(funds); send(to, pool.split(funds.amount)); } }");
     }
 
     #[test]
