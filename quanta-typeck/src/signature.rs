@@ -515,7 +515,12 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
     let mut spends = self_spend_amounts(&ledgers, entry, &reads_of, &sub_locals);
     let mut used_asset_backers: HashSet<&str> = HashSet::new();
     let mut pool_locals: HashMap<&str, Option<&Expr>> = HashMap::new();
-    let entry_takes_asset = entry.params.iter().any(crate::model::is_asset_param);
+    let asset_param_name: Option<&str> = entry
+        .params
+        .iter()
+        .find(|p| crate::model::is_asset_param(p))
+        .map(|p| p.name.text.as_str());
+    let mut asset_inflow_unspent = asset_param_name.is_some();
     for stmt in &entry.body {
         if let Stmt::Let { name, value, .. } = stmt {
             if let Some(amt) = pool_send_amount(model, value) {
@@ -561,7 +566,18 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                                 }
                                                 None => false,
                                             };
-                                        self_backed || entry_takes_asset
+                                        if self_backed {
+                                            true
+                                        } else if asset_inflow_unspent
+                                            && asset_param_name
+                                                .map(|n| is_asset_amount_expr(amt, n))
+                                                .unwrap_or(false)
+                                        {
+                                            asset_inflow_unspent = false;
+                                            true
+                                        } else {
+                                            false
+                                        }
                                     }
                                     None => false,
                                 };
@@ -634,6 +650,17 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
         });
     }
     moves
+}
+
+fn is_asset_amount_expr(amt: &Expr, asset_param: &str) -> bool {
+    if let Expr::Field { base, name, .. } = amt {
+        if name.text == "amount" {
+            if let Expr::Ident(id) = base.as_ref() {
+                return id.text == asset_param;
+            }
+        }
+    }
+    false
 }
 
 fn state_asset_field(model: &Model, name: &str) -> bool {
