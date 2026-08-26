@@ -1920,7 +1920,20 @@ fn lower_after_prologue(
                     reg
                 }
             }
-            AfterTarget::Expr(expr) => lower_expr(ctx, expr, false)?,
+            AfterTarget::Expr(expr) => {
+                let reg = lower_expr(ctx, expr, false)?;
+                if let Some(base) = from {
+                    let anchor = lower_expr(ctx, base, false)?;
+                    // Checked add: an overflowing time gate must fault and revert, not wrap open.
+                    ctx.b.op(Instr::Add {
+                        d: reg,
+                        a: reg,
+                        b: anchor,
+                    });
+                    ctx.regs.free(anchor);
+                }
+                reg
+            }
         };
         ctx.b.op(Instr::LtU {
             d: time,
