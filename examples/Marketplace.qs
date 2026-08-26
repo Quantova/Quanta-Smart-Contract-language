@@ -27,7 +27,7 @@ contract Marketplace {
     guard listings.get(id) > 0;
     guard payment.amount == listings.get(id);
     escrowed.merge(payment);
-    send(owner, escrowed.split(listings.get(id)));
+    send(owner, escrowed.split(payment.amount));
     item_owner.set(id, caller);
     emit Sold(id, caller, listings.get(id));
     listings.set(id, 0);
