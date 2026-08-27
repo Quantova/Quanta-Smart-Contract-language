@@ -242,6 +242,7 @@ fn forged_recipient(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
                     let recip = match id.text.as_str() {
                         "send" => args.first(),
                         "send_asset" => args.get(1),
+                        "mint_asset" => args.first(),
                         _ => None,
                     };
                     if let Some(recip) = recip {
