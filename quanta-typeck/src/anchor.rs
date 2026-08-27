@@ -35,7 +35,7 @@ fn check_anchor_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeErr
             if field_is_asset(model, field) {
                 continue;
             }
-            if read_starts_nonzero(model, read, field) || entry_records_now(entry, read) {
+            if read_starts_nonzero(model, read, field) {
                 continue;
             }
             if !entry_requires_nonzero(entry, read) {
@@ -102,6 +102,32 @@ fn field_is_asset(model: &Model, field: &str) -> bool {
     model.state.get(field).is_some_and(|f| is_asset_type(&f.ty))
 }
 
+// The genesis block runs once before any entry, so an anchor it sets to a nonzero value (the deploy
+// time via `now`, a date, or a nonzero literal) is already armed when the first gated call arrives.
+fn genesis_arms_nonzero(model: &Model, field: &str) -> bool {
+    for item in &model.contract.items {
+        let quanta_ast::Item::Genesis(genesis) = item else {
+            continue;
+        };
+        for stmt in &genesis.body {
+            if let Stmt::Assign { target, value, .. } = stmt {
+                if matches!(target, Expr::Ident(id) if id.text == field) {
+                    match value {
+                        Expr::Now { .. } | Expr::Date { .. } => return true,
+                        Expr::Int(lit) => {
+                            if lit.text.replace('_', "").parse::<u128>() != Ok(0) {
+                                return true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 fn read_starts_nonzero(model: &Model, read: &Expr, field: &str) -> bool {
     if !matches!(read, Expr::Ident(_)) {
         return false;
@@ -111,7 +137,7 @@ fn read_starts_nonzero(model: &Model, read: &Expr, field: &str) -> bool {
         Some(Expr::Int(lit)) => lit.text.replace('_', "").parse::<u128>() != Ok(0),
         Some(_) => true,
     };
-    if !has_nonzero_default {
+    if !has_nonzero_default && !genesis_arms_nonzero(model, field) {
         return false;
     }
     for e in &model.entries {
@@ -126,40 +152,6 @@ fn read_starts_nonzero(model: &Model, read: &Expr, field: &str) -> bool {
         }
     }
     true
-}
-
-fn entry_records_now(entry: &EntryDecl, read: &Expr) -> bool {
-    match read {
-        Expr::Ident(id) => entry.body.iter().any(|stmt| {
-            matches!(stmt, Stmt::Assign { target, value, .. }
-                if matches!(target, Expr::Ident(t) if t.text == id.text)
-                    && matches!(value, Expr::Now { .. }))
-        }),
-        Expr::Call { .. } => {
-            let (Some(map), Some(key)) = (anchor_field(read), call_args(read).and_then(|a| a.first()))
-            else {
-                return false;
-            };
-            for stmt in &entry.body {
-                if let Stmt::Expr { expr, .. } = stmt {
-                    if let Expr::Call { callee, args, .. } = expr {
-                        if let Expr::Field { base, name, .. } = callee.as_ref() {
-                            if name.text == "set"
-                                && matches!(base.as_ref(), Expr::Ident(m) if m.text == map)
-                                && args.len() == 2
-                                && read_eq(&args[0], key)
-                                && matches!(args[1], Expr::Now { .. })
-                            {
-                                return true;
-                            }
-                        }
-                    }
-                }
-            }
-            false
-        }
-        _ => false,
-    }
 }
 
 fn entry_requires_nonzero(entry: &EntryDecl, read: &Expr) -> bool {
@@ -223,13 +215,6 @@ fn guard_read_nonzero(expr: &Expr, read: &Expr) -> bool {
     }
 }
 
-fn call_args(expr: &Expr) -> Option<&[Expr]> {
-    match expr {
-        Expr::Call { args, .. } => Some(args),
-        _ => None,
-    }
-}
-
 fn read_eq(a: &Expr, b: &Expr) -> bool {
     match (a, b) {
         (Expr::Ident(x), Expr::Ident(y)) => x.text == y.text,
@@ -258,8 +243,8 @@ fn liveness_rejection(field: &str, span: Span) -> TypeError {
     TypeError::new(
         format!(
             "a time gate anchored on `{field}`, which starts at zero, lets the delay pass before \
-             the anchor is set; record `{field}` with `now` in this entry or deny `{field} == 0` \
-             so the cooling off cannot be skipped"
+             the anchor is set; give `{field}` a nonzero default or deny `{field} == 0` in this \
+             entry so the cooling off cannot be skipped on the first call"
         ),
         span,
     )
@@ -508,15 +493,28 @@ mod tests {
     }
 
     #[test]
-    fn a_self_recording_periodic_anchor_is_accepted() {
-        let src = r#"import { Q_Asset } from "quantova/primitives";
+    fn a_zero_init_self_recording_anchor_is_refused_and_a_denied_zero_is_accepted() {
+        // A zero initialised anchor recorded with `now` in the same entry lets the first call skip
+        // the delay, because the gate is checked before the body records the anchor. It is refused.
+        let unsafe_src = r#"import { Q_Asset } from "quantova/primitives";
             contract C {
                 state { period_reset: u64; vault: Q_Asset<QTOV>; }
                 entry roll(order: Rel) conserves QTOV writes(vault, period_reset)
                   after 30 days from period_reset
                   { period_reset = now; send(order.to, vault.split(order.amount)); }
             }"#;
-        ok(src);
+        assert!(error_for(unsafe_src).contains("lets the delay pass"));
+
+        // Denying the zero value forces the anchor to be armed before the gate can pass, so the
+        // first call cannot skip the delay.
+        let safe_src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { period_reset: u64; vault: Q_Asset<QTOV>; }
+                entry roll(order: Rel) conserves QTOV writes(vault, period_reset)
+                  after 30 days from period_reset denies period_reset == 0
+                  { period_reset = now; send(order.to, vault.split(order.amount)); }
+            }"#;
+        ok(safe_src);
     }
 
     #[test]
