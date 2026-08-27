@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Logical `and` and `or` short circuit: the right operand runs only when the left has not already
-
 use std::collections::BTreeMap;
 
 use qtv_vm::interp::{Fault, Interpreter};
@@ -11,20 +9,12 @@ use quanta_codegen::{compile_contract, CompiledContract};
 mod common;
 use common::slot_key;
 
-// `and`: a false left decides the whole expression, so the right, a divide by `z`, is skipped. Run
-// with `z` zero: the left `z == 1` is false, and only skipping the right keeps the entry from
-// dividing by zero. The `denies` clause passes on a false condition, so the body runs and writes out.
 const AND_SKIP: &str = "contract AndSkip { state { out: u64; } \
     entry act(z: u64) writes(out) denies (z == 1) && ((1 / z) > 0) { out = 5; } }";
 
-// `or`: a true left decides the whole expression, so the right, a divide by `z`, is skipped. Run with
-// `z` zero: the left `z == 0` is true, and only skipping the right keeps the entry from dividing by
-// zero. The `guard` passes on a true condition, so the body runs and writes out.
 const OR_SKIP: &str = "contract OrSkip { state { out: u64; } \
     entry act(z: u64) writes(out) { guard (z == 0) || ((1 / z) > 0); out = 5; } }";
 
-// A control with no short circuit in front of the divide: dividing by zero is a genuine fault, so the
-// clean halts above are only possible because the right operand was never reached.
 const FAULTS: &str = "contract Faults { state { out: u64; } \
     entry act(z: u64) writes(out) { guard (1 / z) > 0; out = 5; } }";
 
@@ -71,8 +61,6 @@ fn or_skips_a_faulting_right_operand_when_the_left_is_true() {
 #[test]
 fn or_evaluates_the_right_operand_when_the_left_does_not_decide() {
     let cc = compile(OR_SKIP);
-    // The left `z == 0` is false, so the right `(1 / z) > 0` must run; with z one it is `1 > 0`, true,
-    // and the guard passes, proving the right is reached when the left leaves the result open.
     let storage = run(&cc, 1).expect("a false left evaluates the right");
     assert_eq!(storage.get(&slot_key(0)), Some(&5), "the right decided the guard and the body ran");
 }

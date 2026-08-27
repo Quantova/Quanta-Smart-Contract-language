@@ -22,7 +22,6 @@ impl Parser {
                 self.bump();
                 Ident { text, span }
             }
-            // also a type name
             TokenKind::Quorum => {
                 self.bump();
                 Ident {
@@ -59,7 +58,6 @@ impl Parser {
     fn generic_arg(&mut self) -> Result<GenericArg, ParseError> {
         if matches!(self.peek(), TokenKind::Int(_)) {
             let m = self.expect_int()?;
-            // "of" makes it M of N
             if matches!(self.peek(), TokenKind::Ident(w) if w == "of") {
                 self.bump();
                 let n = self.expect_int()?;

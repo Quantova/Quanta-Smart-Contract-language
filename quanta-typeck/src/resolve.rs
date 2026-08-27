@@ -22,8 +22,6 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
     Ok(())
 }
 
-// A field declared twice makes the type checker and the code generator disagree about it: the model
-// keeps the last declaration while the layout keeps the first. Reject it so the two never diverge.
 fn check_no_duplicate_fields(model: &Model) -> Result<(), TypeError> {
     let mut seen: HashSet<&str> = HashSet::new();
     for item in &model.contract.items {
@@ -41,8 +39,6 @@ fn check_no_duplicate_fields(model: &Model) -> Result<(), TypeError> {
     Ok(())
 }
 
-// Two entries with the same name and parameter types hash to one selector, so dispatch would reach
-// only the first and silently shadow the second. Reject the collision at its source.
 fn check_no_duplicate_entries(model: &Model) -> Result<(), TypeError> {
     let mut seen: HashSet<String> = HashSet::new();
     for entry in &model.entries {

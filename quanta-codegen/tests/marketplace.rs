@@ -106,9 +106,6 @@ fn buy(cc: &CompiledContract, storage: BTreeMap<[u8; 32], u64>, buyer: &[u8; 32]
 
 #[test]
 fn the_old_unbound_buy_no_longer_compiles() {
-    // The unbound buy sends the escrow pool split by an order supplied price that is not tied to the
-    // buyer's paid in amount, the pool drain shape. The authority analysis now refuses it, so the zero
-    // price purchase bound to no listing that it used to accept can never be built or deployed.
     let program = quanta_parser::parse(UNBOUND).expect("parse");
     assert!(
         quanta_typeck::check(&program).is_err(),

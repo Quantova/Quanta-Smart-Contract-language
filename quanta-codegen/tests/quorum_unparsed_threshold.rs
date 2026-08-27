@@ -1,9 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A quorum parameter that names a threshold or set the lowering cannot read as `M of N, set` must be
-//! refused, never compiled into an entry that carries no signature verification at all.
-
 use qtv_vm::isa::{decode, OpCode};
 use quanta_codegen::{compile_contract, CompiledContract};
 
@@ -48,7 +45,6 @@ fn a_well_formed_quorum_emits_verification() {
 
 #[test]
 fn an_overflowing_threshold_is_not_silently_unverified() {
-    // 29 nines exceed u64, so the threshold cannot be read back as a number.
     no_unsigned_entry("99999999999999999999999999999 of 3, board");
 }
 

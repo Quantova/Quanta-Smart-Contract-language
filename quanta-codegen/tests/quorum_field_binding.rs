@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A quorum commits to the `after` gate target the same way a single `signed by` order does.
-
 use std::collections::BTreeMap;
 
 use qtv_crypto::ml_dsa;
@@ -42,7 +40,6 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
     mem[off..off + 8].copy_from_slice(&value.to_be_bytes());
 }
 
-// The canonical quorum message a guardian signs: tag, contract, selector, member, nonce, then fields.
 fn message(cc: &CompiledContract, member: &[u8; 32], nonce: u64, fields: &[u64]) -> Vec<u8> {
     let selector = cc.container.entries[0].selector;
     let mut msg = Vec::new();
@@ -74,7 +71,6 @@ fn ml_region(
     region
 }
 
-// Lay out the members' verify regions, the order fields, the time, and each member's scheme/ptr/index.
 fn scratch(cc: &CompiledContract, members: &[(Vec<u8>, u64)], plain: [u64; 2], now: u64) -> Vec<u8> {
     let mut mem = vec![0u8; 65536];
     mem[32..64].copy_from_slice(&CONTRACT);
@@ -128,7 +124,6 @@ fn ml_guardians() -> (Vec<(ml_dsa::PublicKey, ml_dsa::SecretKey)>, [[u8; 32]; 3]
 fn a_quorum_over_the_whole_field_set_admits_the_entry() {
     let cc = compile(BOARD);
     let (keys, addrs) = ml_guardians();
-    // Both guardians sign the same order fields, notbefore 100 and step 1.
     let fields = [100u64, 1];
     let m0 = ml_region(&cc, &keys[0].0, &keys[0].1, 0, &fields);
     let m1 = ml_region(&cc, &keys[1].0, &keys[1].1, 0, &fields);
@@ -141,7 +136,6 @@ fn a_quorum_over_the_whole_field_set_admits_the_entry() {
 fn rewriting_the_gate_target_breaks_the_quorum() {
     let cc = compile(BOARD);
     let (keys, addrs) = ml_guardians();
-    // Guardians signed notbefore 500; a relayer rewrites it to 0. The target is signed, so verify reverts.
     let signed = [500u64, 1];
     let m0 = ml_region(&cc, &keys[0].0, &keys[0].1, 0, &signed);
     let m1 = ml_region(&cc, &keys[1].0, &keys[1].1, 0, &signed);
@@ -159,7 +153,6 @@ fn rewriting_the_gate_target_breaks_the_quorum() {
 fn rewriting_a_body_field_breaks_the_quorum() {
     let cc = compile(BOARD);
     let (keys, addrs) = ml_guardians();
-    // The guardians signed step 1; a relayer inflates the plain step to 9.
     let signed = [100u64, 1];
     let m0 = ml_region(&cc, &keys[0].0, &keys[0].1, 0, &signed);
     let m1 = ml_region(&cc, &keys[1].0, &keys[1].1, 0, &signed);

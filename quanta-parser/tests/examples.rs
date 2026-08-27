@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! End to end checks over the example corpus.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -41,8 +39,6 @@ fn every_example_lexes_and_parses() {
 
 #[test]
 fn parse_print_parse_yields_the_same_tree() {
-    // The canonical printer depends only on tree structure, never on spans, so
-    // equal printed forms witness structurally identical trees.
     for file in qs_files(&examples_dir()) {
         let src = fs::read_to_string(&file).unwrap();
         let first = quanta_parser::parse(&src).unwrap();

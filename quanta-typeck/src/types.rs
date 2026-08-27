@@ -271,10 +271,6 @@ fn check_arithmetic(entry: &EntryDecl, params: &HashMap<&str, Ty>) -> Result<(),
         if bounded_addend(addend, &asset_params) {
             continue;
         }
-        // A `mints` clause authorizes growing the supply it mints, and the supply grows by the
-        // minted amount the order carries in. That single addition is the supply mint the clause
-        // governs and is exempt. Every other addition inside the same entry, on a field the mint
-        // does not govern, is held to the same bound rule it would face outside a mint entry.
         if entry_mints && is_minted_amount(addend, entry) {
             continue;
         }

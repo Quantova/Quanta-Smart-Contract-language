@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Deploy time parameters read by a genesis block, and the sentinel that guards a short deploy.
-
 use qtv_vm::container::{selector, GENESIS_SIGNATURE};
 use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};

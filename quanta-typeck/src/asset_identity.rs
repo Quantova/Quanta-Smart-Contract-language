@@ -7,7 +7,6 @@ use quanta_ast::{Clause, EntryDecl, Expr, Stmt};
 use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
 
-// the ledger reads a 32 byte send recipient as the native token so a send only ever moves it
 const NATIVE_ASSET: &str = "QTOV";
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
@@ -95,14 +94,10 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     Ok(())
 }
 
-// An asset's amount written into a persistent ledger records spendable value; if the same asset is also
-// sent away instead of merged into a backing pool, that value is duplicated (the ledger is unbacked).
 fn amount_credited_while_sent(
     entry: &EntryDecl,
     kinds: &HashMap<String, String>,
 ) -> Option<TypeError> {
-    // locals carrying an asset's amount, tracked through lets and arithmetic so a wrapped `X.amount`
-    // (`X.amount + 0`, `let a = X.amount`) is still recognized
     let mut tainted: HashMap<String, String> = HashMap::new();
     for stmt in &entry.body {
         if let Stmt::Let { name, value, .. } = stmt {
@@ -213,7 +208,6 @@ fn amount_credited_while_sent(
     None
 }
 
-// the asset whose `.amount` an expression carries, following a tainted local or any wrapping arithmetic
 fn credited_asset(
     expr: &Expr,
     kinds: &HashMap<String, String>,

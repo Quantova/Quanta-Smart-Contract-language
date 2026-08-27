@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The issuer control token standard, end to end. The reference contract type checks, compiles to a
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -15,11 +13,8 @@ use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 mod common;
 use common::{addr, map_key, put_addr_slots, signer_address, slot_key};
 
-// State slots follow declaration order: the five guardian set holds the first twenty slots, then
-// total_supply, max_supply, and paused, then the keyed balances and frozen fields.
 const SLOT_SUPPLY: u64 = 20;
 const SLOT_MAX: u64 = 21;
-// The keyed base of the balances map, the first keyed field, matching the code generator's layout.
 const BAL_BASE: u64 = 1 << 40;
 const CEILING: u64 = 1_000_000_000;
 const GAS: u64 = 8_000_000;
@@ -85,7 +80,6 @@ fn run(
         .map(|out| out.storage)
 }
 
-// Five module lattice guardians and their addresses, seeded into the guardian set at the front slots.
 fn guardians() -> (Vec<(ml_dsa::PublicKey, ml_dsa::SecretKey)>, Vec<[u8; 32]>) {
     let keys: Vec<_> = (1u8..=5).map(|s| ml_dsa::keygen(&[s; 32])).collect();
     let addrs = keys
@@ -101,9 +95,6 @@ fn seed_guardians(storage: &mut BTreeMap<[u8; 32], u64>, addrs: &[[u8; 32]]) {
     }
 }
 
-// The canonical quorum message a mint member signs: the tag, the contract, the mint selector, the
-// member address, the member nonce, then the order fields the code generator commits to, order.amount
-// as a word and order.to as a whole address.
 fn mint_message(
     cc: &CompiledContract,
     member: &[u8; 32],
@@ -140,8 +131,6 @@ fn ml_member(
     region
 }
 
-// Assemble the mint memory: the order, the contract context, and the member regions with their scheme,
-// pointer, and guardian index. Members sit low in scratch, below the code generator's fixed regions.
 fn mint_memory(
     mint: &EntryArtifact,
     amount: u64,
@@ -167,7 +156,6 @@ fn mint_memory(
 #[test]
 fn the_whole_token_standard_compiles_to_a_container() {
     let cc = compiled();
-    // Eight callable entries plus the genesis constructor.
     assert!(cc.entries.len() >= 8, "every issuer power lowers");
     assert!(!cc.container.code.is_empty());
 }
@@ -205,7 +193,6 @@ fn a_mint_with_a_non_guardian_member_is_refused() {
     let mint = find_entry(&cc, "mint");
     let (keys, addrs) = guardians();
 
-    // The third member is a stranger who signs a valid message but is not the guardian at its index.
     let (spk, ssk) = ml_dsa::keygen(&[200u8; 32]);
     let stranger = (spk, ssk);
     let to = account_a();

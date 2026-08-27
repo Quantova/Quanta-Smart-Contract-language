@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The QNS pricing model driven through the register machine with controlled @time and label
-
 use std::collections::BTreeMap;
 
 use qtv_crypto::sha3::sha3_256;
@@ -15,9 +13,6 @@ use common::{map_key, slot_key};
 
 const SRC: &str = include_str!("../../examples/QNS.qs");
 
-// The scalar fields follow the guardian set, which occupies the first twenty eight scalar slots
-// (seven members of four words), so the pricing fields begin at slot twenty eight and the vault
-// lands at slot thirty five.
 const BASE3_SLOT: u64 = 28;
 const BASE4_SLOT: u64 = 29;
 const BASE5_SLOT: u64 = 30;
@@ -83,7 +78,6 @@ fn seed(p: &Params) -> BTreeMap<[u8; 32], u64> {
     s
 }
 
-/// Drive register / renew / claim_premium: caller at zero, @time at its context word, the label
 fn run(
     cc: &CompiledContract,
     name: &str,
@@ -97,7 +91,6 @@ fn run(
     run_paid(cc, name, storage, caller, time, label, len, years, 0)
 }
 
-/// Same drive as `run` with the sealed payment asset amount written at the entry's `payment`
 #[allow(clippy::too_many_arguments)]
 fn run_paid(
     cc: &CompiledContract,
@@ -173,7 +166,6 @@ fn tier_selection_charges_base_by_label_length() {
         let s = run_paid(&cc, "register", seed(&base_params()), &caller, 0, label, len, 1, tier)
             .expect("register halts");
         assert_eq!(vault(&s), tier, "a {len} character label is charged its tier for one year");
-        // Owner and expiry landed under the label-derived key.
         assert_eq!(
             owner_word(&s, label, 0),
             u64::from_be_bytes(caller[0..8].try_into().unwrap()),
@@ -197,7 +189,6 @@ fn the_absolute_expiry_is_now_plus_whole_years() {
     let cc = compiled();
     let caller = [0xC0u8; 32];
     let t0 = 1000 * DAY;
-    // Five character label at the five plus tier for four years.
     let s = run_paid(&cc, "register", seed(&base_params()), &caller, t0, b"alice", 5, 4, 100 * 4)
         .expect("register halts");
     assert_eq!(expiry(&s, b"alice"), t0 + 4 * YEAR, "expiry is now plus four whole years");
@@ -223,7 +214,6 @@ fn renew_extends_by_whole_years_within_grace() {
         .expect("register halts");
     let e1 = expiry(&s, b"jeff");
     assert_eq!(e1, t0 + YEAR);
-    // Renew two years while the name is still active (now well before expiry + grace).
     let s2 = run_paid(&cc, "renew", s, &caller, t0 + 10 * DAY, b"jeff", 4, 2, 300 * 2)
         .expect("renew halts");
     assert_eq!(expiry(&s2, b"jeff"), e1 + 2 * YEAR, "renew adds two whole years to the expiry");
@@ -239,7 +229,6 @@ fn renew_past_grace_reverts() {
     let s = run_paid(&cc, "register", seed(&p), &caller, t0, b"jeff", 4, 1, 300)
         .expect("register halts");
     let e1 = expiry(&s, b"jeff");
-    // now beyond expiry + grace: the grace guard reverts.
     let past = e1 + p.grace + DAY;
     let r = run(&cc, "renew", s, &caller, past, b"jeff", 4, 1);
     assert!(matches!(r, Err(Fault::DivByZero)), "a name past its grace cannot be renewed");
@@ -250,11 +239,10 @@ fn the_premium_halves_by_start_premium_shifted_right_k() {
     let cc = compiled();
     let claimant = [0xC1u8; 32];
     let p = base_params();
-    let e = 1000 * DAY; // the lapsed name's stored expiry
+    let e = 1000 * DAY;
     let grace_end = e + p.grace;
 
     for k in [0u64, 1, 2, 3, 10, 20, 21] {
-        // Seed a lapsed name whose expiry is e, vault clean.
         let mut storage = seed(&p);
         storage.insert(map_key(EXPIRY_BASE, &name_key(b"alice")), e);
         let now = grace_end + k * p.interval;
@@ -267,7 +255,6 @@ fn the_premium_halves_by_start_premium_shifted_right_k() {
             premium + p.base_5_plus,
             "at step {k} the fee is start_premium >> {k} plus the five plus tier"
         );
-        // The claimant becomes the owner and the expiry is reset a whole year out from now.
         assert_eq!(
             owner_word(&s, b"alice", 0),
             u64::from_be_bytes(claimant[0..8].try_into().unwrap()),
@@ -288,11 +275,9 @@ fn claim_premium_before_grace_end_and_after_auction_reverts() {
     let mut storage = seed(&p);
     storage.insert(map_key(EXPIRY_BASE, &name_key(b"alice")), e);
 
-    // Before the grace end: not yet in auction.
     let before = run(&cc, "claim_premium", storage.clone(), &claimant, grace_end - DAY, b"alice", 5, 1);
     assert!(matches!(before, Err(Fault::DivByZero)), "before the auction opens the claim reverts");
 
-    // At or after grace_end + auction_duration: the auction has closed.
     let after = run(&cc, "claim_premium", storage, &claimant, grace_end + p.auction, b"alice", 5, 1);
     assert!(matches!(after, Err(Fault::DivByZero)), "after the auction closes the claim reverts");
 }
@@ -307,11 +292,9 @@ fn a_registered_name_cannot_be_re_registered_before_it_fully_lapses() {
     let s = run_paid(&cc, "register", seed(&p), &a, t0, b"jeff", 4, 1, 300).expect("register halts");
     let e1 = expiry(&s, b"jeff");
 
-    // A stranger tries to re-register while the name is still held: reverts.
     let held = run(&cc, "register", s.clone(), &b, t0 + DAY, b"jeff", 4, 1);
     assert!(matches!(held, Err(Fault::DivByZero)), "an unexpired name cannot be taken");
 
-    // Once now is past expiry + grace + auction, the name is free again.
     let free_at = e1 + p.grace + p.auction;
     let s2 = run_paid(&cc, "register", s, &b, free_at, b"jeff", 4, 1, 300)
         .expect("a fully lapsed name registers");

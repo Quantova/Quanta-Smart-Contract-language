@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A `Map<Q_Address, Q_Address>` driven through the register machine: a set stores the whole thirty
-
 use std::collections::BTreeMap;
 
 use qtv_vm::container::{Container, SELECTOR_BYTES};
@@ -91,10 +89,8 @@ fn a_set_stores_the_whole_address_value_and_the_event_carries_it_in_full() {
     let (storage, effects) = run(&cc.container, entry(&cc, "claim").selector, BTreeMap::new(), &mem)
         .expect("claim halts");
 
-    // All four words of the stored value reassemble to the whole caller address.
     assert_eq!(read_addr_value(&storage, OWNER_OF_BASE, &name), caller, "owner_of[name] is the full caller");
 
-    // The Claimed event carries the name then the owner, each its whole thirty two bytes.
     let data = event(&effects, claimed_selector(&cc)).expect("a Claimed event");
     assert_eq!(&data[0..32], &name, "the event carries the whole name");
     assert_eq!(&data[32..64], &caller, "the event carries the whole owner");
@@ -149,7 +145,6 @@ fn contains_on_an_address_valued_map_tracks_presence() {
     )
     .expect("claim halts");
 
-    // A set name is present, so the guard passes and the entry halts clean.
     run(
         &cc.container,
         entry(&cc, "attest").selector,
@@ -158,7 +153,6 @@ fn contains_on_an_address_valued_map_tracks_presence() {
     )
     .expect("attest of a present name halts");
 
-    // An unset name is absent, so the guard reverts.
     let result = run(
         &cc.container,
         entry(&cc, "attest").selector,
@@ -182,15 +176,12 @@ fn a_get_equality_binds_all_thirty_two_bytes_not_a_leading_word() {
     )
     .expect("claim halts");
 
-    // An impostor whose leading eight bytes equal the owner's but whose tail differs. A truncated single
-    // word compare would accept it; the full thirty two byte compare must reject it.
     let mut impostor = a;
     impostor[8] ^= 0xFF;
     let mem = memory(&cc, "rebind", &impostor, &[("name", name), ("to", impostor)]);
     let result = run(&cc.container, entry(&cc, "rebind").selector, storage.clone(), &mem);
     assert!(matches!(result, Err(Fault::DivByZero)), "the prefix collision impostor is reverted");
 
-    // A wholly different caller is likewise refused.
     let stranger = addr(0xCC);
     let mem = memory(&cc, "rebind", &stranger, &[("name", name), ("to", stranger)]);
     let result = run(&cc.container, entry(&cc, "rebind").selector, storage, &mem);

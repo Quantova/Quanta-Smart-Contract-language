@@ -35,10 +35,7 @@ pub struct EntryArtifact {
     pub signature: String,
     pub selector: [u8; SELECTOR_BYTES],
     pub args: Vec<ArgSlot>,
-    /// Names of the parameters declared `sealed`. Their bytes travel under key encapsulation and are
     pub sealed_params: Vec<String>,
-    /// For each `signed by` parameter, the fields the owner signs over, in the message order the
-    /// contract reconstructs them. A client must pack the preimage in exactly this order.
     pub signed_orders: Vec<SignedOrder>,
 }
 
@@ -78,9 +75,6 @@ fn type_words(ty: &Type) -> u64 {
     }
 }
 
-// the code generator has no signed integers: a signed width is stored unsigned, its comparisons lower
-// to unsigned, and i128 would drop its high word, so refuse it rather than emit a value that does not
-// match the source. The unsigned u8..u32 are backed by u64 and are supported.
 const UNSUPPORTED_INT_TYPES: &[&str] = &["i8", "i16", "i32", "i64", "i128"];
 
 fn reject_unsupported_type(ty: &Type) -> Result<(), CodegenError> {
@@ -168,11 +162,6 @@ fn compile_entries(
         })
         .collect();
 
-    // The host reads an emitted event with a reserved selector as a privileged action, the asset mint
-    // being the one it performs with no on chain authority check. An event selector is the hash of the
-    // event name, so a name can be ground to collide with a reserved tag and mint outside the mint
-    // authority gate. Reject any event that lands on a reserved host selector, the same way the genesis
-    // selector is reserved against entries.
     const RESERVED_EVENT_SELECTORS: [([u8; SELECTOR_BYTES], &str); 1] = [(*b"MINT", "the asset mint")];
     for item in &contract.items {
         if let Item::Event(ev) = item {
@@ -300,9 +289,6 @@ fn compile_entries(
                 span: gspan,
             });
         }
-        // Genesis is the constructor, it initialises the whole state and may seed any map, so it
-        // declares every scalar slot and its init guard as writes, and every map base as a keyed domain.
-        // This is a real manifest, it lists exactly the contract's own storage, not a bypass.
         let mut genesis_writes = layout.all_state_slots();
         genesis_writes.push(crate::lower::GENESIS_INIT_GUARD_SLOT);
         let genesis_access = qtv_vm::container::StateAccess {
@@ -383,9 +369,6 @@ mod tests {
 
     #[test]
     fn an_argument_read_narrow_then_as_an_address_is_rejected() {
-        // order.k is first lowered as a narrow scalar map key, sizing its argument slot to one
-        // word, then stored to a Q_Address field. Reading it back as a full address would over
-        // read the next argument, so the compiler must refuse the entry rather than emit that read.
         let src = "contract C { state { owner: Q_Address; idx: Map<u64, u64>; nxt: u64; } \
             entry op(order: Thing, filler: u64) writes(owner, idx, nxt) { \
             idx.set(order.k, 1); nxt = filler; owner = order.k; } }";
@@ -400,8 +383,6 @@ mod tests {
 
     #[test]
     fn an_event_that_collides_with_the_reserved_mint_selector_is_rejected() {
-        // The event name is ground so its signature hashes to the host mint tag `MINT`. Emitting it
-        // would mint the contract's asset with no authority, so codegen must refuse the contract.
         let src = "contract C { asset FORGE; state { note: u64; } \
             entry claim(amount: u64) writes(note) \
             { note = amount; emit Payout394818437(caller, amount); } \
@@ -424,7 +405,6 @@ mod tests {
             vm_selector("advance(u64)")
         );
         assert_eq!(cc.container.entries[0].access.writes, vec![0]);
-        // Reads are broad, the contract's one scalar field.
         assert_eq!(cc.container.entries[0].access.reads, vec![0]);
     }
 

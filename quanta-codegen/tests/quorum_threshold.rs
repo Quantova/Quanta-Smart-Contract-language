@@ -1,9 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A quorum threshold must require at least one signer and never more than its set. A zero threshold
-//! would admit the guarded entry with no signatures at all, and a threshold above the set size can
-
 use quanta_codegen::compile_contract;
 
 fn try_compile(spec: &str) -> Result<quanta_codegen::CompiledContract, String> {

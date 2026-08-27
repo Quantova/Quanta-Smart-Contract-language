@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The `after` time guard, run end to end in the interpreter. A time locked entry reverts before its
-
 use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 use std::collections::BTreeMap;
@@ -42,7 +40,6 @@ fn run(
         .map(|out| out.storage)
 }
 
-// opened is field zero (slot 0), done is field one (slot 1). The window opens one hour after opened.
 const TIMED: &str =
     "contract T { state { opened: u64; done: u64; } genesis { opened = 0; done = 0; } \
      entry act() writes(done) reads(opened) after 1 hours from opened denies opened == 0 { done = 1; } }";
@@ -52,9 +49,8 @@ fn an_after_guard_reverts_before_its_window_and_passes_after() {
     let cc = compile(TIMED);
     let act = entry(&cc, "act");
     let mut storage = BTreeMap::new();
-    storage.insert(slot_key(0), 100); // opened at second 100, so the window opens at 3700.
+    storage.insert(slot_key(0), 100);
 
-    // One second early: the guard reverts.
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, act, "@time", 3699);
     assert!(
@@ -62,15 +58,12 @@ fn an_after_guard_reverts_before_its_window_and_passes_after() {
         "the entry reverts before its window opens"
     );
 
-    // At the window: the entry halts and writes.
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, act, "@time", 3700);
     let out = run(&cc, act, storage, &mem).expect("the entry halts at the window");
     assert_eq!(out.get(&slot_key(1)), Some(&1), "the body ran once the window opened");
 }
 
-// A state configured delay uses an expression target with a from anchor. The window must open at
-// deposit_time plus cooldown, not at the bare cooldown, so a call before the true threshold reverts.
 const CONFIGURABLE: &str =
     "contract Vesting { state { deposit_time: u64; cooldown: u64; released: u64; } \
      genesis { deposit_time = 0; cooldown = 0; released = 0; } \
@@ -82,10 +75,9 @@ fn an_expression_target_still_honours_its_from_anchor() {
     let cc = compile(CONFIGURABLE);
     let release = entry(&cc, "release");
     let mut storage = BTreeMap::new();
-    storage.insert(slot_key(0), 1_000_000); // deposit_time
-    storage.insert(slot_key(1), 604_800); // cooldown, so the true window opens at 1_604_800.
+    storage.insert(slot_key(0), 1_000_000);
+    storage.insert(slot_key(1), 604_800);
 
-    // Past the bare cooldown but before deposit_time plus cooldown. Dropping the anchor would open here.
     let mut early = vec![0u8; 4096];
     put_arg(&mut early, release, "@time", 700_000);
     assert!(
@@ -93,7 +85,6 @@ fn an_expression_target_still_honours_its_from_anchor() {
         "a time below deposit_time plus cooldown reverts even though it clears the bare cooldown"
     );
 
-    // At the true anchored window the body runs.
     let mut open = vec![0u8; 4096];
     put_arg(&mut open, release, "@time", 1_604_800);
     let out = run(&cc, release, storage, &open).expect("the entry halts at the anchored window");

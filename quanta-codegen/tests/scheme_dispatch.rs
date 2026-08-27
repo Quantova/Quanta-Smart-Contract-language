@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Conformance vectors for the multi scheme signature dispatch under the bound `signed by` lowering.
-
 use std::collections::BTreeMap;
 
 use qtv_crypto::{ml_dsa, slh_dsa};
@@ -70,8 +68,6 @@ fn opcodes(code: &[u8]) -> Vec<OpCode> {
     ops
 }
 
-// Assemble a bump memory from a scheme, a public key, and a signature region body, signing over the
-// canonical message for the given step and nonce zero, with the owner set to the derived signer.
 fn place(cc: &CompiledContract, scheme: u64, pk: &[u8], sig: &[u8], step: u64) -> Vec<u8> {
     let signer = signer_address(scheme as u8, pk);
     let msg = canonical_message(cc.container.entries[0].selector, &signer, 0, step);
@@ -130,7 +126,6 @@ fn the_lowering_carries_both_verify_opcodes() {
         ops.contains(&OpCode::VerifySlh),
         "the hash based verify must be present"
     );
-    // The binding also derives an address from the public key it verifies.
     assert!(ops.contains(&OpCode::Addr), "the signer address is derived");
 }
 
@@ -151,9 +146,6 @@ fn scheme_two_verifies_and_binds_with_the_hash_based_opcode() {
 #[test]
 fn scheme_two_does_not_use_the_module_lattice_opcode() {
     let cc = compile(COUNTER);
-    // A valid module lattice region is offered under scheme two. If scheme two wrongly ran the module
-    // lattice verify it would reach the owner check; instead it runs the hash based verify, which
-    // reverts on the region, proving the dispatch routes scheme two to the hash based opcode.
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let signer = signer_address(1, &pk);
     let msg = canonical_message(cc.container.entries[0].selector, &signer, 0, 4);
@@ -168,8 +160,6 @@ fn scheme_two_does_not_use_the_module_lattice_opcode() {
 #[test]
 fn an_unknown_scheme_reverts() {
     let cc = compile(COUNTER);
-    // Scheme three is FN DSA, which has no opcode in the tagged machine and reverts, and any other
-    // value reverts as well.
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let signer = signer_address(1, &pk);
     let msg = canonical_message(cc.container.entries[0].selector, &signer, 0, 4);

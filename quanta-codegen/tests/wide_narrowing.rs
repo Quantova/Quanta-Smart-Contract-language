@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A u128 value must never be silently narrowed to its low word. Division, remainder, shift, a
-
 use quanta_codegen::compile_contract;
 
 fn compile_error(src: &str) -> String {

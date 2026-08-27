@@ -1,7 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-
 use std::collections::BTreeMap;
 
 use qtv_crypto::ml_dsa;
@@ -63,7 +62,7 @@ fn canonical_message(signer: &[u8; 32], selector: [u8; 4], newowner: &[u8; 32]) 
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
     msg.extend_from_slice(signer);
-    msg.extend_from_slice(&0u64.to_be_bytes()); // nonce 0
+    msg.extend_from_slice(&0u64.to_be_bytes());
     for w in words(newowner) {
         msg.extend_from_slice(&w.to_be_bytes());
     }

@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A contract invariant lowers to an epilogue check on every state writing entry. A call that keeps
-
 use std::collections::BTreeMap;
 
 mod common;
@@ -66,7 +64,6 @@ fn a_call_within_the_invariant_commits() {
 #[test]
 fn a_call_that_breaks_the_invariant_reverts() {
     let cc = compile(CAPPED);
-    // The checked add succeeds at 140, but the epilogue invariant total <= 100 fails and reverts.
     let (result, storage) = run(&cc, 90, 50);
     assert_eq!(
         result,

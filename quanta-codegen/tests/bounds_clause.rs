@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A `limits` clause and a `denies` clause lower to real runtime traps rather than to nothing. A
-
 use std::collections::BTreeMap;
 
 use qtv_vm::interp::{Fault, Interpreter};
@@ -84,7 +82,6 @@ fn a_denies_clause_reverts_when_its_condition_holds() {
     let cc = compile(DENY);
     let mem = memory_with(&cc, 0, &[("x", 7)]);
 
-    // flag is zero, so the denied condition is false and the entry runs.
     let mut open = BTreeMap::new();
     open.insert(slot_key(0), 0u64);
     assert_eq!(
@@ -93,7 +90,6 @@ fn a_denies_clause_reverts_when_its_condition_holds() {
         "an undenied call writes its state"
     );
 
-    // flag is one, so the denied condition holds and the entry reverts to the trap.
     let mut denied = BTreeMap::new();
     denied.insert(slot_key(0), 1u64);
     assert_eq!(
@@ -107,9 +103,8 @@ fn a_denies_clause_reverts_when_its_condition_holds() {
 fn a_limits_clause_reverts_when_the_bound_is_broken() {
     let cc = compile(LIMIT);
     let mut storage = BTreeMap::new();
-    storage.insert(slot_key(0), 10u64); // cap
+    storage.insert(slot_key(0), 10u64);
 
-    // x within the cap passes.
     let ok = memory_with(&cc, 0, &[("x", 5)]);
     assert_eq!(
         run(&cc, storage.clone(), &ok)
@@ -119,7 +114,6 @@ fn a_limits_clause_reverts_when_the_bound_is_broken() {
         "a value under the cap writes its state"
     );
 
-    // x above the cap breaks the limit and reverts.
     let over = memory_with(&cc, 0, &[("x", 20)]);
     assert_eq!(
         run(&cc, storage, &over),

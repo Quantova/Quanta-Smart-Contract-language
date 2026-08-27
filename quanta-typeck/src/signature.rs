@@ -216,9 +216,6 @@ fn forgeable_anchor_error(anchor: &str, span: Span) -> TypeError {
     )
 }
 
-// The authority analysis protects who triggers a value move and when, but not where the value lands.
-// A `send` / `send_asset` recipient read from a state field an unauthorized entry can rewrite lets an
-// attacker redirect an otherwise authorized payout, so every state recipient must be authority protected.
 fn forged_recipient(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
     if !entry_moves_value(model, entry) && !entry_moves_asset(entry) {
         return None;
@@ -228,6 +225,10 @@ fn forged_recipient(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
         if let Stmt::Let { name, value, .. } = stmt {
             if let Some(field) = recipient_state_field(model, value) {
                 alias.insert(name.text.as_str(), field);
+            } else if let Expr::Ident(rid) = value {
+                if let Some(&field) = alias.get(rid.text.as_str()) {
+                    alias.insert(name.text.as_str(), field);
+                }
             }
         }
     }
@@ -266,8 +267,6 @@ fn forged_recipient(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
     found.map(|(field, span)| forged_recipient_error(&field, span))
 }
 
-// the state field a `send` recipient reads from, either directly, through one field access, or through a
-// `get` / `at` lookup on a state map; a param field or `caller` recipient is authenticated and returns None
 fn recipient_state_field<'e>(model: &Model, recip: &'e Expr) -> Option<&'e str> {
     match recip {
         Expr::Ident(id) if model.state.contains_key(id.text.as_str()) => Some(id.text.as_str()),
@@ -318,12 +317,10 @@ fn authority_anchor_protected(model: &Model, field: &str) -> bool {
     anchor_protected(model, field, &mut prot).0
 }
 
-// the state field a `signed by X` param authenticates against
 fn signer_field(param: &Param) -> Option<&str> {
     param.signed_by.as_ref().map(|i| i.text.as_str())
 }
 
-// the guardian set field a `Quorum<M of N, G>` param authenticates against
 fn quorum_set_field(param: &Param) -> Option<&str> {
     if !is_quorum_param(param) {
         return None;
@@ -334,12 +331,10 @@ fn quorum_set_field(param: &Param) -> Option<&str> {
     })
 }
 
-// the state field a signed-by or quorum authority is grounded in
 fn authority_backing_field(param: &Param) -> Option<&str> {
     signer_field(param).or_else(|| quorum_set_field(param))
 }
 
-// an entry carries real signed-by / quorum authority only when the field it authenticates against is protected
 pub(crate) fn has_protected_signed_authority(model: &Model, entry: &EntryDecl) -> bool {
     entry
         .params
@@ -384,7 +379,6 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
 }
 
 fn writer_authorized(model: &Model, entry: &EntryDecl, prot: &mut Prot) -> (bool, bool) {
-    // a signed-by / quorum writer is authorized only when the field it authenticates against is itself protected
     for param in &entry.params {
         if let Some(field) = authority_backing_field(param) {
             let (protected, tainted) = anchor_protected(model, field, prot);
@@ -580,9 +574,6 @@ fn map_authority_error(field: &str, span: Span) -> TypeError {
     )
 }
 
-// value leaves through `send`, and moves out of another party's ledger balance through a `debit` whose
-// key is NOT the caller. A self `debit(caller, ...)` (a transfer or an nft count) moves only the
-// caller's own balance and needs no extra authority; debiting someone else's account does.
 fn entry_moves_value(model: &Model, entry: &EntryDecl) -> bool {
     entry_value_move(model, entry, false)
 }
@@ -609,8 +600,6 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
         .find(|p| crate::model::is_asset_param(p))
         .map(|p| p.name.text.as_str());
     let mut asset_inflow_unspent = asset_param_name.is_some();
-    // An incoming asset only backs a pool send if it is actually merged into that same pool. Diverting
-    // it elsewhere or handing it back leaves the pool short, so record which pool it enters.
     let merged_pool: Option<&str> =
         asset_param_name.and_then(|param| asset_merged_into(model, entry, param));
     for stmt in &entry.body {
@@ -1562,8 +1551,6 @@ mod tests {
 
     #[test]
     fn a_non_ledger_foreign_set_to_zero_is_not_a_value_move() {
-        // a flag or price map cleared with set(k,0) is not a ledger without a credit or debit, so
-        // zeroing a non caller entry under a settable owner stays accepted and is not over flagged
         let src = "contract C { state { owner: Q_Address; listings: Map<Q_Id, u64>; } \
                    entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
                    entry delist(order: Delist) writes(listings) \

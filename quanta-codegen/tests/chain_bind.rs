@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The signed authorization preimage binds the chain identity the host presents at the `@chain`
-
 use std::collections::BTreeMap;
 
 use qtv_crypto::ml_dsa;
@@ -28,10 +26,8 @@ const CONTRACT_CTX_OFF: usize = 32;
 const REGION_OFF: u64 = 8192;
 const SCHEME_ML: u8 = 1;
 const CONTRACT: [u8; 32] = [0x33; 32];
-// The signed message domain tag before the chain is folded into it, b"QTVSGN01" big endian.
 const SIGNED_MSG_TAG: u64 = u64::from_be_bytes(*b"QTVSGN01");
 
-// Two distinct chain identities. Neither is zero, so both differ from the unbound tag.
 const CHAIN_A: u64 = 42;
 const CHAIN_B: u64 = 99;
 
@@ -54,9 +50,6 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
     mem[off..off + 8].copy_from_slice(&value.to_be_bytes());
 }
 
-// The canonical order message the entry rebuilds: the chain bound domain tag, the contract self
-// address, the entry selector word, the signer address, the per signer nonce, then the fields. The
-// tag carries the chain identity, so signing under a different chain yields a different first word.
 fn canonical_message(
     chain: u64,
     contract: &[u8; 32],
@@ -77,8 +70,6 @@ fn canonical_message(
     msg
 }
 
-// Build a bump call signed over `signed_chain`, while the running memory presents `run_chain` at the
-// `@chain` context word. The two differ only when a replay across chains is being tested.
 fn bump_memory(
     cc: &CompiledContract,
     pk: &[u8],
@@ -127,11 +118,6 @@ fn run(
         .map(|out| out.storage)
 }
 
-// The exact chain bound order preimage bytes for fixed inputs, pinned identically in the signer crate
-// (QCore.rs, src/contract.rs) so the entry that rebuilds the preimage and the client that signs it
-// cannot drift. chain 0x0123456789abcdef, contract 0x33*32, selector BUMP, signer 0x11*32, nonce 7,
-// one word field 42. The leading tag word is QTVSGN01 xored with the chain id, then the contract, the
-// selector word, the signer, the nonce, and the field.
 const PINNED_ORDER_PREIMAGE: [u8; 96] = [
     0x50, 0x77, 0x13, 0x34, 0xce, 0xe5, 0xfd, 0xde, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
     0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
@@ -166,8 +152,6 @@ fn a_signature_bound_to_a_chain_is_accepted_on_it() {
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let owner = signer_address(SCHEME_ML, &pk);
 
-    // Signed over chain A and presented under chain A: the tag the entry rebuilds matches, so the
-    // owner's signature is accepted, the count advances, and the nonce is consumed.
     let mem = bump_memory(&cc, &pk, &sk, CHAIN_A, CHAIN_A, 4, 0);
     let out = run(&cc, owned_storage(&owner, 10), &mem)
         .expect("the owner's signature is accepted on its own chain");
@@ -181,9 +165,6 @@ fn the_same_signature_does_not_verify_under_a_different_chain() {
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let owner = signer_address(SCHEME_ML, &pk);
 
-    // The identical signed order, signed over chain A, presented on chain B. Only the `@chain`
-    // context word differs; the signer, the order field, and the nonce are the same. The entry
-    // rebuilds the tag with chain B, so the verify runs over a different preimage and reverts.
     let mem = bump_memory(&cc, &pk, &sk, CHAIN_A, CHAIN_B, 4, 0);
     let storage = owned_storage(&owner, 10);
     assert_eq!(

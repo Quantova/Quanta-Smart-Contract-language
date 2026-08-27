@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Conformance vector for the sealed parameter. Sealing a parameter is legal and type checks. The
-
 use std::collections::BTreeMap;
 
 use qtv_vm::interp::Interpreter;
@@ -23,10 +21,8 @@ const CONFIDENTIAL: &str = "contract Confidential {\n\
 #[test]
 fn a_sealed_parameter_type_checks_and_lowers_with_its_seal_recorded() {
     let program = quanta_parser::parse(CONFIDENTIAL).expect("parse");
-    // Sealing a parameter is legal, so the checker accepts the contract.
     quanta_typeck::check(&program).expect("typecheck");
 
-    // Code generation lowers the entry and records the sealed parameter for the host.
     let cc = compile_contract(&program.contracts[0]).expect("a sealed parameter lowers");
     let submit = cc
         .entries
@@ -51,7 +47,6 @@ fn the_opened_sealed_value_flows_as_an_ordinary_argument() {
     let cc = compile_contract(&program.contracts[0]).expect("compile");
     let submit = cc.entries.iter().find(|e| e.name == "submit").expect("submit");
 
-    // The host has opened the seal and placed the plaintext bid at its argument word.
     let bid_off = submit.args.iter().find(|s| s.key == "bid").expect("bid arg").offset as usize;
     let mut mem = vec![0u8; 4096];
     mem[bid_off..bid_off + 8].copy_from_slice(&40u64.to_be_bytes());

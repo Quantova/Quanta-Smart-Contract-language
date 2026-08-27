@@ -24,8 +24,6 @@ fn arg_off(cc: &CompiledContract, entry: usize, key: &str) -> Option<usize> {
     cc.entries[entry].args.iter().find(|s| s.key == key).map(|s| s.offset as usize)
 }
 
-/// Build the memory image for `swap_a_for_b` carrying an operator-signed SwapOrder, signing the
-/// canonical order message the contract rebuilds. Returns the memory and the operator address.
 fn signed_swap_memory(cc: &CompiledContract, entry: usize, selector: [u8; 4], to: &[u8; 32], out: u64) -> (Vec<u8>, [u8; 32]) {
     let region_off = 8192usize;
     let (pk, sk) = ml_dsa::keygen(&[9u8; 32]);

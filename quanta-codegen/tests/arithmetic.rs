@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Conformance vectors for the arithmetic forms. The checked form lowers to the checked add opcode
-
 use std::collections::BTreeMap;
 
 mod common;
@@ -26,8 +24,6 @@ const BARE: &str = "contract Adder {\n\
   entry add(amount: u64) writes(total) { total = total + amount; }\n\
 }\n";
 
-// Run the single entry with a seeded total and amount, returning the outcome and the total seen on a
-// clean halt.
 fn run(src: &str, total: u64, amount: u64) -> Result<u64, Fault> {
     let program = quanta_parser::parse(src).expect("parse");
     quanta_typeck::check(&program).expect("typecheck");
@@ -77,8 +73,6 @@ fn the_wrapping_form_takes_the_modular_result() {
 
 #[test]
 fn a_bare_unbounded_addition_has_no_lowering() {
-    // The type checker rejects a bare unbounded addition into a stored integer, so code generation
-    // never receives it and there is no lowering at all.
     let program = quanta_parser::parse(BARE).expect("parse");
     assert!(
         quanta_typeck::check(&program).is_err(),

@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Two word arithmetic for u128 state fields, run end to end in the interpreter. A carry crosses the
-
 use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 use std::collections::BTreeMap;
@@ -11,7 +9,6 @@ mod common;
 use common::slot_key;
 
 const GAS: u64 = 2_000_000;
-/// Matches the code generator's high word offset for a two word scalar field.
 const HI: u64 = 1 << 56;
 
 fn compile(src: &str) -> CompiledContract {
@@ -44,7 +41,6 @@ fn run(
         .map(|out| out.storage)
 }
 
-// total is field zero (low at slot 0, high at 0 | HI); cap is field one (low at slot 1, high at 1 | HI).
 const ADD: &str =
     "contract W { state { total: u128; cap: u128; } genesis { total = 0; cap = 0; } \
      entry add(amount: u64) writes(total) reads(cap) limits total + amount <= cap \
@@ -63,7 +59,6 @@ fn a_wide_literal_stores_across_both_words() {
     let cc = compile(LIT);
     let set = entry(&cc, "set");
     let mem = vec![0u8; 4096];
-    // Twenty quintillion is above one machine word, so it splits into a low and a high word.
     let out = run(&cc, set, BTreeMap::new(), &mem).expect("the set halts");
     assert_eq!(out.get(&slot_key(0)), Some(&1_553_255_926_290_448_384));
     assert_eq!(out.get(&slot_key(HI)), Some(&1));
@@ -76,8 +71,6 @@ fn a_low_word_add_carries_into_the_high_word() {
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, add, "amount", 5);
     let mut storage = BTreeMap::new();
-    // The low word is at its maximum, so adding five carries into the high word. The cap is far above
-    // in the high word so the limits clause passes.
     storage.insert(slot_key(0), u64::MAX);
     storage.insert(slot_key(1 | HI), 100);
     let out = run(&cc, add, storage, &mem).expect("the add halts");
@@ -92,7 +85,6 @@ fn a_low_word_sub_borrows_from_the_high_word() {
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, take, "amount", 5);
     let mut storage = BTreeMap::new();
-    // The value is one in the high word and zero in the low, so subtracting five borrows down.
     storage.insert(slot_key(0), 0);
     storage.insert(slot_key(HI), 1);
     let out = run(&cc, take, storage, &mem).expect("the subtract halts");
@@ -107,8 +99,6 @@ fn a_checked_overflow_reverts() {
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, add, "amount", 1);
     let mut storage = BTreeMap::new();
-    // The whole two word value is at its maximum, so the wide sum in the limits clause overflows and
-    // reverts rather than wrapping.
     storage.insert(slot_key(0), u64::MAX);
     storage.insert(slot_key(HI), u64::MAX);
     storage.insert(slot_key(1), u64::MAX);
@@ -119,7 +109,6 @@ fn a_checked_overflow_reverts() {
     );
 }
 
-// total is a u128 field; wscale multiplies it wrapping, cscale multiplies it checked.
 const MUL: &str =
     "contract W { state { total: u128; } genesis { total = 0; } \
      entry wscale(factor: u64) writes(total) { total = wrapping(total * factor); } \
@@ -149,7 +138,6 @@ fn a_wrapping_multiply_carries_into_the_high_word() {
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, e, "factor", 4);
     let mut storage = BTreeMap::new();
-    // Two to the sixty third times four is two to the sixty fifth, which is two in the high word.
     storage.insert(slot_key(0), 1u64 << 63);
     let out = run(&cc, e, storage, &mem).expect("the multiply halts");
     assert_eq!(
@@ -184,8 +172,6 @@ fn a_checked_multiply_overflow_reverts() {
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, e, "factor", 1u64 << 63);
     let mut storage = BTreeMap::new();
-    // Two in the high word is two to the sixty fifth; times two to the sixty third is two to the one
-    // hundred twenty eighth, which is above the wide range and reverts rather than wrapping.
     storage.insert(slot_key(HI), 2);
     assert!(
         run(&cc, e, storage, &mem).is_err(),
@@ -198,8 +184,6 @@ fn a_two_word_limit_orders_the_full_value() {
     let cc = compile(ADD);
     let add = entry(&cc, "add");
 
-    // The cap has a nonzero high word, so a total that fits in the low word is under it and the limits
-    // clause passes.
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, add, "amount", 10);
     let mut storage = BTreeMap::new();
@@ -210,8 +194,6 @@ fn a_two_word_limit_orders_the_full_value() {
         "a total below the wide cap passes"
     );
 
-    // The total is larger in the high word even though its low word is smaller, so it is above the
-    // cap and the guard reverts. This is the case a low word only compare would get wrong.
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, add, "amount", 10);
     let mut storage = BTreeMap::new();

@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A deeply nested source must be rejected with a clean error rather than overflowing the stack.
-
 fn body(inner: &str) -> String {
     format!("contract C {{ state {{ a: u64; }} entry f() writes(a) {{ a = {inner}; }} }}")
 }

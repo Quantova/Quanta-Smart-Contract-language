@@ -1,13 +1,10 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Canonical source pretty printer. Output re-parses to the same tree, and a
-
 use crate::ast::*;
 
 const UNIT: &str = "  ";
 
-/// Renders a program back to Quanta source.
 pub fn pretty(program: &Program) -> String {
     let mut p = Printer { out: String::new() };
     p.program(program);
@@ -241,7 +238,6 @@ const PREC_UNARY: u8 = 8;
 const PREC_POSTFIX: u8 = 9;
 const PREC_PRIMARY: u8 = 10;
 
-/// Renders an expression, wrapping in parentheses only where a lower precedence
 fn expr_str(e: &Expr, min_prec: u8) -> String {
     let (text, prec) = match e {
         Expr::Int(v) => (v.text.clone(), PREC_PRIMARY),
@@ -317,7 +313,6 @@ mod tests {
 
     #[test]
     fn precedence_inserts_minimal_parentheses() {
-        // (a + b) * c must keep its parentheses; a + b * c must not.
         let needs = binary(
             BinOp::Mul,
             binary(BinOp::Add, ident("a"), ident("b")),

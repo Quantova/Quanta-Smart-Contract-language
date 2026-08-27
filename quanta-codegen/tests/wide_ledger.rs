@@ -177,7 +177,6 @@ fn transferred_amount(effects: &[Effect]) -> u128 {
             _ => None,
         })
         .expect("a Transferred event is recorded");
-    // sender then recipient, each a whole thirty two byte address, then the amount low word then high.
     assert_eq!(data.len(), 32 + 32 + 16, "the event carries two addresses and a two word amount");
     let lo = u64::from_be_bytes(data[64..72].try_into().unwrap()) as u128;
     let hi = u64::from_be_bytes(data[72..80].try_into().unwrap()) as u128;
@@ -204,8 +203,6 @@ fn a_transfer_above_the_word_boundary_moves_the_whole_two_word_amount() {
 #[test]
 fn a_transfer_of_exactly_two_to_the_sixty_fourth_passes_the_guard_and_moves_in_full() {
     let cc = compiled();
-    // The low word of two to the sixty fourth is zero, so a low word only guard would read it as zero
-    // and revert the amount greater than zero check. The wide guard sees the high word and admits it.
     let amount = TWO_TO_64;
 
     let mut storage = deploy(&cc, &[0u8; 32], 0);
@@ -247,7 +244,6 @@ fn a_wide_overflow_in_a_u128_field_reverts_rather_than_wrapping() {
     let cc = compiled();
     let key = owner_key();
     let owner = signer_address(SCHEME_ML, &key.0);
-    // Deploy at the maximum two word supply, so any further mint overflows the u128 total_supply field.
     let storage = deploy(&cc, &owner, u128::MAX);
 
     let mem = mint_memory(&cc, &key, 0, 1, &holder_a());

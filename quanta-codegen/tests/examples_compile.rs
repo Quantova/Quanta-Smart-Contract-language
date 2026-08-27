@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Every example in the corpus lowers to a container. The value handling contracts, a token issuer, a
-
 use std::fs;
 use std::path::{Path, PathBuf};
 

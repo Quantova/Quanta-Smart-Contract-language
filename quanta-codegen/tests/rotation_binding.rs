@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A quorum gated rotation must commit the exact new membership, not merely the act of rotating.
-
 use std::collections::BTreeMap;
 
 use qtv_crypto::ml_dsa;
@@ -12,7 +10,6 @@ use quanta_codegen::{compile_contract, CompiledContract};
 mod common;
 use common::{put_addr_slots, signer_address, slot_key};
 
-// The board holds three guardians across the first twelve slots. A rotation replaces all three.
 const BOARD: &str = "contract Board {\n\
   state { board: GuardianSet<3>; }\n\
   entry rotate(new_board: GuardianSet<3>, approvals: Quorum<2 of 3, board>) writes(board) {\n\
@@ -42,7 +39,6 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
     mem[off..off + 8].copy_from_slice(&value.to_be_bytes());
 }
 
-// The canonical quorum message a guardian signs, ending in the three new board addresses inline.
 fn message(cc: &CompiledContract, member: &[u8; 32], nonce: u64, new_board: &[[u8; 32]; 3]) -> Vec<u8> {
     let selector = cc.container.entries[0].selector;
     let mut msg = Vec::new();
@@ -74,7 +70,6 @@ fn ml_region(
     region
 }
 
-// Lay out the members' verify regions and each member's scheme/ptr/index; `submitted` is the new board.
 fn scratch(cc: &CompiledContract, members: &[(Vec<u8>, u64)], submitted: &[[u8; 32]; 3]) -> Vec<u8> {
     let mut mem = vec![0u8; 65536];
     mem[32..64].copy_from_slice(&CONTRACT);
@@ -135,7 +130,6 @@ fn ml_guardians() -> (Vec<(ml_dsa::PublicKey, ml_dsa::SecretKey)>, [[u8; 32]; 3]
     (keys, addrs)
 }
 
-// A new membership distinct from the current board, the set the guardians actually approve.
 fn new_membership() -> [[u8; 32]; 3] {
     [[0xA1; 32], [0xB2; 32], [0xC3; 32]]
 }
@@ -146,7 +140,6 @@ fn a_quorum_that_signs_the_new_set_rotates_the_board() {
     let (keys, addrs) = ml_guardians();
     let new_board = new_membership();
 
-    // Guardians zero and one of the current board sign the exact new set.
     let m0 = ml_region(&cc, &keys[0].0, &keys[0].1, 0, &new_board);
     let m1 = ml_region(&cc, &keys[1].0, &keys[1].1, 0, &new_board);
     let mem = scratch(&cc, &[(m0, 0), (m1, 1)], &new_board);
@@ -161,7 +154,6 @@ fn substituting_a_different_new_set_breaks_the_quorum() {
     let (keys, addrs) = ml_guardians();
     let approved = new_membership();
 
-    // Guardians signed `approved`; a relayer submits an attacker set. The set is signed, so verify reverts.
     let attacker = [[0xEE; 32], [0xEE; 32], [0xEE; 32]];
     let m0 = ml_region(&cc, &keys[0].0, &keys[0].1, 0, &approved);
     let m1 = ml_region(&cc, &keys[1].0, &keys[1].1, 0, &approved);
@@ -183,7 +175,6 @@ fn rewriting_any_single_new_set_word_breaks_the_quorum() {
     let approved = new_membership();
     let set_off = arg_offset(&cc, "new_board");
 
-    // Flip one byte in each of the twelve new set words in turn. Every single change must revert.
     for word in 0..12usize {
         let m0 = ml_region(&cc, &keys[0].0, &keys[0].1, 0, &approved);
         let m1 = ml_region(&cc, &keys[1].0, &keys[1].1, 0, &approved);

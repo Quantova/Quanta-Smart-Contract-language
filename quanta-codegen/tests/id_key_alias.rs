@@ -51,7 +51,6 @@ fn run(
         .map(|out| (out.storage, out.effects))
 }
 
-// A set whose value reads another id-keyed slot must write the set's own key, not the read's key.
 #[test]
 fn a_set_whose_value_reads_another_id_slot_writes_its_own_key() {
     let src = "contract C { state { owner_of: Map<Q_Id, Q_Address>; } \
@@ -85,7 +84,6 @@ fn put_addr(storage: &mut BTreeMap<[u8; 32], u64>, base: u64, key: &[u8; 32], va
     }
 }
 
-// A set whose key and value both read the SAME map must use the intended key, not a clobbered one.
 #[test]
 fn a_map_set_whose_key_and_value_read_the_same_map_uses_the_intended_key() {
     let src = "contract C { state { link: Map<Q_Address, Q_Address>; } \
@@ -111,7 +109,6 @@ fn a_map_set_whose_key_and_value_read_the_same_map_uses_the_intended_key() {
     );
 }
 
-// A guard comparing two id-keyed reads must compare the two intended keys, not one clobbered key.
 #[test]
 fn a_guard_comparing_two_id_reads_uses_both_keys() {
     let src = "contract C { state { owner_of: Map<Q_Id, Q_Address>; note_of: Map<Q_Id, Q_Address>; flag: u64; } \
@@ -135,8 +132,6 @@ fn a_guard_comparing_two_id_reads_uses_both_keys() {
     let xo = arg_off(&cc, "demo", "x");
     mem[xo..xo + 32].copy_from_slice(&x);
 
-    // owner_of[id] = x (0x44) differs from note_of[other] = caller (0x33), so the guard must revert;
-    // if the id key is clobbered to `other`, the run wrongly compares equal words and passes.
     let out = run(&cc.container, entry(&cc, "demo").selector, BTreeMap::new(), &mem);
     assert!(
         matches!(out, Err(Fault::DivByZero)),

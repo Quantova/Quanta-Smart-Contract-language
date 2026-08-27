@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The Q_Name parameter type: a thirty two byte plaintext label window plus a label length word. The
-
 use std::collections::BTreeMap;
 
 use qtv_crypto::sha3::sha3_256;
@@ -39,7 +37,6 @@ fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
     entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
 }
 
-/// A thirty two byte label window; the label bytes at the front, the rest zero.
 fn window(label: &[u8]) -> [u8; 32] {
     let mut w = [0u8; 32];
     let n = label.len().min(32);
@@ -47,7 +44,6 @@ fn window(label: &[u8]) -> [u8; 32] {
     w
 }
 
-/// The storage key the machine derives for owner_of[name]: SHA3 of the map tag then the name key,
 fn expected_key(win: &[u8; 32], len: u64) -> [u8; 32] {
     let name_key = sha3_256(&win[..len as usize]);
     map_key(OWNER_OF_BASE, &name_key)
@@ -118,9 +114,6 @@ fn different_labels_hash_to_different_keys() {
 #[test]
 fn the_declared_length_is_bound_into_the_key() {
     let cc = compiled();
-    // The same window bytes declared at two different lengths must derive two different keys, and the
-    // exposed length must move with the declaration. A caller cannot pass long bytes and short length
-    // to land on a short name's key while reporting a longer length, or vice versa.
     let w = window(b"alicexyz");
     let s5 = run_claim(&cc, &w, 5, 10).expect("claim halts");
     let s3 = run_claim(&cc, &w, 3, 20).expect("claim halts");
@@ -144,9 +137,6 @@ fn a_length_past_the_window_reverts() {
     assert!(matches!(r, Err(Fault::DivByZero)), "a length past the 32 byte window reverts");
 }
 
-// Nineteen Q_Name params push name key #18 onto the old scratch-bump base, where a materialized state
-// address also parks. The write keyed by name #18 must still land on its own key, not on the address
-// the emit left in that region. Guards the scratch-bump base is kept past the whole name-key region.
 #[test]
 fn a_name_key_at_the_scratch_boundary_is_not_clobbered_by_a_materialized_address() {
     const N: usize = 19;

@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Node definitions. Every node carries the source span it was parsed from.
-
 use quanta_lexer::Span;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -246,12 +244,10 @@ pub enum Expr {
         args: Vec<Expr>,
         span: Span,
     },
-    /// `checked(expr)`, an arithmetic that keeps the revert on overflow.
     Checked {
         expr: Box<Expr>,
         span: Span,
     },
-    /// `wrapping(expr)`, an arithmetic that takes the modular result.
     Wrapping {
         expr: Box<Expr>,
         span: Span,

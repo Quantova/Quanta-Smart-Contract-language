@@ -302,14 +302,12 @@ mod tests {
 
     #[test]
     fn shift_binds_looser_than_addition_and_tighter_than_comparison() {
-        // a + b >> c parses as (a + b) >> c.
         match parse_expr("a + b >> c").unwrap() {
             Expr::Binary { op: BinOp::Shr, left, .. } => {
                 assert!(matches!(*left, Expr::Binary { op: BinOp::Add, .. }));
             }
             other => panic!("unexpected {other:?}"),
         }
-        // a >> b < c parses as (a >> b) < c.
         match parse_expr("a >> b < c").unwrap() {
             Expr::Binary { op: BinOp::Lt, left, .. } => {
                 assert!(matches!(*left, Expr::Binary { op: BinOp::Shr, .. }));

@@ -90,9 +90,6 @@ fn run(cc: &CompiledContract, storage: BTreeMap<[u8; 32], u64>, mem: &[u8]) -> R
         .map(|out| out.storage)
 }
 
-// A caller region placed just above the argument band, well below the scratch floor, is a normal
-// low pointer: the rebuilt message lives at ptr + (pk + sig), thousands of bytes up, so it never
-// reaches the argument band and the derived signer scratch stays untouched.
 fn low_ptr(cc: &CompiledContract) -> u64 {
     (max_arg_end(cc) + 7) / 8 * 8
 }
@@ -113,7 +110,6 @@ fn a_low_pointer_cannot_forge_owner_authority() {
     let cc = compile(VAULT);
     let selector = cc.container.entries[0].selector;
     let (_owner_region, owner) = region_for(3, selector, &[0u8; 32]);
-    // Attacker signs with their own key, naming the owner as the seize target, over a low pointer.
     let (region, _attacker) = region_for(9, selector, &owner);
     let mem = call_memory(&cc, &region, low_ptr(&cc), &owner);
     assert_eq!(

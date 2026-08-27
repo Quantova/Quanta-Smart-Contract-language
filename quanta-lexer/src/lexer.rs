@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The scanner. Produces a token stream with byte accurate spans and rejects
-
 use crate::token::{is_forbidden, keyword_kind, Span, Token, TokenKind};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -247,7 +245,6 @@ mod tests {
                 TokenKind::Eof,
             ]
         );
-        // A near miss on a keyword stays an identifier.
         assert_eq!(
             kinds("mint"),
             vec![TokenKind::Ident("mint".to_string()), TokenKind::Eof]
@@ -264,7 +261,6 @@ mod tests {
             kinds("2036-07-01"),
             vec![TokenKind::Date("2036-07-01".to_string()), TokenKind::Eof]
         );
-        // A bare subtraction is three tokens, not a date.
         assert_eq!(
             kinds("50 - 3"),
             vec![

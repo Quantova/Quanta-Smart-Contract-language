@@ -39,9 +39,6 @@ const CONTRACT_KEY: &str = "@contract";
 
 const TIME_KEY: &str = "@time";
 
-// The chain the entry runs on, supplied by the host the same way the contract self address is. It is
-// folded into the signed and quorum message tag so a captured authorization cannot be lifted onto
-// another chain. A host that leaves it zero reproduces the unbound tag.
 const CHAIN_KEY: &str = "@chain";
 const VALUE_KEY: &str = "@value";
 
@@ -145,8 +142,6 @@ pub struct Args {
     order: Vec<String>,
     next: u64,
     deploy_params: Vec<DeployParamSlot>,
-    // The name of an argument whose slot was later read wider than it was first sized, which would
-    // over read the next argument. The entry is rejected rather than emit that read.
     oversize: Option<String>,
 }
 
@@ -275,18 +270,12 @@ impl<'a> Ctx<'a> {
         off
     }
 
-    // A per map scratch region that holds the four words of an address read out of that map. It draws
-    // from the same bump pointer as a materialized state address, so the two never overlap, and it is
-    // reused across reads of the one map since every read reloads the words before the region is used.
-    // A fresh region per call so a key read and a value read of the same map never share one buffer.
     fn bind_map_value_scratch(&mut self, _name: &str) -> u64 {
         let off = self.next_state_addr_scratch;
         self.next_state_addr_scratch += ADDR_BYTES;
         off
     }
 
-    // A fresh region for one materialized token id key, drawn from the same bump pointer so two live
-    // id keys in one expression never share a buffer.
     fn bind_id_key_scratch(&mut self) -> u64 {
         let off = self.next_state_addr_scratch;
         self.next_state_addr_scratch += ADDR_BYTES;
@@ -465,7 +454,6 @@ fn lower_field(ctx: &mut Ctx, base: &Expr, field: &str, span: Span) -> Result<Re
     })
 }
 
-/// The storage slot of a state asset field. An asset holds its amount in a single scalar slot, so
 fn state_asset_slot(ctx: &Ctx, name: &str) -> Option<u64> {
     let slot = ctx.layout.slot(name)?;
     if ctx.layout.map_base(name).is_some()
@@ -708,7 +696,6 @@ fn lower_binary(
     Ok(l)
 }
 
-/// Logical `and` and `or` evaluate the right operand only when the left has not already decided the
 fn lower_short_circuit(
     ctx: &mut Ctx,
     op: BinOp,
@@ -721,8 +708,6 @@ fn lower_short_circuit(
     let done = ctx.b.label();
     match op {
         BinOp::And => {
-            // A false left already decides the whole `and`, so leave the zero in place and skip the
-            // right; a true left falls through to combine with it.
             ctx.b.jz(l, done);
             let r = lower_expr(ctx, right, wrapping)?;
             bool_normalize(ctx, r);
@@ -730,8 +715,6 @@ fn lower_short_circuit(
             ctx.regs.free(r);
         }
         BinOp::Or => {
-            // A true left already decides the whole `or`, so leave the true value in place and skip
-            // the right; a false left falls through to combine with it.
             ctx.b.jnz(l, done);
             let r = lower_expr(ctx, right, wrapping)?;
             bool_normalize(ctx, r);
@@ -1287,10 +1270,6 @@ pub fn lower_entry(
         ctx.args.offset_of_width(CALLER_KEY, ADDR_BYTES);
         ctx.args.offset_of_width(CONTRACT_KEY, ADDR_BYTES);
         ctx.args.offset_of_width(TIME_KEY, WORD);
-        // The chain identity the host injects at @chain is a fixed context word, reserved right after
-        // @time and ahead of any parameter, so the host always sets it and it never lands in the caller
-        // supplied argument region. This word is what binds a signed or quorum order to one chain, so an
-        // order captured on one chain does not verify on another.
         ctx.args.offset_of_width(CHAIN_KEY, WORD);
         ctx.args.offset_of_width(VALUE_KEY, WORD);
         for param in &entry.params {
@@ -1491,7 +1470,6 @@ fn lower_quorum_prologue(
     Ok(())
 }
 
-// The address words a `GuardianSet<N>` parameter carries; None for any other parameter type.
 fn guardian_set_param_words(param: &Param) -> Option<u64> {
     if param.ty.name.text != GUARDIAN_SET_PARAM {
         return None;
@@ -1500,7 +1478,8 @@ fn guardian_set_param_words(param: &Param) -> Option<u64> {
         Some(GenericArg::Int(i)) => i.text.replace('_', "").parse::<u64>().ok()?,
         _ => return None,
     };
-    (n > 0).then_some(n * ADDR_WORDS)
+    let n = n.min(crate::layout::MAX_GUARDIAN_SET);
+    (n > 0).then(|| n.saturating_mul(ADDR_WORDS))
 }
 
 fn quorum_message_fields(
@@ -1515,12 +1494,11 @@ fn quorum_message_fields(
             continue;
         }
         if param.ty.name.text == GUARDIAN_SET_PARAM {
-            // Bind the full new set, so a quorum cannot be replayed to rotate to a different membership.
             let words = guardian_set_param_words(param).ok_or_else(|| CodegenError::Unsupported {
                 what: format!("a guardian set parameter `{pname}` whose size is not a positive count"),
                 span: param.span,
             })?;
-            let off = ctx.args.offset_of_width(pname, words * WORD);
+            let off = ctx.args.offset_of_width(pname, words.saturating_mul(WORD));
             specs.push((off, words));
             continue;
         }
@@ -1903,7 +1881,6 @@ fn lower_after_prologue(
                         d: addend,
                         imm: seconds,
                     });
-                    // Checked add: an overflowing time gate must fault and revert, not wrap open.
                     ctx.b.op(Instr::Add {
                         d: reg,
                         a: reg,
@@ -1924,7 +1901,6 @@ fn lower_after_prologue(
                 let reg = lower_expr(ctx, expr, false)?;
                 if let Some(base) = from {
                     let anchor = lower_expr(ctx, base, false)?;
-                    // Checked add: an overflowing time gate must fault and revert, not wrap open.
                     ctx.b.op(Instr::Add {
                         d: reg,
                         a: reg,
@@ -1947,7 +1923,6 @@ fn lower_after_prologue(
     Ok(())
 }
 
-/// A `limits` clause states a bound that must hold, and a `denies` clause states a condition that
 fn lower_bounds_prologue(
     ctx: &mut Ctx,
     entry: &EntryDecl,
@@ -2024,9 +1999,6 @@ fn lower_name_prologue(
 
         ctx.name_keys.insert(name.clone(), scratch);
     }
-    // Keep the state-address bump allocator past the name-key region so a name key can never alias a
-    // materialized address or a map-value / id-key scratch, whatever the name-param count. The
-    // prologue runs before every other prologue and the body, so every later bump draw starts clear.
     let name_region_end = NAME_KEY_SCRATCH_BASE + (names.len() as u64) * ADDR_BYTES;
     if name_region_end > ctx.next_state_addr_scratch {
         ctx.next_state_addr_scratch = name_region_end;
@@ -2053,8 +2025,6 @@ fn quorum_spec(param: &Param) -> Option<(u64, u64, String)> {
     Some((m, n, set?))
 }
 
-
-/// Fold the chain identity the host supplies at `@chain` into a message tag register. The signed and
 fn bind_chain_into_tag(ctx: &mut Ctx, tag: Reg, span: Span) -> Result<(), CodegenError> {
     let chain_off = ctx.args.offset_of(CHAIN_KEY);
     let chain = load_arg(ctx, chain_off, span)?;
@@ -2130,7 +2100,6 @@ fn copy_words_fixed(
     Ok(())
 }
 
-// The signed field set is exactly the parameter fields the entry reads, in first read order.
 pub(crate) fn collect_signed_fields(entry: &EntryDecl, param: &str) -> Vec<String> {
     let mut out = Vec::new();
     for clause in &entry.clauses {
@@ -2139,7 +2108,6 @@ pub(crate) fn collect_signed_fields(entry: &EntryDecl, param: &str) -> Vec<Strin
                 collect_fields_expr(expr, param, &mut out)
             }
             Clause::After { target, from, .. } => {
-                // Both the target and the optional `from` base are read, so both must be signed over.
                 if let AfterTarget::Expr(expr) = target {
                     collect_fields_expr(expr, param, &mut out);
                 }
@@ -3164,7 +3132,6 @@ fn lower_address(ctx: &mut Ctx, expr: &Expr, span: Span) -> Result<u64, CodegenE
     }
 }
 
-/// A state `Q_Address` field lives in four storage slots, but `send`, an emitted address argument,
 fn materialize_state_addr(ctx: &mut Ctx, name: &str, span: Span) -> Result<u64, CodegenError> {
     let slot = ctx
         .layout
@@ -3187,7 +3154,6 @@ fn materialize_state_addr(ctx: &mut Ctx, name: &str, span: Span) -> Result<u64, 
     Ok(off)
 }
 
-/// An address stored as a keyed map value lives across four hashed word slots. Reading it back for
 fn materialize_map_addr_value(
     ctx: &mut Ctx,
     map_name: &str,
@@ -3617,9 +3583,6 @@ fn ledger_amount(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<Reg, Codegen
     if is_asset_value(ctx, value) {
         asset_amount(ctx, value, span)
     } else if is_wide_expr(ctx, value) {
-        // A keyed ledger value is one machine word, so a wide amount that carries a high word cannot
-        // be held. Rather than truncate it, which would grow a two word total_supply by more than the
-        // credited balance and desync the two, evaluate it wide and trap on a nonzero high word.
         let (lo, hi) = eval_wide(ctx, value, false)?;
         ctx.b.jnz(hi, ctx.trap);
         ctx.regs.free(hi);
@@ -4296,7 +4259,6 @@ mod tests {
 
     #[test]
     fn shift_binds_looser_than_addition_in_vm() {
-        // (x + a) >> b, so 6 + 2 = 8, then 8 >> 1 = 4.
         assert_eq!(eval("x + a >> b", &[("x", 6)], &[("a", 2), ("b", 1)]), 4);
     }
 }

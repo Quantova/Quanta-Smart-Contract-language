@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A `Map<Q_Address, u64>` keyed by the whole thirty two byte address, storing a single word value.
-
 use std::collections::BTreeMap;
 
 use qtv_vm::container::{Container, SELECTOR_BYTES};
@@ -68,11 +66,9 @@ fn set_then_get_returns_the_stored_word_and_keys_stay_independent() {
 
     let storage = run(&cc.container, entry(&cc, "probe").selector, &mem).expect("probe halts");
 
-    // get returns the word that set stored: r1 (slot 1) == v1, r2 (slot 2) == v2.
     assert_eq!(storage.get(&slot_key(1)).copied().unwrap_or(0), v1, "r1 == bal.get(k1)");
     assert_eq!(storage.get(&slot_key(2)).copied().unwrap_or(0), v2, "r2 == bal.get(k2)");
 
-    // Each key lives at its own hashed slot; the two values never collided.
     assert_eq!(storage.get(&map_key(BAL_BASE, &k1)).copied().unwrap_or(0), v1);
     assert_eq!(storage.get(&map_key(BAL_BASE, &k2)).copied().unwrap_or(0), v2);
     assert_ne!(map_key(BAL_BASE, &k1), map_key(BAL_BASE, &k2), "distinct keys, distinct slots");

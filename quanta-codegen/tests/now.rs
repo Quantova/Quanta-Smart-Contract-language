@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The `now` expression reads the injected `@time` context word, the same way `caller` reads
-
 use std::collections::BTreeMap;
 
 use qtv_vm::container::{Container, SELECTOR_BYTES};
@@ -75,14 +73,12 @@ fn now_in_a_guard_reads_the_injected_time() {
     let time_off = arg_off(&cc, "after_deadline", "@time");
     let dl_off = arg_off(&cc, "after_deadline", "deadline");
 
-    // now after the deadline: the guard passes and records now.
     let mut mem = vec![0u8; 4096];
     word(&mut mem, time_off, 100);
     word(&mut mem, dl_off, 50);
     let storage = run(&cc.container, sel, &mem).expect("a later now passes the guard");
     assert_eq!(storage.get(&slot_key(0)).copied().unwrap_or(0), 100);
 
-    // now before the deadline: the guard reverts.
     let mut mem = vec![0u8; 4096];
     word(&mut mem, time_off, 50);
     word(&mut mem, dl_off, 100);

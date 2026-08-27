@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The regulated entity token, end to end through the register machine. The example carries the
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -14,10 +12,10 @@ use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 mod common;
 use common::{map_key, nonce_key, signer_address, slot_key};
 
-const SLOT_SUPPLY: u64 = 4; // owner spans slots 0..4, then total_supply low word at slot 4.
-const HI: u64 = 1 << 56; // the code generator's high word offset for a two word field.
-const BAL_BASE: u64 = 1 << 40; // the balances map, the first keyed field.
-const FROZEN_BASE: u64 = (1 << 40) + (1 << 32); // the frozen registry, the second keyed field.
+const SLOT_SUPPLY: u64 = 4;
+const HI: u64 = 1 << 56;
+const BAL_BASE: u64 = 1 << 40;
+const FROZEN_BASE: u64 = (1 << 40) + (1 << 32);
 const GAS: u64 = 8_000_000;
 const CONTRACT: [u8; 32] = [0x99; 32];
 const SCHEME_ML: u8 = 1;
@@ -108,13 +106,11 @@ fn deploy(cc: &CompiledContract, owner: &[u8; 32]) -> BTreeMap<[u8; 32], u64> {
     storage
 }
 
-/// A committed order field: either a single machine word or a whole thirty two byte address. The order
 enum Field<'a> {
     Wide(&'a str, u64),
     Addr(&'a str, &'a [u8; 32]),
 }
 
-/// Build the memory for an owner signed entry: the order fields at their argument slots, the context
 fn signed_memory(
     cc: &CompiledContract,
     entry_name: &str,
@@ -289,11 +285,9 @@ fn a_frozen_account_cannot_receive_and_unfreezing_restores_it() {
     let storage = deploy(&cc, &owner);
     let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint(&cc, &key, &owner, 0, 500, &alice)).expect("mint");
 
-    // The owner freezes bob (nonce one, after the mint at nonce zero).
     let (storage, _) = run(&cc, selector_of(&cc, "freeze"), storage, &freeze(&cc, &key, &owner, 1, &bob)).expect("freeze halts");
     assert_eq!(storage.get(&map_key(FROZEN_BASE, &bob)), Some(&1), "bob is frozen");
 
-    // A transfer to the frozen recipient reverts and leaves balances untouched.
     let frozen_storage = storage.clone();
     assert_eq!(
         run(&cc, selector_of(&cc, "transfer"), frozen_storage, &transfer_memory(&cc, &alice, &bob, 200)).map(|(s, _)| s),
@@ -301,7 +295,6 @@ fn a_frozen_account_cannot_receive_and_unfreezing_restores_it() {
         "a transfer to a frozen account reverts"
     );
 
-    // Unfreezing bob (nonce two) restores the transfer.
     let (storage, _) = run(&cc, selector_of(&cc, "unfreeze"), storage, &unfreeze(&cc, &key, &owner, 2, &bob)).expect("unfreeze halts");
     let (after, _) = run(&cc, selector_of(&cc, "transfer"), storage, &transfer_memory(&cc, &alice, &bob, 200)).expect("the transfer halts after unfreeze");
     assert_eq!(balance(&after, &bob), 200, "the unfrozen recipient can be paid");
@@ -336,7 +329,6 @@ fn a_mint_to_a_frozen_account_is_denied() {
     let storage = deploy(&cc, &owner);
     let (storage, _) = run(&cc, selector_of(&cc, "freeze"), storage, &freeze(&cc, &key, &owner, 0, &mallory)).expect("freeze halts");
 
-    // The mint carries a denies clause over the frozen set, so minting to a frozen holder reverts.
     let mem = mint(&cc, &key, &owner, 1, 500, &mallory);
     assert_eq!(
         run(&cc, selector_of(&cc, "mint"), storage, &mem).map(|(s, _)| s),
@@ -390,19 +382,15 @@ fn supply_and_balances_stay_consistent_across_the_word_boundary_at_large_amounts
 
     let storage = deploy(&cc, &owner);
 
-    // Mint the largest one word amount to alice, then again to bob. The two word supply crosses the
-    // machine word boundary while each one word balance stays under it.
     let big = u64::MAX;
     let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint(&cc, &key, &owner, 0, big, &alice)).expect("first large mint");
     assert_eq!(supply_u128(&storage), big as u128, "supply holds the first large mint");
     let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint(&cc, &key, &owner, 1, big, &bob)).expect("second large mint");
 
-    // The supply now needs its high word.
     assert_eq!(supply_hi(&storage), 1, "supply carried into the high word");
     assert_eq!(balance(&storage, &alice), big, "alice holds a full word");
     assert_eq!(balance(&storage, &bob), big, "bob holds a full word");
 
-    // The invariant the token maintains: the two word supply equals the sum of the one word balances.
     let sum = balance(&storage, &alice) as u128 + balance(&storage, &bob) as u128;
     assert_eq!(supply_u128(&storage), sum, "the two word supply equals the sum of the one word balances");
     assert_eq!(supply_u128(&storage), (big as u128) * 2, "supply is twice the largest word");

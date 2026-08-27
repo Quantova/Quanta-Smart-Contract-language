@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Every authorizer field the entry reads must be signed, including the `after` gate target.
-
 use std::collections::BTreeMap;
 
 use qtv_crypto::ml_dsa;
@@ -12,7 +10,6 @@ use quanta_codegen::{compile_contract, CompiledContract};
 mod common;
 use common::{nonce_key, put_addr_slots, signer_address, slot_key};
 
-// The order fields in canonical (first read) order: notbefore, then step, then extra.
 const TIMED: &str = "contract Timed {\n\
   state { owner: Q_Address; count: u64; }\n\
   genesis { owner = deployer; count = 0; }\n\
@@ -48,7 +45,6 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
     mem[off..off + 8].copy_from_slice(&value.to_be_bytes());
 }
 
-// The canonical order message the compiler rebuilds and verifies over.
 fn canonical_message(signer: &[u8; 32], selector: [u8; 4], nonce: u64, fields: &[u64]) -> Vec<u8> {
     let mut msg = Vec::new();
     msg.extend_from_slice(b"QTVSGN01");
@@ -62,7 +58,6 @@ fn canonical_message(signer: &[u8; 32], selector: [u8; 4], nonce: u64, fields: &
     msg
 }
 
-// Build the scratch memory for an `act` call: `signed` is committed, `plain` is what the relayer submits.
 fn act_memory(
     cc: &CompiledContract,
     pk: &[u8],
@@ -119,7 +114,6 @@ fn a_correct_order_over_the_whole_field_set_verifies_and_runs() {
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let owner = signer_address(SCHEME_ML, &pk);
 
-    // notbefore 100 is past against time 10_000, so the gate opens and the body adds step then extra.
     let mem = act_memory(&cc, &pk, &sk, [100, 4, 3], [100, 4, 3], 10_000, 0);
     let out = run(&cc, owned_storage(&owner, 10), &mem).expect("the owner's full order is accepted");
     assert_eq!(out.get(&slot_key(COUNT_SLOT)), Some(&17), "count advances by step then extra");
@@ -132,7 +126,6 @@ fn rewriting_the_unsigned_time_gate_target_is_now_refused() {
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let owner = signer_address(SCHEME_ML, &pk);
 
-    // Signer approved notbefore 500; a relayer rewrites it to 0. The target is signed now, so verify reverts.
     let storage = owned_storage(&owner, 10);
     let mem = act_memory(&cc, &pk, &sk, [500, 4, 3], [0, 4, 3], 400, 0);
     assert_eq!(
@@ -149,13 +142,11 @@ fn each_authorizer_field_is_bound_so_any_single_mutation_reverts() {
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let owner = signer_address(SCHEME_ML, &pk);
 
-    // The order the owner signed. Every plain word matches the signed word.
     let signed = [100u64, 4, 3];
-    // Each mutation flips one field to an unapproved value, keeping the timelock otherwise satisfiable.
     let mutations = [
-        [0u64, 4, 3],   // notbefore, the once unsigned gate target
-        [100, 9, 3],    // step, a body amount
-        [100, 4, 9],    // extra, a second body amount
+        [0u64, 4, 3],
+        [100, 9, 3],
+        [100, 4, 9],
     ];
     for plain in mutations {
         let storage = owned_storage(&owner, 10);
@@ -171,7 +162,6 @@ fn each_authorizer_field_is_bound_so_any_single_mutation_reverts() {
 
 #[test]
 fn a_correct_order_still_reverts_before_the_gate_opens() {
-    // Binding the gate target must not weaken the timelock: a future notbefore still reverts on time.
     let cc = compile(TIMED);
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let owner = signer_address(SCHEME_ML, &pk);
@@ -183,7 +173,6 @@ fn a_correct_order_still_reverts_before_the_gate_opens() {
         "the window is still shut at consensus time 400"
     );
 
-    // The same order at a consensus time past notbefore is admitted.
     let mem = act_memory(&cc, &pk, &sk, [500, 4, 3], [500, 4, 3], 500, 0);
     let out = run(&cc, owned_storage(&owner, 10), &mem).expect("the window is open at 500");
     assert_eq!(out.get(&slot_key(COUNT_SLOT)), Some(&17));

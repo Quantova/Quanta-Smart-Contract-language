@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Reading a full thirty two byte address back out of a keyed map value and reusing it. An emitted
-
 use std::collections::BTreeMap;
 
 use qtv_vm::container::{Container, SELECTOR_BYTES};
@@ -100,8 +98,6 @@ fn an_emitted_field_carries_the_stored_owner_read_out_of_the_map_not_the_caller(
     let name = addr(0x11);
     let stored = claim(&cc, &owner, &name);
 
-    // A stranger resolves the name. The event owner field must be the stored owner read out of the
-    // map, never the resolving caller.
     let stranger = addr(0xCC);
     let mem = addr_memory(&cc, "resolve", &stranger, &[("name", name)]);
     let (_, effects) = run(&cc.container, entry(&cc, "resolve").selector, stored, &mem)
@@ -125,13 +121,11 @@ fn a_stored_owner_reads_out_and_stores_into_a_second_map_byte_identical() {
     let (after, _) = run(&cc.container, entry(&cc, "mirror").selector, stored, &mem)
         .expect("mirror halts");
 
-    // The mirror map holds the whole thirty two byte owner across its own four hashed word slots.
     assert_eq!(
         read_addr_value(&after, MIRROR_BASE, &name),
         owner,
         "the mirror map value reassembles to the whole owner"
     );
-    // The source map is unchanged by the read.
     assert_eq!(read_addr_value(&after, OWNER_BASE, &name), owner, "the source owner is intact");
 }
 
@@ -140,7 +134,6 @@ fn a_read_out_of_an_absent_name_yields_the_zero_address() {
     let cc = compiled();
     let name = addr(0x11);
 
-    // No claim ran, so every word slot is absent and reads as zero.
     let mem = addr_memory(&cc, "mirror", &addr(0xCC), &[("name", name)]);
     let (after, _) = run(&cc.container, entry(&cc, "mirror").selector, BTreeMap::new(), &mem)
         .expect("mirror halts");
@@ -162,7 +155,6 @@ fn a_single_word_map_value_keeps_its_one_slot_layout() {
     let (storage, _) = run(&cc.container, entry(&cc, "tick").selector, BTreeMap::new(), &mem)
         .expect("tick halts");
 
-    // A one word value lands in the single hashed map slot, not the four word address layout.
     assert_eq!(storage.len(), 1, "a scalar map value writes exactly one slot");
     assert_eq!(storage.get(&map_key(TICK_BASE, &name)).copied(), Some(v), "the one word is at the plain map key");
 }

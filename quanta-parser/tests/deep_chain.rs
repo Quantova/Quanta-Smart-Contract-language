@@ -1,10 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A left associative operator chain and a postfix field or call chain build the same unbounded tree
-//! height as nested parentheses do. Each link must count toward the depth limit so a long chain is a
-//! clean parse error rather than a source whose tree overflows the stack when it is walked or dropped.
-
 fn body(inner: &str) -> String {
     format!("contract C {{ state {{ a: u64; }} entry f() writes(a) {{ a = {inner}; }} }}")
 }

@@ -1,7 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-
 use std::collections::BTreeMap;
 
 use qtv_vm::container::SELECTOR_BYTES;
@@ -64,7 +63,7 @@ fn two_addresses_sharing_only_the_first_word_do_not_pass() {
     let cc = compile(SRC);
     let a = [0x11u8; 32];
     let mut b = [0x11u8; 32];
-    b[16] = 0xEE; // differ past the first word, so genuinely distinct addresses
+    b[16] = 0xEE;
     let mem = mem_with(&cc, "act", &[("order.a", a), ("order.b", b)]);
     assert!(
         run(&cc, "act", &mem).is_err(),

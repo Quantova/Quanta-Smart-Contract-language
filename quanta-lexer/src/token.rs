@@ -1,9 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Token kinds, source spans, and the keyword and forbidden registers.
-
-/// A half open byte range `[start, end)` into the source text.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Span {
     pub start: usize,
@@ -15,7 +12,6 @@ impl Span {
         Span { start, end }
     }
 
-    /// The smallest span covering both operands.
     pub fn join(self, other: Span) -> Span {
         Span {
             start: self.start.min(other.start),
@@ -97,7 +93,6 @@ pub enum TokenKind {
 }
 
 impl TokenKind {
-    /// A short label used in parser error messages.
     pub fn describe(&self) -> String {
         match self {
             TokenKind::Ident(t) => format!("identifier `{t}`"),
@@ -182,7 +177,6 @@ impl Token {
     }
 }
 
-/// Solidity carryovers that are not part of Quanta. Their appearance in source
 pub const FORBIDDEN: &[&str] = &[
     "function",
     "require",
@@ -201,7 +195,6 @@ pub fn is_forbidden(word: &str) -> bool {
     FORBIDDEN.contains(&word)
 }
 
-/// Maps an identifier spelling to its keyword kind, if it is a keyword.
 pub fn keyword_kind(word: &str) -> Option<TokenKind> {
     let kind = match word {
         "contract" => TokenKind::Contract,

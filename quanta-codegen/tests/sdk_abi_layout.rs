@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The emitted argument offsets are the wire contract the client encoder, the host, and the entry share.
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -15,7 +13,6 @@ use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 mod common;
 use common::{map_addr_word_key, map_key, signer_address, slot_key};
 
-// The client and host canonical layout, frozen.
 const SDK_CONTEXT_BYTES: u64 = 88;
 const SDK_WORD: u64 = 8;
 const SDK_ADDR: u64 = 32;
@@ -66,13 +63,11 @@ fn offset(cc: &CompiledContract, name: &str, key: &str) -> u64 {
         .offset
 }
 
-// The four host context words, at their fixed positions across the eighty byte prefix.
 fn assert_host_context(cc: &CompiledContract, name: &str) {
     assert_eq!(offset(cc, name, "@caller"), CTX_CALLER_OFF, "@caller leads the context");
     assert_eq!(offset(cc, name, "@contract"), CTX_CONTRACT_OFF, "@contract is one address in");
     assert_eq!(offset(cc, name, "@time"), CTX_TIME_OFF, "@time follows the two addresses");
     assert_eq!(offset(cc, name, "@chain"), CTX_CHAIN_OFF, "@chain is the last context word");
-    // The context is exactly the eighty byte prefix; no caller argument may land inside it.
     assert_eq!(offset(cc, name, "@value"), CTX_VALUE_OFF, "@value is the last context word");
     assert_eq!(CTX_VALUE_OFF + SDK_WORD, SDK_CONTEXT_BYTES, "the five context words span eighty eight bytes");
     for slot in &entry(cc, name).args {
@@ -90,7 +85,6 @@ fn assert_host_context(cc: &CompiledContract, name: &str) {
 
 #[test]
 fn the_qasset_mint_offsets_equal_the_sdk_canonical_layout() {
-    // QAsset mint: a Q_Address destination then a u128 amount, at the frozen positions asserted below.
     let cc = compile_example("QAsset.qs");
     assert_host_context(&cc, "mint");
     let to = offset(&cc, "mint", "order.to");
@@ -101,13 +95,11 @@ fn the_qasset_mint_offsets_equal_the_sdk_canonical_layout() {
     assert_eq!(scheme, to + SDK_ADDR, "the scheme word sits one whole address past the destination");
     assert_eq!(ptr, scheme + SDK_WORD, "the region pointer follows the scheme word");
     assert_eq!(amount, ptr + SDK_WORD, "the amount follows the pointer word");
-    // The absolute numbers, frozen, so a silent context shift fails here.
     assert_eq!((to, scheme, ptr, amount), (88, 120, 128, 136), "the frozen QAsset mint layout");
 }
 
 #[test]
 fn the_qasset_transfer_offsets_equal_the_sdk_canonical_layout() {
-    // transfer(to: Q_Address, amount: u128): the address opens the region, the u128 follows one address later.
     let cc = compile_example("QAsset.qs");
     assert_host_context(&cc, "transfer");
     let to = offset(&cc, "transfer", "to");
@@ -119,7 +111,6 @@ fn the_qasset_transfer_offsets_equal_the_sdk_canonical_layout() {
 
 #[test]
 fn scalar_argument_widths_equal_the_sdk_field_widths() {
-    // A width probe: each scalar's width shows as the gap to the next, pinning u128 = 16 and u64 = 8.
     const WIDTHS: &str = "contract W {\n\
       state { owner: Q_Address; total: u128; c: u64; }\n\
       genesis { owner = deployer; total = 0; c = 0; }\n\
@@ -140,8 +131,6 @@ fn scalar_argument_widths_equal_the_sdk_field_widths() {
     assert_eq!((a, b, d), (88, 104, 112), "the frozen width probe layout");
 }
 
-// An end to end proof: an order at the emitted offsets verifies, and the stale shifted offsets are rejected.
-
 fn selector_of(cc: &CompiledContract, name: &str) -> [u8; 4] {
     entry(cc, name).selector
 }
@@ -160,7 +149,6 @@ fn run(
 }
 
 fn deploy(cc: &CompiledContract, owner: &[u8; 32]) -> BTreeMap<[u8; 32], u64> {
-    // The genesis deploy region: owner address, then the u128 initial supply, then the sentinel.
     let mut mem = vec![0u8; 88 + 32 + 16 + 8];
     mem[88..120].copy_from_slice(owner);
     mem[136..144].copy_from_slice(&SENTINEL);
@@ -169,7 +157,6 @@ fn deploy(cc: &CompiledContract, owner: &[u8; 32]) -> BTreeMap<[u8; 32], u64> {
         .0
 }
 
-// The signed order preimage, byte identical to QCore.rs `canonical_order_message_typed`.
 fn canonical_order_message(
     chain_id: u64,
     signer: &[u8; 32],
@@ -180,18 +167,17 @@ fn canonical_order_message(
 ) -> Vec<u8> {
     let tag = u64::from_be_bytes(*b"QTVSGN01") ^ chain_id;
     let mut msg = Vec::new();
-    msg.extend_from_slice(&tag.to_be_bytes()); // MSG_TAG_OFF 0
-    msg.extend_from_slice(&CONTRACT); // MSG_CONTRACT_OFF 8
-    msg.extend_from_slice(&(u32::from_be_bytes(sel) as u64).to_be_bytes()); // MSG_SELECTOR_OFF 40
-    msg.extend_from_slice(signer); // MSG_SIGNER_OFF 48
-    msg.extend_from_slice(&nonce.to_be_bytes()); // MSG_NONCE_OFF 80
-    msg.extend_from_slice(&(amount as u64).to_be_bytes()); // MSG_FIELDS_OFF 88, amount low
-    msg.extend_from_slice(&((amount >> 64) as u64).to_be_bytes()); // amount high
-    msg.extend_from_slice(to); // then the whole destination address
+    msg.extend_from_slice(&tag.to_be_bytes());
+    msg.extend_from_slice(&CONTRACT);
+    msg.extend_from_slice(&(u32::from_be_bytes(sel) as u64).to_be_bytes());
+    msg.extend_from_slice(signer);
+    msg.extend_from_slice(&nonce.to_be_bytes());
+    msg.extend_from_slice(&(amount as u64).to_be_bytes());
+    msg.extend_from_slice(&((amount >> 64) as u64).to_be_bytes());
+    msg.extend_from_slice(to);
     msg
 }
 
-// Lay out the mint call for a given assumed context size; client words hang off `client_context`.
 fn mint_memory(
     cc: &CompiledContract,
     key: &(ml_dsa::PublicKey, ml_dsa::SecretKey),
@@ -211,11 +197,9 @@ fn mint_memory(
     region.extend_from_slice(&msg);
 
     let mut mem = vec![0u8; 65536];
-    // Host injected context words, at their fixed positions.
     mem[CTX_CONTRACT_OFF as usize..CTX_CONTRACT_OFF as usize + 32].copy_from_slice(&CONTRACT);
     mem[CTX_CHAIN_OFF as usize..CTX_CHAIN_OFF as usize + 8].copy_from_slice(&chain_id.to_be_bytes());
 
-    // Client controlled argument words, hung off whatever context size the client assumes.
     let to_off = client_context as usize;
     let scheme_off = (client_context + SDK_ADDR) as usize;
     let ptr_off = (client_context + SDK_ADDR + SDK_WORD) as usize;
@@ -251,7 +235,6 @@ fn a_signed_order_at_the_emitted_offsets_verifies_and_the_stale_shift_is_rejecte
     let holder = [0xA1u8; 32];
     let amount = TWO_TO_64 + 100;
 
-    // The emitted eighty byte context: arguments land where mint reads them and the order runs.
     let storage = deploy(&cc, &owner);
     let mem = mint_memory(&cc, &key, chain_id, 0, amount, &holder, SDK_CONTEXT_BYTES);
     let (after, _) = run(&cc, selector_of(&cc, "mint"), storage, &mem)
@@ -259,7 +242,6 @@ fn a_signed_order_at_the_emitted_offsets_verifies_and_the_stale_shift_is_rejecte
     assert_eq!(balance(&after, &holder), amount, "the whole two word amount is credited");
     assert_eq!(supply(&after), amount, "supply tracks the wide mint");
 
-    // The stale seventy two byte context: every client word lands eight bytes low, so verify fails.
     let storage = deploy(&cc, &owner);
     let stale = mint_memory(&cc, &key, chain_id, 0, amount, &holder, SDK_CONTEXT_BYTES - SDK_WORD);
     assert!(

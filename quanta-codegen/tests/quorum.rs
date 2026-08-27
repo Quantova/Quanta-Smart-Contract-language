@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Quorum binding. A `Quorum<M of N, set>` is constructed only from M valid signatures, each by a
-
 use std::collections::BTreeMap;
 
 use qtv_crypto::{ml_dsa, slh_dsa};
@@ -19,7 +17,6 @@ const BOARD: &str = "contract Board {\n\
   }\n\
 }\n";
 
-// The guardian set holds three guardians across the first twelve slots; counter follows it.
 const COUNTER_SLOT: u64 = 12;
 const CONTRACT: [u8; 32] = [0x44; 32];
 const SCHEME_ML: u8 = 1;
@@ -44,8 +41,6 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
     mem[off..off + 8].copy_from_slice(&value.to_be_bytes());
 }
 
-// The canonical quorum message the compiler rebuilds: the domain tag, the contract self address, the
-// entry selector word, the member address, and the member's nonce. The `act` entry has no order fields.
 fn message(cc: &CompiledContract, member: &[u8; 32], nonce: u64) -> Vec<u8> {
     let selector = cc.container.entries[0].selector;
     let mut msg = Vec::new();
@@ -84,10 +79,7 @@ fn slh_region(
     region
 }
 
-// Place each member's region and its scheme, pointer, and guardian index words.
 fn scratch(cc: &CompiledContract, members: &[(u8, Vec<u8>, u64)]) -> Vec<u8> {
-    // The member verify regions sit low in scratch, below the fixed scratch regions the code generator
-    // uses for the signer address, the nonce, and the slot keys, which begin around forty thousand.
     let mut mem = vec![0u8; 65536];
     mem[32..64].copy_from_slice(&CONTRACT);
     let mut cursor = 8192usize;
@@ -102,7 +94,6 @@ fn scratch(cc: &CompiledContract, members: &[(u8, Vec<u8>, u64)]) -> Vec<u8> {
     mem
 }
 
-// The guardian set state, three guardians seeded across the first twelve slots, plus the counter.
 fn board_storage(guardians: &[[u8; 32]; 3]) -> BTreeMap<[u8; 32], u64> {
     let mut storage = BTreeMap::new();
     for (j, g) in guardians.iter().enumerate() {
@@ -124,7 +115,6 @@ fn run(
         .map(|out| out.storage)
 }
 
-// Three module lattice guardians and their addresses.
 fn ml_guardians() -> (Vec<(ml_dsa::PublicKey, ml_dsa::SecretKey)>, [[u8; 32]; 3]) {
     let keys: Vec<_> = [1u8, 2, 3].iter().map(|s| ml_dsa::keygen(&[*s; 32])).collect();
     let addrs = [
@@ -139,7 +129,6 @@ fn ml_guardians() -> (Vec<(ml_dsa::PublicKey, ml_dsa::SecretKey)>, [[u8; 32]; 3]
 fn two_distinct_guardians_construct_the_quorum_and_admit_the_entry() {
     let cc = compile(BOARD);
     let (keys, addrs) = ml_guardians();
-    // Members are guardians zero and one, named by their indices in order.
     let m0 = ml_region(&cc, &keys[0].0, &keys[0].1, 0);
     let m1 = ml_region(&cc, &keys[1].0, &keys[1].1, 0);
     let mem = scratch(&cc, &[(SCHEME_ML, m0, 0), (SCHEME_ML, m1, 1)]);
@@ -152,7 +141,6 @@ fn a_mixed_scheme_quorum_admits_a_module_lattice_and_a_hash_based_guardian() {
     let cc = compile(BOARD);
     let (ml_keys, _) = ml_guardians();
     let (slh_sk, slh_pk) = slh_dsa::keygen(&[7u8; 24], &[7u8; 24], &[7u8; 24]);
-    // Guardian zero is a module lattice key, guardian one is a hash based key.
     let g0 = signer_address(SCHEME_ML, &ml_keys[0].0);
     let g1 = signer_address(SCHEME_SLH, &slh_pk);
     let g2 = signer_address(SCHEME_ML, &ml_keys[2].0);
@@ -169,8 +157,6 @@ fn a_mixed_scheme_quorum_admits_a_module_lattice_and_a_hash_based_guardian() {
 fn a_valid_signature_from_a_non_guardian_is_refused() {
     let cc = compile(BOARD);
     let (keys, addrs) = ml_guardians();
-    // The second member is a stranger who signs a perfectly valid message but is not the guardian at
-    // the index it names, so the guardian comparison reverts.
     let (spk, ssk) = ml_dsa::keygen(&[99u8; 32]);
     let m0 = ml_region(&cc, &keys[0].0, &keys[0].1, 0);
     let m1 = ml_region(&cc, &spk, &ssk, 0);
@@ -186,8 +172,6 @@ fn a_valid_signature_from_a_non_guardian_is_refused() {
 fn a_guardian_counted_twice_is_refused() {
     let cc = compile(BOARD);
     let (keys, addrs) = ml_guardians();
-    // Both members are guardian zero, naming index zero twice. The indices are not strictly
-    // increasing, so the distinctness check reverts.
     let m0 = ml_region(&cc, &keys[0].0, &keys[0].1, 0);
     let m0_again = ml_region(&cc, &keys[0].0, &keys[0].1, 1);
     let mem = scratch(&cc, &[(SCHEME_ML, m0, 0), (SCHEME_ML, m0_again, 0)]);
@@ -209,8 +193,6 @@ fn a_replayed_quorum_is_refused_after_the_nonces_advance() {
     let after_first = run(&cc, board_storage(&addrs), &mem).expect("first quorum admits");
     assert_eq!(after_first.get(&slot_key(COUNTER_SLOT)), Some(&11));
 
-    // Replaying the same memory now reverts: each member's nonce has advanced, so the rebuilt messages
-    // differ from the ones the captured signatures signed.
     assert_eq!(
         run(&cc, after_first, &mem),
         Err(Fault::DivByZero),
@@ -224,8 +206,6 @@ fn an_invalid_member_signature_refuses_the_entry() {
     let (keys, addrs) = ml_guardians();
     let m0 = ml_region(&cc, &keys[0].0, &keys[0].1, 0);
     let mut m1 = ml_region(&cc, &keys[1].0, &keys[1].1, 0);
-    // Corrupt the first signature byte so the verify fails. The message tail cannot be corrupted here
-    // because the compiler rebuilds the message before verifying.
     m1[ml_dsa::PUBLIC_KEY_BYTES] ^= 1;
     let mem = scratch(&cc, &[(SCHEME_ML, m0, 0), (SCHEME_ML, m1, 1)]);
     assert_eq!(

@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The milestone. Compile the simplest contract, load its container into the interpreter, run the
-
 use std::collections::BTreeMap;
 
 mod common;
@@ -25,7 +23,6 @@ fn compile(src: &str) -> CompiledContract {
     compile_contract(&program.contracts[0]).expect("compile")
 }
 
-// Place one argument word in scratch memory at the offset the entry expects.
 fn memory_with(cc: &CompiledContract, entry: usize, values: &[(&str, u64)]) -> Vec<u8> {
     let mut mem = vec![0u8; 4096];
     for slot in &cc.entries[entry].args {
@@ -44,7 +41,6 @@ fn memory_with(cc: &CompiledContract, entry: usize, values: &[(&str, u64)]) -> V
 fn meter_advance_runs_metered_and_writes_state() {
     let cc = compile(&fixture("Meter.qs"));
 
-    // The reading state field is slot zero. Seed it to five and advance it by seven.
     let mut storage = BTreeMap::new();
     storage.insert(slot_key(0), 5u64);
     let mem = memory_with(&cc, 0, &[("step", 7)]);
@@ -56,10 +52,6 @@ fn meter_advance_runs_metered_and_writes_state() {
         .expect("clean halt");
 
     assert_eq!(out.storage.get(&slot_key(0)), Some(&12), "reading must become twelve");
-    // The advance guards the step, adds it into the reading, and emits the Advanced event, which
-    // marshals the operand into the payload region and records the event through the EMIT opcode.
-    // The advance reads and writes the reading field, each now materializing a thirty two byte slot
-    // key before the storage opcode, on top of the guard, the add, and the emit.
     assert_eq!(out.meter_used, 955, "metered meter cost of the advance entry");
 }
 
@@ -67,7 +59,6 @@ fn meter_advance_runs_metered_and_writes_state() {
 fn a_failing_guard_reverts_and_keeps_state() {
     let cc = compile(&fixture("Meter.qs"));
 
-    // A step of zero fails the guard, so the entry must fault and roll back.
     let mut persistent = BTreeMap::new();
     persistent.insert(slot_key(0), 5u64);
     let mem = memory_with(&cc, 0, &[("step", 0)]);

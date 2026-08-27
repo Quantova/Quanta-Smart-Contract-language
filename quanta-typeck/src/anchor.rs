@@ -102,8 +102,6 @@ fn field_is_asset(model: &Model, field: &str) -> bool {
     model.state.get(field).is_some_and(|f| is_asset_type(&f.ty))
 }
 
-// The genesis block runs once before any entry, so an anchor it sets to a nonzero value (the deploy
-// time via `now`, a date, or a nonzero literal) is already armed when the first gated call arrives.
 fn genesis_arms_nonzero(model: &Model, field: &str) -> bool {
     for item in &model.contract.items {
         let quanta_ast::Item::Genesis(genesis) = item else {
@@ -494,8 +492,6 @@ mod tests {
 
     #[test]
     fn a_zero_init_self_recording_anchor_is_refused_and_a_denied_zero_is_accepted() {
-        // A zero initialised anchor recorded with `now` in the same entry lets the first call skip
-        // the delay, because the gate is checked before the body records the anchor. It is refused.
         let unsafe_src = r#"import { Q_Asset } from "quantova/primitives";
             contract C {
                 state { period_reset: u64; vault: Q_Asset<QTOV>; }
@@ -505,8 +501,6 @@ mod tests {
             }"#;
         assert!(error_for(unsafe_src).contains("lets the delay pass"));
 
-        // Denying the zero value forces the anchor to be armed before the gate can pass, so the
-        // first call cannot skip the delay.
         let safe_src = r#"import { Q_Asset } from "quantova/primitives";
             contract C {
                 state { period_reset: u64; vault: Q_Asset<QTOV>; }

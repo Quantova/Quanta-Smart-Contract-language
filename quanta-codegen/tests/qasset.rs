@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! QAsset driven through the register machine: genesis from deploy parameters, an owner signed mint, a
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -277,9 +275,6 @@ fn a_transfer_of_more_than_the_balance_reverts() {
 
 #[test]
 fn a_signed_mint_is_bound_to_its_chain_and_does_not_replay_on_another() {
-    // An order the owner authorises for one chain must not verify on another. The machine folds the
-    // host supplied @chain word at memory[72..80] into the signed message tag, so the same captured
-    // order carries a different tag under a different chain id and its signature no longer verifies.
     let cc = compiled();
     let key = owner_key();
     let owner = signer_address(SCHEME_ML, &key.0);
@@ -289,7 +284,6 @@ fn a_signed_mint_is_bound_to_its_chain_and_does_not_replay_on_another() {
     let mint = find_entry(&cc, "mint");
     let mint_sel = selector_of(&cc, "mint");
 
-    // Sign the order for chain A: the tag is QTVSGN01 folded with chain_a, matching bind_chain_into_tag.
     let mut msg = mint_message(&cc, &owner, 0, 100, &to);
     let tag = (u64::from_be_bytes(*b"QTVSGN01") ^ chain_a).to_be_bytes();
     msg[0..8].copy_from_slice(&tag);

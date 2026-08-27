@@ -1,9 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A zero year term must not buy a name for nothing, and taking over a lapsed name must not inherit
-//! the prior holder's resolution target.
-
 use std::collections::BTreeMap;
 
 use qtv_crypto::sha3::sha3_256;
@@ -154,8 +151,6 @@ fn run_paid(
 fn a_zero_year_register_buys_nothing_and_reverts() {
     let cc = compiled();
     let caller = [0xC0u8; 32];
-    // A zero year term drives the tier price to zero, so a nil payment would otherwise seize the name
-    // and freeze it against every other registrant for grace plus auction. The term must be positive.
     let r = run_paid(&cc, "register", seed(&base_params()), &caller, 0, b"alice", 5, 0, 0);
     assert!(matches!(r, Err(Fault::DivByZero)), "a zero year registration reverts");
 }
@@ -191,7 +186,6 @@ fn re_registering_a_lapsed_name_drops_the_prior_resolution() {
     let p = base_params();
     let e = 1000 * DAY;
 
-    // A fully lapsed name that the prior holder had pointed at their own address.
     let mut storage = seed(&p);
     storage.insert(map_key(EXPIRY_BASE, &name_key(b"shop")), e);
     seed_addr_value(&mut storage, OWNER_BASE, b"shop", &prior);

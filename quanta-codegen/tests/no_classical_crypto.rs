@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! No classical cryptography is emittable. The machine exposes only post quantum cryptographic
-
 use qtv_vm::isa::{decode, OpCode};
 use quanta_codegen::compile_contract;
 
@@ -23,7 +21,6 @@ const COUNTER: &str = "contract Counter {\n\
   event Bumped(value: u64);\n\
 }\n";
 
-/// The cryptographic opcodes the machine exposes, every one a NIST post quantum primitive or SHA3.
 fn is_post_quantum_crypto(op: OpCode) -> bool {
     matches!(
         op,
@@ -36,7 +33,6 @@ fn is_post_quantum_crypto(op: OpCode) -> bool {
     )
 }
 
-/// Whether an opcode is cryptographic. The match is exhaustive with no wildcard, so any opcode a
 fn is_cryptographic(op: OpCode) -> bool {
     match op {
         OpCode::Hash
@@ -114,8 +110,6 @@ fn the_machine_exposes_only_post_quantum_crypto_opcodes() {
     for op in &crypto {
         assert!(is_post_quantum_crypto(*op), "{op:?} is not post quantum");
     }
-    // Exactly the seven post quantum cryptographic opcodes exist, the six primitives plus the address
-    // derivation. There is no classical signature verify and no ecrecover style recovery opcode.
     assert_eq!(
         crypto.len(),
         6,
@@ -139,10 +133,6 @@ fn the_code_generator_emits_only_post_quantum_crypto() {
 
 #[test]
 fn a_signature_lowering_only_ever_verifies_and_never_recovers() {
-    // The only signature opcodes the corpus emits are verify opcodes, which consume a public key and
-    // return a boolean. The address opcode the binding also emits derives an address from the public
-    // key that is presented, never from a signature alone, so there is still no ecrecover equivalent:
-    // nothing recovers a key or an address out of a signature.
     let signature_ops: Vec<OpCode> = emitted_opcodes(COUNTER)
         .into_iter()
         .filter(|op| matches!(op, OpCode::VerifyMl | OpCode::VerifySlh))

@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! A `signed by owner` parameter is bound three ways, not merely verified. The signer's address is
-
 use std::collections::BTreeMap;
 
 use qtv_crypto::ml_dsa;
@@ -22,8 +20,6 @@ const COUNTER: &str = "contract Counter {\n\
   event Bumped(value: u64);\n\
 }\n";
 
-// The owner occupies the first four state slots and count follows it. A `Q_Address` field is the whole
-// thirty two byte address, four machine words, so a check against it binds all thirty two bytes.
 const OWNER_SLOT: u64 = 0;
 const COUNT_SLOT: u64 = 4;
 const CONTRACT_CTX_OFF: usize = 32;
@@ -50,8 +46,6 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
     mem[off..off + 8].copy_from_slice(&value.to_be_bytes());
 }
 
-// The canonical order message the compiler rebuilds and verifies over: the domain tag, the contract
-// self address, the entry selector word, the signer address, the per signer nonce, then the fields.
 fn canonical_message(
     contract: &[u8; 32],
     selector: [u8; 4],
@@ -71,8 +65,6 @@ fn canonical_message(
     msg
 }
 
-// Build the scratch memory for a bump call, signing the canonical message over `signed_step` and the
-// given nonce with `sk`, while the plain argument word carries `arg_step`.
 fn bump_memory(
     cc: &CompiledContract,
     pk: &[u8],
@@ -140,8 +132,6 @@ fn the_owner_signature_admits_the_body_and_bumps_the_count() {
 #[test]
 fn a_strangers_own_valid_signature_is_refused() {
     let cc = compile(COUNTER);
-    // The owner is one key; a stranger signs a perfectly valid message under their own key. The verify
-    // passes, but the signer address is the stranger's, not the owner's, so the binding reverts.
     let (owner_pk, _owner_sk) = ml_dsa::keygen(&[3u8; 32]);
     let owner = signer_address(SCHEME_ML, &owner_pk);
     let (pk, sk) = ml_dsa::keygen(&[9u8; 32]);
@@ -159,12 +149,10 @@ fn a_strangers_own_valid_signature_is_refused() {
 #[test]
 fn an_address_that_only_collides_in_a_leading_word_is_refused() {
     let cc = compile(COUNTER);
-    // The stored owner shares its first word with the signer but differs past it. Under the old sixty
-    // four bit reduction this forged ownership; the four word check refuses it.
     let (pk, sk) = ml_dsa::keygen(&[9u8; 32]);
     let signer = signer_address(SCHEME_ML, &pk);
     let mut owner = signer;
-    owner[8] ^= 0xFF; // identical leading word, different second word
+    owner[8] ^= 0xFF;
 
     let mem = bump_memory(&cc, &pk, &sk, 4, 4, 0);
     assert_eq!(
@@ -177,8 +165,6 @@ fn an_address_that_only_collides_in_a_leading_word_is_refused() {
 #[test]
 fn a_tampered_order_field_is_refused() {
     let cc = compile(COUNTER);
-    // The signature commits to step four, but the plain argument word carries five. The compiler
-    // rebuilds the message from the argument, so the verify runs over step five and fails.
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let owner = signer_address(SCHEME_ML, &pk);
 
@@ -196,20 +182,16 @@ fn a_replayed_message_is_refused_after_the_nonce_advances() {
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let owner = signer_address(SCHEME_ML, &pk);
 
-    // First call, signed against nonce zero, is accepted and advances the nonce.
     let mem = bump_memory(&cc, &pk, &sk, 4, 4, 0);
     let after_first = run(&cc, owned_storage(&owner, 10), &mem).expect("first call accepted");
     assert_eq!(after_first.get(&slot_key(COUNT_SLOT)), Some(&14));
 
-    // Replaying the exact same memory now reverts, because the entry rebuilds the message with the
-    // advanced nonce and the captured signature was over the old one.
     assert_eq!(
         run(&cc, after_first.clone(), &mem),
         Err(Fault::DivByZero),
         "the captured signature cannot be replayed"
     );
 
-    // A fresh signature over nonce one is accepted, so the owner can still act.
     let mem2 = bump_memory(&cc, &pk, &sk, 4, 4, 1);
     let after_second =
         run(&cc, after_first, &mem2).expect("second call with the new nonce accepted");
@@ -226,7 +208,6 @@ fn a_forged_signature_reverts() {
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let owner = signer_address(SCHEME_ML, &pk);
     let mut mem = bump_memory(&cc, &pk, &sk, 4, 4, 0);
-    // Flip one byte of the signature so the verify itself fails.
     let sig_start = REGION_OFF as usize + ml_dsa::PUBLIC_KEY_BYTES;
     mem[sig_start] ^= 1;
 

@@ -1,16 +1,12 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! An emit records a typed event effect the host appends to the block event trie. The event selector
-
 use qtv_vm::container::selector as vm_selector;
 use qtv_vm::interp::{Effect, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 use std::collections::BTreeMap;
 
-
 const GAS: u64 = 2_000_000;
-/// Matches the code generator's high word offset for a two word scalar field.
 const HI: u64 = 1 << 56;
 
 fn compile(src: &str) -> CompiledContract {
@@ -60,8 +56,8 @@ fn an_emit_records_a_typed_event_with_scalar_operands() {
     let got = effects(&cc, e, BTreeMap::new(), &mem);
 
     let mut payload = Vec::new();
-    payload.extend_from_slice(&5u64.to_be_bytes()); // reading, zero plus five
-    payload.extend_from_slice(&5u64.to_be_bytes()); // step
+    payload.extend_from_slice(&5u64.to_be_bytes());
+    payload.extend_from_slice(&5u64.to_be_bytes());
     assert_eq!(
         got,
         vec![Effect::Event {
@@ -84,8 +80,6 @@ fn an_emit_records_a_wide_operand_as_low_then_high_word() {
 
     let got = effects(&cc, e, BTreeMap::new(), &mem);
 
-    // Twenty quintillion splits into a low word and a high word of one, and the payload carries them
-    // low word first.
     let mut payload = Vec::new();
     payload.extend_from_slice(&1_553_255_926_290_448_384u64.to_be_bytes());
     payload.extend_from_slice(&1u64.to_be_bytes());
@@ -101,8 +95,6 @@ fn an_emit_records_a_wide_operand_as_low_then_high_word() {
 
 #[test]
 fn a_clean_entry_without_emit_records_no_event() {
-    // The record entry above emits; an entry with no emit records nothing, proving the effect comes
-    // from the emit and not the machinery around it.
     const PLAIN: &str = "contract P { state { x: u64; } genesis { x = 0; } \
          entry set(v: u64) writes(x) { x = v; } }";
     let cc = compile(PLAIN);

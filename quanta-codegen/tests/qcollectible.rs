@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! The QCollectible token id key: a `Map<Q_Id, Q_Address>` promotes an eight byte token id into a
-
 use std::collections::BTreeMap;
 
 use qtv_vm::container::{Container, SELECTOR_BYTES};
@@ -66,7 +64,6 @@ fn addr(tag: u8) -> [u8; 32] {
     [tag; 32]
 }
 
-/// The thirty two byte key region the machine derives for a token id: the id big endian in the leading
 fn id_key(id: u64) -> [u8; 32] {
     let mut k = [0u8; 32];
     k[..8].copy_from_slice(&id.to_be_bytes());
@@ -201,8 +198,6 @@ fn a_move_binds_all_thirty_two_bytes_of_the_caller_not_a_leading_word() {
     put_owner(&mut storage, OWNER_OF_BASE, id, &a);
     storage.insert(map_key(HOLDINGS_BASE, &a), 1);
 
-    // An impostor whose leading eight bytes equal the owner's but whose tail differs. A truncated one
-    // word owner check would accept it; the full thirty two byte compare must reject it.
     let mut impostor = a;
     impostor[8] ^= 0xFF;
     let refused = run(&cc.container, entry(&cc, "move_to").selector, storage.clone(), &mem_move(&cc, &impostor, id, &impostor));
@@ -219,7 +214,6 @@ fn a_token_id_keyed_owner_is_independent_across_ids() {
     let a = addr(0xA1);
     let b = addr(0xB2);
 
-    // Two ids minted to two owners, then id one is moved. Id two never shares a slot with id one.
     let (mut storage, _) =
         run(&cc.container, entry(&cc, "mint").selector, BTreeMap::new(), &mem_mint(&cc, &a, 1, &a, &addr(0xC1)))
             .expect("mint one halts");

@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Asset operation lowering. An asset amount is a stored balance, so split, merge, mint, and burn
-
 use std::collections::BTreeMap;
 
 use qtv_crypto::ml_dsa;
@@ -32,7 +30,6 @@ fn memory_with(cc: &CompiledContract, entry: usize, values: &[(&str, u64)]) -> V
     mem
 }
 
-/// Write a full thirty two byte address into an argument region by its key.
 fn set_addr_arg(mem: &mut [u8], cc: &CompiledContract, entry: usize, key: &str, address: &[u8; 32]) {
     let slot = cc.entries[entry]
         .args
@@ -64,7 +61,7 @@ const MERGE: &str = "contract Merge {\n\
 fn merge_adds_the_incoming_amount_to_the_pooled_balance() {
     let cc = compile(MERGE);
     let mut storage = BTreeMap::new();
-    storage.insert(slot_key(0), 100u64); // the pool balance slot
+    storage.insert(slot_key(0), 100u64);
     let mem = memory_with(&cc, 0, &[("funds", 5), ("@value", 5)]);
     let out = run(&cc, storage, &mem).expect("clean halt");
     assert_eq!(out.get(&slot_key(0)), Some(&105), "the pool must absorb the merge");
@@ -95,8 +92,8 @@ const SPLIT: &str = "contract Split {\n\
 fn split_moves_a_balance_between_two_asset_fields_conserving_total() {
     let cc = compile(SPLIT);
     let mut storage = BTreeMap::new();
-    storage.insert(slot_key(0), 100u64); // reserve
-    storage.insert(slot_key(1), 10u64); // pool
+    storage.insert(slot_key(0), 100u64);
+    storage.insert(slot_key(1), 10u64);
     let mem = memory_with(&cc, 0, &[("req.amount", 30)]);
     let out = run(&cc, storage, &mem).expect("clean halt");
     assert_eq!(out.get(&slot_key(0)), Some(&70), "reserve loses the split amount");
@@ -129,13 +126,10 @@ const MINT: &str = "contract Minter {\n\
   }\n\
 }\n";
 
-// The owner spans the first four slots; the vault and the supply low word follow it.
 const MINT_VAULT_SLOT: u64 = 4;
 const MINT_SUPPLY_SLOT: u64 = 5;
 const MINT_CONTRACT: [u8; 32] = [0x55; 32];
 
-// Seed the argument words and a bound owner signature region for the `issue` entry, signing the
-// canonical order message the compiler rebuilds. Returns the memory and the owner address.
 fn signed_mint_memory(cc: &CompiledContract, amount: u64) -> (Vec<u8>, [u8; 32]) {
     let region_off = 8192usize;
     let (pk, sk) = ml_dsa::keygen(&[7u8; 32]);
@@ -147,9 +141,9 @@ fn signed_mint_memory(cc: &CompiledContract, amount: u64) -> (Vec<u8>, [u8; 32])
     msg.extend_from_slice(&MINT_CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
     msg.extend_from_slice(&signer);
-    msg.extend_from_slice(&0u64.to_be_bytes()); // nonce zero
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&amount.to_be_bytes());
-    msg.extend_from_slice(&0u64.to_be_bytes()); // order.amount high word
+    msg.extend_from_slice(&0u64.to_be_bytes());
     let sig = ml_dsa::sign(&sk, &msg, &[], &[0u8; 32]).expect("sign");
 
     let mut region = Vec::new();
@@ -193,7 +187,6 @@ fn a_signed_mint_creates_supply_and_credits_the_vault() {
     );
 }
 
-/// The keyed base of the first `Map` or `Registry` field, matching the code generator's layout.
 const KEYED_BASE: u64 = 1 << 40;
 
 const LEDGER: &str = "contract CallerLedger {\n\
@@ -210,7 +203,7 @@ fn a_transfer_debits_the_caller_and_credits_the_recipient_balance() {
     let caller = addr(1);
     let to = addr(2);
     let mut storage = BTreeMap::new();
-    storage.insert(map_key(KEYED_BASE, &caller), 100u64); // caller balance
+    storage.insert(map_key(KEYED_BASE, &caller), 100u64);
     let mut mem = memory_with(&cc, 0, &[("amt", 40)]);
     set_addr_arg(&mut mem, &cc, 0, "@caller", &caller);
     set_addr_arg(&mut mem, &cc, 0, "to", &to);
@@ -229,9 +222,6 @@ fn a_transfer_debits_the_caller_and_credits_the_recipient_balance() {
 
 #[test]
 fn two_addresses_colliding_in_a_leading_word_have_distinct_balances() {
-    // A caller and a victim that share their leading eight bytes but differ past them. Under the old
-    // sixty four bit slot the caller would key the victim's balance; the full address hashed into the
-    // slot keeps them distinct, so the caller cannot spend the victim's balance.
     let cc = compile(LEDGER);
     let mut caller = [9u8; 32];
     caller[16] = 1;
@@ -240,13 +230,11 @@ fn two_addresses_colliding_in_a_leading_word_have_distinct_balances() {
     let to = addr(3);
 
     let mut storage = BTreeMap::new();
-    storage.insert(map_key(KEYED_BASE, &victim), 100u64); // the victim's balance
-    // The caller holds nothing.
+    storage.insert(map_key(KEYED_BASE, &victim), 100u64);
     let mut mem = memory_with(&cc, 0, &[("amt", 40)]);
     set_addr_arg(&mut mem, &cc, 0, "@caller", &caller);
     set_addr_arg(&mut mem, &cc, 0, "to", &to);
 
-    // The debit hits the caller's own empty slot, not the victim's, so it underflows and reverts.
     assert_eq!(
         run(&cc, storage.clone(), &mem),
         Err(Fault::DivByZero),
@@ -257,7 +245,6 @@ fn two_addresses_colliding_in_a_leading_word_have_distinct_balances() {
         Some(&100),
         "the victim's balance is untouched"
     );
-    // The caller and the victim key distinct slots.
     assert_ne!(
         map_key(KEYED_BASE, &caller),
         map_key(KEYED_BASE, &victim),
@@ -337,9 +324,6 @@ fn a_membership_guard_admits_a_listed_key_and_reverts_an_absent_one() {
     );
 }
 
-// A send moves an asset to an account and lowers to the native transfer the SEND opcode records. The
-// machine returns the move as a transfer effect for the host to apply against the native ledger keyed
-// by the whole thirty two byte address, and the contract's own state is untouched.
 const SENDER: &str = "contract Sender {\n\
   state { pool: Q_Asset<QTOV>; }\n\
   entry payout(to: Q_Address, funds: Q_Asset<QTOV>) conserves QTOV { send(to, funds); }\n\
