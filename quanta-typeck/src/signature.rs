@@ -898,14 +898,24 @@ fn expr_eq(a: &Expr, b: &Expr) -> bool {
 
 fn ledger_maps(model: &Model) -> HashSet<String> {
     let mut maps = HashSet::new();
+    let no_alias_reads: HashMap<String, HashSet<String>> = HashMap::new();
+    let no_alias_subs: HashSet<String> = HashSet::new();
     for entry in &model.entries {
         for stmt in &entry.body {
             stmt_exprs(stmt, &mut |e| {
-                if let Expr::Call { callee, .. } = e {
+                if let Expr::Call { callee, args, .. } = e {
                     if let Expr::Field { base, name, .. } = callee.as_ref() {
-                        if matches!(name.text.as_str(), "credit" | "debit") {
-                            if let Expr::Ident(id) = base.as_ref() {
+                        if let Expr::Ident(id) = base.as_ref() {
+                            if matches!(name.text.as_str(), "credit" | "debit") {
                                 maps.insert(id.text.clone());
+                            } else if matches!(name.text.as_str(), "set" | "insert") {
+                                if let Some(value) = args.get(1) {
+                                    if expr_reads_map(&id.text, value, &no_alias_reads)
+                                        && expr_has_sub(value, &no_alias_subs)
+                                    {
+                                        maps.insert(id.text.clone());
+                                    }
+                                }
                             }
                         }
                     }
@@ -1427,6 +1437,28 @@ mod tests {
         let program = quanta_parser::parse(src).expect("source parses");
         let model = Model::build(&program.contracts[0]);
         super::check(&model).expect("checker should accept");
+    }
+
+    #[test]
+    fn an_absolute_self_set_mint_on_a_set_get_balance_ledger_is_rejected_like_a_credit() {
+        let src = "contract C { state { balances: Map<Q_Address, u64>; } \
+                   entry inflate(amount: u64) writes(balances) { balances.set(caller, amount); } \
+                   entry transfer(to: Q_Address, amount: u64) writes(balances) \
+                   { guard balances.get(caller) >= amount; \
+                     balances.set(caller, balances.get(caller) - amount); \
+                     balances.set(to, balances.get(to) + amount); } }";
+        let msg = error_for(src);
+        assert!(
+            !msg.is_empty(),
+            "a set/get balance ledger (a map that is spent by a derived decrement) must mint protect its absolute overwrites exactly like a credit/debit ledger"
+        );
+    }
+
+    #[test]
+    fn the_credit_debit_form_of_the_same_mint_is_also_rejected() {
+        let src = "contract C { state { balances: Map<Q_Address, u64>; } \
+                   entry inflate(amount: u64) writes(balances) { balances.credit(caller, amount); } }";
+        let _ = error_for(src);
     }
 
     #[test]
