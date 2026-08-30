@@ -71,7 +71,12 @@ fn ml_region(
     region
 }
 
-fn scratch(cc: &CompiledContract, members: &[(Vec<u8>, u64)], plain: [u64; 2], now: u64) -> Vec<u8> {
+fn scratch(
+    cc: &CompiledContract,
+    members: &[(Vec<u8>, u64)],
+    plain: [u64; 2],
+    now: u64,
+) -> Vec<u8> {
     let mut mem = vec![0u8; 65536];
     mem[32..64].copy_from_slice(&CONTRACT);
     put_word(&mut mem, arg_offset(cc, "@time"), now);
@@ -82,9 +87,21 @@ fn scratch(cc: &CompiledContract, members: &[(Vec<u8>, u64)], plain: [u64; 2], n
         let off = cursor;
         cursor += region.len();
         mem[off..off + region.len()].copy_from_slice(region);
-        put_word(&mut mem, arg_offset(cc, &format!("approvals#{i}#scheme")), SCHEME_ML as u64);
-        put_word(&mut mem, arg_offset(cc, &format!("approvals#{i}#ptr")), off as u64);
-        put_word(&mut mem, arg_offset(cc, &format!("approvals#{i}#index")), *index);
+        put_word(
+            &mut mem,
+            arg_offset(cc, &format!("approvals#{i}#scheme")),
+            SCHEME_ML as u64,
+        );
+        put_word(
+            &mut mem,
+            arg_offset(cc, &format!("approvals#{i}#ptr")),
+            off as u64,
+        );
+        put_word(
+            &mut mem,
+            arg_offset(cc, &format!("approvals#{i}#index")),
+            *index,
+        );
     }
     mem
 }
@@ -111,7 +128,10 @@ fn run(
 }
 
 fn ml_guardians() -> (Vec<(ml_dsa::PublicKey, ml_dsa::SecretKey)>, [[u8; 32]; 3]) {
-    let keys: Vec<_> = [1u8, 2, 3].iter().map(|s| ml_dsa::keygen(&[*s; 32])).collect();
+    let keys: Vec<_> = [1u8, 2, 3]
+        .iter()
+        .map(|s| ml_dsa::keygen(&[*s; 32]))
+        .collect();
     let addrs = [
         signer_address(SCHEME_ML, &keys[0].0),
         signer_address(SCHEME_ML, &keys[1].0),
@@ -129,7 +149,11 @@ fn a_quorum_over_the_whole_field_set_admits_the_entry() {
     let m1 = ml_region(&cc, &keys[1].0, &keys[1].1, 0, &fields);
     let mem = scratch(&cc, &[(m0, 0), (m1, 1)], [100, 1], 10_000);
     let out = run(&cc, board_storage(&addrs), &mem).expect("a met quorum over the fields admits");
-    assert_eq!(out.get(&slot_key(COUNTER_SLOT)), Some(&11), "the gated body runs");
+    assert_eq!(
+        out.get(&slot_key(COUNTER_SLOT)),
+        Some(&11),
+        "the gated body runs"
+    );
 }
 
 #[test]
@@ -146,7 +170,11 @@ fn rewriting_the_gate_target_breaks_the_quorum() {
         Err(Fault::DivByZero),
         "a rewritten gate target breaks the quorum signatures"
     );
-    assert_eq!(storage.get(&slot_key(COUNTER_SLOT)), Some(&10), "state is unchanged");
+    assert_eq!(
+        storage.get(&slot_key(COUNTER_SLOT)),
+        Some(&10),
+        "state is unchanged"
+    );
 }
 
 #[test]
@@ -163,5 +191,9 @@ fn rewriting_a_body_field_breaks_the_quorum() {
         Err(Fault::DivByZero),
         "an inflated body field breaks the quorum signatures"
     );
-    assert_eq!(storage.get(&slot_key(COUNTER_SLOT)), Some(&10), "state is unchanged");
+    assert_eq!(
+        storage.get(&slot_key(COUNTER_SLOT)),
+        Some(&10),
+        "state is unchanged"
+    );
 }

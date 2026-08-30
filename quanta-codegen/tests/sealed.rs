@@ -45,9 +45,18 @@ fn the_opened_sealed_value_flows_as_an_ordinary_argument() {
     let program = quanta_parser::parse(CONFIDENTIAL).expect("parse");
     quanta_typeck::check(&program).expect("typecheck");
     let cc = compile_contract(&program.contracts[0]).expect("compile");
-    let submit = cc.entries.iter().find(|e| e.name == "submit").expect("submit");
+    let submit = cc
+        .entries
+        .iter()
+        .find(|e| e.name == "submit")
+        .expect("submit");
 
-    let bid_off = submit.args.iter().find(|s| s.key == "bid").expect("bid arg").offset as usize;
+    let bid_off = submit
+        .args
+        .iter()
+        .find(|s| s.key == "bid")
+        .expect("bid arg")
+        .offset as usize;
     let mut mem = vec![0u8; 4096];
     mem[bid_off..bid_off + 8].copy_from_slice(&40u64.to_be_bytes());
 

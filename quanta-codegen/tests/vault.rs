@@ -25,14 +25,28 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
     cc.entries.iter().find(|e| e.name == name).expect("entry")
 }
 
-fn deposit(cc: &CompiledContract, reserve: u64, funds: u64) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
+fn deposit(
+    cc: &CompiledContract,
+    reserve: u64,
+    funds: u64,
+) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
     let sel: [u8; SELECTOR_BYTES] = entry(cc, "deposit").selector;
     let mut storage = BTreeMap::new();
     storage.insert(slot_key(RESERVE_SLOT), reserve);
     let mut mem = vec![0u8; 4096];
-    let off = entry(cc, "deposit").args.iter().find(|s| s.key == "funds").expect("funds arg").offset as usize;
+    let off = entry(cc, "deposit")
+        .args
+        .iter()
+        .find(|s| s.key == "funds")
+        .expect("funds arg")
+        .offset as usize;
     mem[off..off + 8].copy_from_slice(&funds.to_be_bytes());
-    let vo = entry(cc, "deposit").args.iter().find(|s| s.key == "@value").expect("@value ctx").offset as usize;
+    let vo = entry(cc, "deposit")
+        .args
+        .iter()
+        .find(|s| s.key == "@value")
+        .expect("@value ctx")
+        .offset as usize;
     mem[vo..vo + 8].copy_from_slice(&funds.to_be_bytes());
     Interpreter::for_entry(&cc.container, sel, GAS)?
         .with_storage(storage)
@@ -49,14 +63,22 @@ fn reserve(storage: &BTreeMap<[u8; 32], u64>) -> u64 {
 fn a_deposit_funds_an_empty_reserve() {
     let cc = compiled();
     let after = deposit(&cc, 0, 25_000).expect("a deposit into an empty reserve halts");
-    assert_eq!(reserve(&after), 25_000, "the reserve holds the deposited amount so the vault can pay out");
+    assert_eq!(
+        reserve(&after),
+        25_000,
+        "the reserve holds the deposited amount so the vault can pay out"
+    );
 }
 
 #[test]
 fn deposits_accumulate_in_the_reserve() {
     let cc = compiled();
     let after = deposit(&cc, 10_000, 5_000).expect("a top up halts");
-    assert_eq!(reserve(&after), 15_000, "a second deposit adds to the standing reserve");
+    assert_eq!(
+        reserve(&after),
+        15_000,
+        "a second deposit adds to the standing reserve"
+    );
 }
 
 #[test]

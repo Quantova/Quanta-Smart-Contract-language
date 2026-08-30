@@ -70,7 +70,13 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
                 kinds.insert(name.text.clone(), sym);
             }
         }
-        if let Stmt::Assign { target, value, span, .. } = stmt {
+        if let Stmt::Assign {
+            target,
+            value,
+            span,
+            ..
+        } = stmt
+        {
             if let Some(into) = expr_asset_kind(model, &kinds, mint_kind, target) {
                 if let Some(err) = asset_flow_error(model, &kinds, mint_kind, &into, value, *span) {
                     return Err(err);
@@ -158,7 +164,10 @@ fn amount_credited_while_sent(
     }
     let mut backing: HashMap<String, HashSet<String>> = HashMap::new();
     for asset in credited.keys() {
-        backing.entry(asset.clone()).or_default().insert(asset.clone());
+        backing
+            .entry(asset.clone())
+            .or_default()
+            .insert(asset.clone());
     }
     loop {
         let mut changed = false;

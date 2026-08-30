@@ -37,8 +37,16 @@ fn a_default_reaches_storage_when_genesis_does_not_set_it() {
          }\n",
     );
     let storage = run_genesis(&cc);
-    assert_eq!(storage.get(&slot_key(4)), Some(&50000), "cap takes its default, not zero");
-    assert_eq!(storage.get(&slot_key(5)), Some(&1), "opened takes its default, not zero");
+    assert_eq!(
+        storage.get(&slot_key(4)),
+        Some(&50000),
+        "cap takes its default, not zero"
+    );
+    assert_eq!(
+        storage.get(&slot_key(5)),
+        Some(&1),
+        "opened takes its default, not zero"
+    );
 }
 
 #[test]
@@ -64,5 +72,9 @@ fn an_explicit_genesis_assignment_overrides_a_default() {
          }\n",
     );
     let storage = run_genesis(&cc);
-    assert_eq!(storage.get(&slot_key(0)), Some(&5), "the genesis assignment wins over the default");
+    assert_eq!(
+        storage.get(&slot_key(0)),
+        Some(&5),
+        "the genesis assignment wins over the default"
+    );
 }

@@ -35,15 +35,30 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
     cc.entries.iter().find(|e| e.name == name).expect("entry")
 }
 
-fn fund(cc: &CompiledContract, price: u64, holding: u64, payment: u64) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
+fn fund(
+    cc: &CompiledContract,
+    price: u64,
+    holding: u64,
+    payment: u64,
+) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
     let sel: [u8; SELECTOR_BYTES] = entry(cc, "fund").selector;
     let mut storage = BTreeMap::new();
     storage.insert(slot_key(PRICE_SLOT), price);
     storage.insert(slot_key(HOLDING_SLOT), holding);
     let mut mem = vec![0u8; 4096];
-    let off = entry(cc, "fund").args.iter().find(|s| s.key == "payment").expect("payment arg").offset as usize;
+    let off = entry(cc, "fund")
+        .args
+        .iter()
+        .find(|s| s.key == "payment")
+        .expect("payment arg")
+        .offset as usize;
     mem[off..off + 8].copy_from_slice(&payment.to_be_bytes());
-    let voff = entry(cc, "fund").args.iter().find(|s| s.key == "@value").expect("value arg").offset as usize;
+    let voff = entry(cc, "fund")
+        .args
+        .iter()
+        .find(|s| s.key == "@value")
+        .expect("value arg")
+        .offset as usize;
     mem[voff..voff + 8].copy_from_slice(&payment.to_be_bytes());
     Interpreter::for_entry(&cc.container, sel, GAS)?
         .with_storage(storage)
@@ -61,14 +76,21 @@ fn the_old_at_or_above_fund_accepts_overpayment_that_then_strands() {
     let cc = compile(OVERPAY);
     let after = fund(&cc, 1000, 0, 1500).expect("the old fund admits an overpayment");
     assert_eq!(holding(&after), 1500, "the old fund banks the overpayment");
-    assert!(holding(&after) > 1000, "the surplus over the price can never leave holding");
+    assert!(
+        holding(&after) > 1000,
+        "the surplus over the price can never leave holding"
+    );
 }
 
 #[test]
 fn exact_payment_funds_the_holding() {
     let cc = compile(FIXED);
     let after = fund(&cc, 1000, 0, 1000).expect("an exact payment funds the escrow");
-    assert_eq!(holding(&after), 1000, "holding holds exactly the price with nothing stranded");
+    assert_eq!(
+        holding(&after),
+        1000,
+        "holding holds exactly the price with nothing stranded"
+    );
 }
 
 #[test]

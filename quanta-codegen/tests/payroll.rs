@@ -25,14 +25,28 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
     cc.entries.iter().find(|e| e.name == name).expect("entry")
 }
 
-fn fund(cc: &CompiledContract, treasury: u64, funds: u64) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
+fn fund(
+    cc: &CompiledContract,
+    treasury: u64,
+    funds: u64,
+) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
     let sel: [u8; SELECTOR_BYTES] = entry(cc, "fund").selector;
     let mut storage = BTreeMap::new();
     storage.insert(slot_key(TREASURY_SLOT), treasury);
     let mut mem = vec![0u8; 4096];
-    let off = entry(cc, "fund").args.iter().find(|s| s.key == "funds").expect("funds arg").offset as usize;
+    let off = entry(cc, "fund")
+        .args
+        .iter()
+        .find(|s| s.key == "funds")
+        .expect("funds arg")
+        .offset as usize;
     mem[off..off + 8].copy_from_slice(&funds.to_be_bytes());
-    let voff = entry(cc, "fund").args.iter().find(|s| s.key == "@value").expect("value arg").offset as usize;
+    let voff = entry(cc, "fund")
+        .args
+        .iter()
+        .find(|s| s.key == "@value")
+        .expect("value arg")
+        .offset as usize;
     mem[voff..voff + 8].copy_from_slice(&funds.to_be_bytes());
     Interpreter::for_entry(&cc.container, sel, GAS)?
         .with_storage(storage)
@@ -49,14 +63,22 @@ fn treasury(storage: &BTreeMap<[u8; 32], u64>) -> u64 {
 fn a_fund_credits_an_empty_treasury() {
     let cc = compiled();
     let after = fund(&cc, 0, 400_000).expect("funding an empty treasury halts");
-    assert_eq!(treasury(&after), 400_000, "the treasury holds the funded amount so payroll can be paid");
+    assert_eq!(
+        treasury(&after),
+        400_000,
+        "the treasury holds the funded amount so payroll can be paid"
+    );
 }
 
 #[test]
 fn funds_accumulate_in_the_treasury() {
     let cc = compiled();
     let after = fund(&cc, 100_000, 50_000).expect("a top up halts");
-    assert_eq!(treasury(&after), 150_000, "a second funding adds to the standing treasury");
+    assert_eq!(
+        treasury(&after),
+        150_000,
+        "a second funding adds to the standing treasury"
+    );
 }
 
 #[test]

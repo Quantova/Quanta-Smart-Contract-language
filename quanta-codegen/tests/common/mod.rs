@@ -30,7 +30,11 @@ pub fn map_addr_word_key(map_base: u64, addr: &[u8; 32], word: u64) -> [u8; 32] 
     sha3_256(&input)
 }
 
-pub fn read_addr_value(storage: &BTreeMap<[u8; 32], u64>, map_base: u64, addr: &[u8; 32]) -> [u8; 32] {
+pub fn read_addr_value(
+    storage: &BTreeMap<[u8; 32], u64>,
+    map_base: u64,
+    addr: &[u8; 32],
+) -> [u8; 32] {
     let mut out = [0u8; 32];
     for i in 0..4u64 {
         let w = storage

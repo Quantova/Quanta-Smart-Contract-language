@@ -22,21 +22,24 @@ fn compiles(src: &str) {
 
 #[test]
 fn dividing_a_wide_field_is_rejected() {
-    let src = "contract W { state { total: u128; result: u128; } genesis { total = 0; result = 0; } \
+    let src =
+        "contract W { state { total: u128; result: u128; } genesis { total = 0; result = 0; } \
                entry divide(d: u64) writes(result) reads(total) { result = total / d; } }";
     assert!(compile_error(src).contains("truncate"));
 }
 
 #[test]
 fn a_wide_remainder_is_rejected() {
-    let src = "contract W { state { total: u128; result: u128; } genesis { total = 0; result = 0; } \
+    let src =
+        "contract W { state { total: u128; result: u128; } genesis { total = 0; result = 0; } \
                entry rem(d: u64) writes(result) reads(total) { result = total % d; } }";
     assert!(compile_error(src).contains("truncate"));
 }
 
 #[test]
 fn shifting_a_wide_field_is_rejected() {
-    let src = "contract W { state { total: u128; result: u128; } genesis { total = 0; result = 0; } \
+    let src =
+        "contract W { state { total: u128; result: u128; } genesis { total = 0; result = 0; } \
                entry shift(n: u64) writes(result) reads(total) { result = total >> n; } }";
     assert!(compile_error(src).contains("truncate"));
 }

@@ -6,7 +6,9 @@ use crate::model::Model;
 use quanta_ast::{Clause, EntryDecl, Expr, Item, Stmt};
 use std::collections::HashSet;
 
-const MUTATORS: &[&str] = &["merge", "split", "credit", "debit", "insert", "remove", "set"];
+const MUTATORS: &[&str] = &[
+    "merge", "split", "credit", "debit", "insert", "remove", "set",
+];
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
     for item in &model.contract.items {
@@ -133,7 +135,12 @@ fn walk(expr: &Expr, f: &mut impl FnMut(&Expr)) {
             }
         }
         Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => walk(expr, f),
-        Expr::Int(_) | Expr::Date { .. } | Expr::Str(_) | Expr::Ident(_) | Expr::Caller { .. } | Expr::Now { .. } => {}
+        Expr::Int(_)
+        | Expr::Date { .. }
+        | Expr::Str(_)
+        | Expr::Ident(_)
+        | Expr::Caller { .. }
+        | Expr::Now { .. } => {}
     }
 }
 

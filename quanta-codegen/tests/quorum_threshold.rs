@@ -15,14 +15,21 @@ fn try_compile(spec: &str) -> Result<quanta_codegen::CompiledContract, String> {
 
 #[test]
 fn a_zero_threshold_quorum_is_refused() {
-    let err = try_compile("0 of 3").expect_err("a zero threshold quorum must be refused at compile time");
-    assert!(err.contains("threshold"), "the rejection names the threshold: {err}");
+    let err =
+        try_compile("0 of 3").expect_err("a zero threshold quorum must be refused at compile time");
+    assert!(
+        err.contains("threshold"),
+        "the rejection names the threshold: {err}"
+    );
 }
 
 #[test]
 fn a_threshold_above_the_set_size_is_refused() {
     let err = try_compile("4 of 3").expect_err("a threshold above the set size must be refused");
-    assert!(err.contains("threshold"), "the rejection names the threshold: {err}");
+    assert!(
+        err.contains("threshold"),
+        "the rejection names the threshold: {err}"
+    );
 }
 
 #[test]

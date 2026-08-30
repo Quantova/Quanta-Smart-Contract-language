@@ -29,7 +29,10 @@ fn check_no_duplicate_fields(model: &Model) -> Result<(), TypeError> {
             for field in &block.fields {
                 if !seen.insert(field.name.text.as_str()) {
                     return Err(TypeError::new(
-                        format!("state field `{}` is declared more than once", field.name.text),
+                        format!(
+                            "state field `{}` is declared more than once",
+                            field.name.text
+                        ),
                         field.name.span,
                     ));
                 }
@@ -45,7 +48,9 @@ fn check_no_duplicate_entries(model: &Model) -> Result<(), TypeError> {
         let signature = entry_signature(entry);
         if !seen.insert(signature.clone()) {
             return Err(TypeError::new(
-                format!("entry `{signature}` is declared more than once; it collides on one selector"),
+                format!(
+                    "entry `{signature}` is declared more than once; it collides on one selector"
+                ),
                 entry.name.span,
             ));
         }
@@ -231,7 +236,12 @@ fn walk(expr: &Expr, f: &mut impl FnMut(&Expr)) {
             }
         }
         Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => walk(expr, f),
-        Expr::Int(_) | Expr::Date { .. } | Expr::Str(_) | Expr::Ident(_) | Expr::Caller { .. } | Expr::Now { .. } => {}
+        Expr::Int(_)
+        | Expr::Date { .. }
+        | Expr::Str(_)
+        | Expr::Ident(_)
+        | Expr::Caller { .. }
+        | Expr::Now { .. } => {}
     }
 }
 

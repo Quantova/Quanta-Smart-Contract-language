@@ -49,7 +49,11 @@ fn put_arg(mem: &mut [u8], entry: &EntryArtifact, key: &str, value: u64) {
 }
 
 fn put_addr(mem: &mut [u8], entry: &EntryArtifact, key: &str, address: &[u8; 32]) {
-    let slot = entry.args.iter().find(|s| s.key == key).expect("arg address");
+    let slot = entry
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg address");
     let at = slot.offset as usize;
     mem[at..at + 32].copy_from_slice(address);
 }
@@ -76,14 +80,32 @@ fn deploy(cc: &CompiledContract, owner: &[u8; 32], supply: u64) -> BTreeMap<[u8;
     let (storage, _) = run(cc, selector(GENESIS_SIGNATURE), BTreeMap::new(), &mem)
         .expect("genesis initializes from the deploy parameters");
     for i in 0..4u64 {
-        let word = u64::from_be_bytes(owner[i as usize * 8..i as usize * 8 + 8].try_into().unwrap());
-        assert_eq!(storage.get(&slot_key(i)), Some(&word), "owner word {i} at genesis");
+        let word = u64::from_be_bytes(
+            owner[i as usize * 8..i as usize * 8 + 8]
+                .try_into()
+                .unwrap(),
+        );
+        assert_eq!(
+            storage.get(&slot_key(i)),
+            Some(&word),
+            "owner word {i} at genesis"
+        );
     }
-    assert_eq!(storage.get(&slot_key(SLOT_SUPPLY)), Some(&supply), "supply at genesis");
+    assert_eq!(
+        storage.get(&slot_key(SLOT_SUPPLY)),
+        Some(&supply),
+        "supply at genesis"
+    );
     storage
 }
 
-fn mint_message(cc: &CompiledContract, owner: &[u8; 32], nonce: u64, amount: u64, to: &[u8; 32]) -> Vec<u8> {
+fn mint_message(
+    cc: &CompiledContract,
+    owner: &[u8; 32],
+    nonce: u64,
+    amount: u64,
+    to: &[u8; 32],
+) -> Vec<u8> {
     let mut msg = Vec::new();
     msg.extend_from_slice(b"QTVSGN01");
     msg.extend_from_slice(&CONTRACT);
@@ -123,7 +145,12 @@ fn mint_memory(
     mem
 }
 
-fn transfer_memory(cc: &CompiledContract, caller: &[u8; 32], to: &[u8; 32], amount: u64) -> Vec<u8> {
+fn transfer_memory(
+    cc: &CompiledContract,
+    caller: &[u8; 32],
+    to: &[u8; 32],
+    amount: u64,
+) -> Vec<u8> {
     let transfer = find_entry(cc, "transfer");
     let mut mem = vec![0u8; 65536];
     mem[0..32].copy_from_slice(caller);
@@ -153,9 +180,15 @@ fn the_whole_qasset_standard_compiles_to_a_container_with_a_genesis() {
     let cc = compiled();
     assert!(cc.entries.iter().any(|e| e.name == "mint"));
     assert!(cc.entries.iter().any(|e| e.name == "transfer"));
-    assert!(cc.container.entry_offset(&selector(GENESIS_SIGNATURE)).is_some());
+    assert!(cc
+        .container
+        .entry_offset(&selector(GENESIS_SIGNATURE))
+        .is_some());
     assert_eq!(
-        cc.deploy_params.iter().map(|p| p.key.as_str()).collect::<Vec<_>>(),
+        cc.deploy_params
+            .iter()
+            .map(|p| p.key.as_str())
+            .collect::<Vec<_>>(),
         vec!["deploy_params.owner", "deploy_params.initial_supply"]
     );
 }
@@ -169,22 +202,39 @@ fn an_owner_signed_mint_raises_supply_and_credits_the_holder_and_emits() {
     let to = holder_a();
 
     let mem = mint_memory(&cc, &key, 0, 500, &to);
-    let (after, effects) = run(&cc, selector_of(&cc, "mint"), storage, &mem).expect("the owner mint halts");
+    let (after, effects) =
+        run(&cc, selector_of(&cc, "mint"), storage, &mem).expect("the owner mint halts");
 
-    assert_eq!(after.get(&slot_key(SLOT_SUPPLY)), Some(&500), "supply rises to the minted amount");
+    assert_eq!(
+        after.get(&slot_key(SLOT_SUPPLY)),
+        Some(&500),
+        "supply rises to the minted amount"
+    );
     assert_eq!(balance(&after, &to), 500, "the holder balance is credited");
-    assert_eq!(balance(&after, &to), *after.get(&slot_key(SLOT_SUPPLY)).unwrap());
+    assert_eq!(
+        balance(&after, &to),
+        *after.get(&slot_key(SLOT_SUPPLY)).unwrap()
+    );
 
     let minted = effects
         .iter()
         .find_map(|e| match e {
-            Effect::Event { selector: s, data } if *s == selector("Minted(Q_Address,u128)") => Some(data),
+            Effect::Event { selector: s, data } if *s == selector("Minted(Q_Address,u128)") => {
+                Some(data)
+            }
             _ => None,
         })
         .expect("a Minted event is recorded");
-    assert_eq!(&minted[0..32], &to, "the Minted event carries the whole recipient address");
+    assert_eq!(
+        &minted[0..32],
+        &to,
+        "the Minted event carries the whole recipient address"
+    );
     let amount = u64::from_be_bytes(minted[32..40].try_into().unwrap());
-    assert_eq!(amount, 500, "the Minted event carries the amount after the full address");
+    assert_eq!(
+        amount, 500,
+        "the Minted event carries the amount after the full address"
+    );
 }
 
 #[test]
@@ -194,16 +244,33 @@ fn a_transfer_moves_balance_between_two_holders_and_conserves_supply() {
     let owner = signer_address(SCHEME_ML, &key.0);
 
     let storage = deploy(&cc, &owner, 0);
-    let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint_memory(&cc, &key, 0, 500, &holder_a()))
-        .expect("mint halts");
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "mint"),
+        storage,
+        &mint_memory(&cc, &key, 0, 500, &holder_a()),
+    )
+    .expect("mint halts");
 
     let mem = transfer_memory(&cc, &holder_a(), &holder_b(), 200);
-    let (after, effects) = run(&cc, selector_of(&cc, "transfer"), storage, &mem).expect("the transfer halts");
+    let (after, effects) =
+        run(&cc, selector_of(&cc, "transfer"), storage, &mem).expect("the transfer halts");
 
-    assert_eq!(balance(&after, &holder_a()), 300, "the sender balance falls by the amount");
-    assert_eq!(balance(&after, &holder_b()), 200, "the recipient balance rises by the amount");
+    assert_eq!(
+        balance(&after, &holder_a()),
+        300,
+        "the sender balance falls by the amount"
+    );
+    assert_eq!(
+        balance(&after, &holder_b()),
+        200,
+        "the recipient balance rises by the amount"
+    );
     let supply = *after.get(&slot_key(SLOT_SUPPLY)).unwrap();
-    assert_eq!(balance(&after, &holder_a()) + balance(&after, &holder_b()), supply);
+    assert_eq!(
+        balance(&after, &holder_a()) + balance(&after, &holder_b()),
+        supply
+    );
 
     let transferred = effects
         .iter()
@@ -216,10 +283,21 @@ fn a_transfer_moves_balance_between_two_holders_and_conserves_supply() {
             _ => None,
         })
         .expect("a Transferred event is recorded");
-    assert_eq!(&transferred[0..32], &holder_a(), "the Transferred event carries the whole sender address");
-    assert_eq!(&transferred[32..64], &holder_b(), "the Transferred event carries the whole recipient address");
+    assert_eq!(
+        &transferred[0..32],
+        &holder_a(),
+        "the Transferred event carries the whole sender address"
+    );
+    assert_eq!(
+        &transferred[32..64],
+        &holder_b(),
+        "the Transferred event carries the whole recipient address"
+    );
     let amount = u64::from_be_bytes(transferred[64..72].try_into().unwrap());
-    assert_eq!(amount, 200, "the Transferred event carries the amount after the two full addresses");
+    assert_eq!(
+        amount, 200,
+        "the Transferred event carries the amount after the two full addresses"
+    );
 }
 
 #[test]
@@ -246,7 +324,8 @@ fn a_replayed_mint_is_refused_once_the_owner_nonce_advances() {
     let storage = deploy(&cc, &owner, 0);
 
     let order = mint_memory(&cc, &key, 0, 500, &holder_a());
-    let (after, _) = run(&cc, selector_of(&cc, "mint"), storage, &order).expect("the first mint halts");
+    let (after, _) =
+        run(&cc, selector_of(&cc, "mint"), storage, &order).expect("the first mint halts");
     assert_eq!(after.get(&slot_key(SLOT_SUPPLY)), Some(&500));
 
     assert_eq!(
@@ -262,8 +341,13 @@ fn a_transfer_of_more_than_the_balance_reverts() {
     let key = owner_key();
     let owner = signer_address(SCHEME_ML, &key.0);
     let storage = deploy(&cc, &owner, 0);
-    let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint_memory(&cc, &key, 0, 100, &holder_a()))
-        .expect("mint halts");
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "mint"),
+        storage,
+        &mint_memory(&cc, &key, 0, 100, &holder_a()),
+    )
+    .expect("mint halts");
 
     let mem = transfer_memory(&cc, &holder_a(), &holder_b(), 500);
     assert_eq!(
@@ -307,7 +391,10 @@ fn a_signed_mint_is_bound_to_its_chain_and_does_not_replay_on_another() {
     };
 
     let on_a = run(&cc, mint_sel, deploy(&cc, &owner, 0), &mem_on(chain_a));
-    assert!(on_a.is_ok(), "the order authorised for chain A mints on chain A");
+    assert!(
+        on_a.is_ok(),
+        "the order authorised for chain A mints on chain A"
+    );
 
     let on_b = run(&cc, mint_sel, deploy(&cc, &owner, 0), &mem_on(chain_b));
     assert!(

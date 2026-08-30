@@ -34,7 +34,12 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
 fn run(
@@ -66,10 +71,28 @@ fn set_then_get_returns_the_stored_word_and_keys_stay_independent() {
 
     let storage = run(&cc.container, entry(&cc, "probe").selector, &mem).expect("probe halts");
 
-    assert_eq!(storage.get(&slot_key(1)).copied().unwrap_or(0), v1, "r1 == bal.get(k1)");
-    assert_eq!(storage.get(&slot_key(2)).copied().unwrap_or(0), v2, "r2 == bal.get(k2)");
+    assert_eq!(
+        storage.get(&slot_key(1)).copied().unwrap_or(0),
+        v1,
+        "r1 == bal.get(k1)"
+    );
+    assert_eq!(
+        storage.get(&slot_key(2)).copied().unwrap_or(0),
+        v2,
+        "r2 == bal.get(k2)"
+    );
 
-    assert_eq!(storage.get(&map_key(BAL_BASE, &k1)).copied().unwrap_or(0), v1);
-    assert_eq!(storage.get(&map_key(BAL_BASE, &k2)).copied().unwrap_or(0), v2);
-    assert_ne!(map_key(BAL_BASE, &k1), map_key(BAL_BASE, &k2), "distinct keys, distinct slots");
+    assert_eq!(
+        storage.get(&map_key(BAL_BASE, &k1)).copied().unwrap_or(0),
+        v1
+    );
+    assert_eq!(
+        storage.get(&map_key(BAL_BASE, &k2)).copied().unwrap_or(0),
+        v2
+    );
+    assert_ne!(
+        map_key(BAL_BASE, &k1),
+        map_key(BAL_BASE, &k2),
+        "distinct keys, distinct slots"
+    );
 }

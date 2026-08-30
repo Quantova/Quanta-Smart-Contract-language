@@ -40,7 +40,12 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
 fn addr(tag: u8) -> [u8; 32] {
@@ -58,9 +63,18 @@ fn name_key(label: &[u8]) -> [u8; 32] {
     sha3_256(label)
 }
 
-fn put_map_addr(storage: &mut BTreeMap<[u8; 32], u64>, base: u64, key: &[u8; 32], value: &[u8; 32]) {
+fn put_map_addr(
+    storage: &mut BTreeMap<[u8; 32], u64>,
+    base: u64,
+    key: &[u8; 32],
+    value: &[u8; 32],
+) {
     for i in 0..4u64 {
-        let w = u64::from_be_bytes(value[i as usize * 8..i as usize * 8 + 8].try_into().unwrap());
+        let w = u64::from_be_bytes(
+            value[i as usize * 8..i as usize * 8 + 8]
+                .try_into()
+                .unwrap(),
+        );
         storage.insert(map_addr_word_key(base, key, i), w);
     }
 }
@@ -143,9 +157,32 @@ fn resolved(storage: &BTreeMap<[u8; 32], u64>, label: &[u8]) -> [u8; 32] {
 fn register_refuses_a_zero_year_term() {
     let cc = compiled();
     let caller = addr(0xC0);
-    let r = run_paid(&cc, "register", base_params(), &caller, 0, b"alice", 5, 0, 100);
-    assert!(matches!(r, Err(Fault::DivByZero)), "a zero year registration reverts and charges nothing");
-    let ok = run_paid(&cc, "register", base_params(), &caller, 0, b"alice", 5, 1, 100);
+    let r = run_paid(
+        &cc,
+        "register",
+        base_params(),
+        &caller,
+        0,
+        b"alice",
+        5,
+        0,
+        100,
+    );
+    assert!(
+        matches!(r, Err(Fault::DivByZero)),
+        "a zero year registration reverts and charges nothing"
+    );
+    let ok = run_paid(
+        &cc,
+        "register",
+        base_params(),
+        &caller,
+        0,
+        b"alice",
+        5,
+        1,
+        100,
+    );
     assert!(ok.is_ok(), "one year is the shortest term that registers");
 }
 
@@ -154,9 +191,23 @@ fn renew_refuses_a_zero_year_term() {
     let cc = compiled();
     let caller = addr(0xC0);
     let t0 = 1000 * DAY;
-    let s = run_paid(&cc, "register", base_params(), &caller, t0, b"jeff", 4, 1, 300).expect("register halts");
+    let s = run_paid(
+        &cc,
+        "register",
+        base_params(),
+        &caller,
+        t0,
+        b"jeff",
+        4,
+        1,
+        300,
+    )
+    .expect("register halts");
     let r = run_paid(&cc, "renew", s, &caller, t0 + DAY, b"jeff", 4, 0, 300);
-    assert!(matches!(r, Err(Fault::DivByZero)), "a zero year renewal reverts");
+    assert!(
+        matches!(r, Err(Fault::DivByZero)),
+        "a zero year renewal reverts"
+    );
 }
 
 #[test]
@@ -167,16 +218,44 @@ fn claim_premium_refuses_a_zero_year_term() {
     let mut storage = base_params();
     storage.insert(map_key(EXPIRY_BASE, &name_key(b"alice")), e);
     let now = e + 90 * DAY + DAY;
-    let r = run_paid(&cc, "claim_premium", storage, &claimant, now, b"alice", 5, 0, 1 << 21);
-    assert!(matches!(r, Err(Fault::DivByZero)), "a zero year premium claim reverts");
+    let r = run_paid(
+        &cc,
+        "claim_premium",
+        storage,
+        &claimant,
+        now,
+        b"alice",
+        5,
+        0,
+        1 << 21,
+    );
+    assert!(
+        matches!(r, Err(Fault::DivByZero)),
+        "a zero year premium claim reverts"
+    );
 }
 
 #[test]
 fn a_fresh_registration_points_resolution_at_the_registrant() {
     let cc = compiled();
     let caller = addr(0xA1);
-    let s = run_paid(&cc, "register", base_params(), &caller, 0, b"alice", 5, 1, 100).expect("register halts");
-    assert_eq!(resolved(&s, b"alice"), caller, "a new name resolves to its registrant");
+    let s = run_paid(
+        &cc,
+        "register",
+        base_params(),
+        &caller,
+        0,
+        b"alice",
+        5,
+        1,
+        100,
+    )
+    .expect("register halts");
+    assert_eq!(
+        resolved(&s, b"alice"),
+        caller,
+        "a new name resolves to its registrant"
+    );
 }
 
 #[test]
@@ -192,8 +271,16 @@ fn a_transfer_resets_resolution_to_the_new_owner() {
     put_map_addr(&mut storage, RESOLVED_BASE, &name_key(b"alice"), &stale);
 
     let after = run_transfer(&cc, storage, &owner, b"alice", &to).expect("owner transfer halts");
-    assert_eq!(resolved(&after, b"alice"), to, "transfer repoints resolution to the recipient");
-    assert_ne!(resolved(&after, b"alice"), stale, "the prior resolution target no longer answers for the name");
+    assert_eq!(
+        resolved(&after, b"alice"),
+        to,
+        "transfer repoints resolution to the recipient"
+    );
+    assert_ne!(
+        resolved(&after, b"alice"),
+        stale,
+        "the prior resolution target no longer answers for the name"
+    );
 }
 
 #[test]
@@ -204,16 +291,37 @@ fn re_registration_after_a_full_lapse_drops_the_prior_resolution() {
     let stale = addr(0x99);
 
     let t0 = 1000 * DAY;
-    let s = run_paid(&cc, "register", base_params(), &old, t0, b"jeff", 4, 1, 300).expect("register halts");
-    let e1 = s.get(&map_key(EXPIRY_BASE, &name_key(b"jeff"))).copied().unwrap();
-    assert_eq!(resolved(&s, b"jeff"), old, "the first registrant resolves the name");
+    let s = run_paid(&cc, "register", base_params(), &old, t0, b"jeff", 4, 1, 300)
+        .expect("register halts");
+    let e1 = s
+        .get(&map_key(EXPIRY_BASE, &name_key(b"jeff")))
+        .copied()
+        .unwrap();
+    assert_eq!(
+        resolved(&s, b"jeff"),
+        old,
+        "the first registrant resolves the name"
+    );
 
     let mut lapsed = s;
     put_map_addr(&mut lapsed, RESOLVED_BASE, &name_key(b"jeff"), &stale);
 
     let free_at = e1 + 90 * DAY + 100 * DAY;
-    let s2 = run_paid(&cc, "register", lapsed, &new, free_at, b"jeff", 4, 1, 300).expect("a fully lapsed name registers");
-    assert_eq!(read_addr_value(&s2, OWNER_BASE, &name_key(b"jeff")), new, "the new registrant owns the name");
-    assert_eq!(resolved(&s2, b"jeff"), new, "re-registration resets resolution to the new owner");
-    assert_ne!(resolved(&s2, b"jeff"), stale, "the prior owner's stale target cannot survive a re-registration");
+    let s2 = run_paid(&cc, "register", lapsed, &new, free_at, b"jeff", 4, 1, 300)
+        .expect("a fully lapsed name registers");
+    assert_eq!(
+        read_addr_value(&s2, OWNER_BASE, &name_key(b"jeff")),
+        new,
+        "the new registrant owns the name"
+    );
+    assert_eq!(
+        resolved(&s2, b"jeff"),
+        new,
+        "re-registration resets resolution to the new owner"
+    );
+    assert_ne!(
+        resolved(&s2, b"jeff"),
+        stale,
+        "the prior owner's stale target cannot survive a re-registration"
+    );
 }

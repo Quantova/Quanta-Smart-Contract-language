@@ -137,7 +137,11 @@ fn the_order_preimage_matches_the_pinned_chain_bound_vector() {
         7,
         &[42],
     );
-    assert_eq!(preimage.len(), 96, "tag 8, contract 32, selector 8, signer 32, nonce 8, field 8");
+    assert_eq!(
+        preimage.len(),
+        96,
+        "tag 8, contract 32, selector 8, signer 32, nonce 8, field 8"
+    );
     assert_eq!(preimage.as_slice(), PINNED_ORDER_PREIMAGE.as_slice());
     assert_eq!(
         &preimage[..8],
@@ -155,8 +159,16 @@ fn a_signature_bound_to_a_chain_is_accepted_on_it() {
     let mem = bump_memory(&cc, &pk, &sk, CHAIN_A, CHAIN_A, 4, 0);
     let out = run(&cc, owned_storage(&owner, 10), &mem)
         .expect("the owner's signature is accepted on its own chain");
-    assert_eq!(out.get(&slot_key(COUNT_SLOT)), Some(&14), "count advances by the step");
-    assert_eq!(out.get(&nonce_key(&owner)), Some(&1), "the nonce is consumed");
+    assert_eq!(
+        out.get(&slot_key(COUNT_SLOT)),
+        Some(&14),
+        "count advances by the step"
+    );
+    assert_eq!(
+        out.get(&nonce_key(&owner)),
+        Some(&1),
+        "the nonce is consumed"
+    );
 }
 
 #[test]
@@ -172,5 +184,9 @@ fn the_same_signature_does_not_verify_under_a_different_chain() {
         Err(Fault::DivByZero),
         "a signature bound to chain A cannot be replayed on chain B"
     );
-    assert_eq!(storage.get(&slot_key(COUNT_SLOT)), Some(&10), "state is unchanged");
+    assert_eq!(
+        storage.get(&slot_key(COUNT_SLOT)),
+        Some(&10),
+        "state is unchanged"
+    );
 }

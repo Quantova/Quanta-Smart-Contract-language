@@ -42,13 +42,21 @@ fn selector_of(cc: &CompiledContract, name: &str) -> [u8; 4] {
 }
 
 fn put_arg(mem: &mut [u8], entry: &EntryArtifact, key: &str, value: u64) {
-    let slot = entry.args.iter().find(|s| s.key == key).unwrap_or_else(|| panic!("word arg {key}"));
+    let slot = entry
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .unwrap_or_else(|| panic!("word arg {key}"));
     let at = slot.offset as usize;
     mem[at..at + 8].copy_from_slice(&value.to_be_bytes());
 }
 
 fn put_addr(mem: &mut [u8], entry: &EntryArtifact, key: &str, address: &[u8; 32]) {
-    let slot = entry.args.iter().find(|s| s.key == key).unwrap_or_else(|| panic!("addr arg {key}"));
+    let slot = entry
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .unwrap_or_else(|| panic!("addr arg {key}"));
     let at = slot.offset as usize;
     mem[at..at + 32].copy_from_slice(address);
 }
@@ -83,7 +91,10 @@ fn supply_lo(storage: &BTreeMap<[u8; 32], u64>) -> u64 {
 }
 
 fn supply_hi(storage: &BTreeMap<[u8; 32], u64>) -> u64 {
-    storage.get(&slot_key(SLOT_SUPPLY | HI)).copied().unwrap_or(0)
+    storage
+        .get(&slot_key(SLOT_SUPPLY | HI))
+        .copied()
+        .unwrap_or(0)
 }
 
 fn supply_u128(storage: &BTreeMap<[u8; 32], u64>) -> u128 {
@@ -171,7 +182,10 @@ fn mint(
         key,
         signer,
         nonce,
-        &[Field::Wide("order.amount", amount), Field::Addr("order.to", to)],
+        &[
+            Field::Wide("order.amount", amount),
+            Field::Addr("order.to", to),
+        ],
     )
 }
 
@@ -189,19 +203,53 @@ fn burn(
         key,
         signer,
         nonce,
-        &[Field::Addr("order.holder", holder), Field::Wide("order.amount", amount)],
+        &[
+            Field::Addr("order.holder", holder),
+            Field::Wide("order.amount", amount),
+        ],
     )
 }
 
-fn freeze(cc: &CompiledContract, key: &Key, signer: &[u8; 32], nonce: u64, who: &[u8; 32]) -> Vec<u8> {
-    signed_memory(cc, "freeze", key, signer, nonce, &[Field::Addr("order.who", who)])
+fn freeze(
+    cc: &CompiledContract,
+    key: &Key,
+    signer: &[u8; 32],
+    nonce: u64,
+    who: &[u8; 32],
+) -> Vec<u8> {
+    signed_memory(
+        cc,
+        "freeze",
+        key,
+        signer,
+        nonce,
+        &[Field::Addr("order.who", who)],
+    )
 }
 
-fn unfreeze(cc: &CompiledContract, key: &Key, signer: &[u8; 32], nonce: u64, who: &[u8; 32]) -> Vec<u8> {
-    signed_memory(cc, "unfreeze", key, signer, nonce, &[Field::Addr("order.who", who)])
+fn unfreeze(
+    cc: &CompiledContract,
+    key: &Key,
+    signer: &[u8; 32],
+    nonce: u64,
+    who: &[u8; 32],
+) -> Vec<u8> {
+    signed_memory(
+        cc,
+        "unfreeze",
+        key,
+        signer,
+        nonce,
+        &[Field::Addr("order.who", who)],
+    )
 }
 
-fn transfer_memory(cc: &CompiledContract, caller: &[u8; 32], to: &[u8; 32], amount: u64) -> Vec<u8> {
+fn transfer_memory(
+    cc: &CompiledContract,
+    caller: &[u8; 32],
+    to: &[u8; 32],
+    amount: u64,
+) -> Vec<u8> {
     let entry = find_entry(cc, "transfer");
     let mut mem = vec![0u8; 65536];
     mem[0..32].copy_from_slice(caller);
@@ -215,9 +263,15 @@ fn transfer_memory(cc: &CompiledContract, caller: &[u8; 32], to: &[u8; 32], amou
 fn the_token_carries_mint_transfer_burn_freeze_and_unfreeze() {
     let cc = token();
     for e in ["mint", "transfer", "burn", "freeze", "unfreeze"] {
-        assert!(cc.entries.iter().any(|x| x.name == e), "the token carries {e}");
+        assert!(
+            cc.entries.iter().any(|x| x.name == e),
+            "the token carries {e}"
+        );
     }
-    assert!(cc.container.entry_offset(&selector(GENESIS_SIGNATURE)).is_some());
+    assert!(cc
+        .container
+        .entry_offset(&selector(GENESIS_SIGNATURE))
+        .is_some());
 }
 
 #[test]
@@ -229,11 +283,20 @@ fn the_owner_mints_and_supply_and_the_holder_balance_rise_together() {
     let alice = holder(0xA1);
 
     let mem = mint(&cc, &key, &owner, 0, 500, &alice);
-    let (after, effects) = run(&cc, selector_of(&cc, "mint"), storage, &mem).expect("the owner mint halts");
+    let (after, effects) =
+        run(&cc, selector_of(&cc, "mint"), storage, &mem).expect("the owner mint halts");
 
-    assert_eq!(supply_u128(&after), 500, "supply rises to the minted amount");
+    assert_eq!(
+        supply_u128(&after),
+        500,
+        "supply rises to the minted amount"
+    );
     assert_eq!(balance(&after, &alice), 500, "the holder is credited");
-    assert_eq!(after.get(&nonce_key(&owner)), Some(&1), "the owner nonce advanced");
+    assert_eq!(
+        after.get(&nonce_key(&owner)),
+        Some(&1),
+        "the owner nonce advanced"
+    );
     assert!(
         effects.iter().any(|e| matches!(e, Effect::Event { selector: s, .. } if *s == selector("Minted(Q_Address,u128)"))),
         "a Minted event is recorded"
@@ -266,9 +329,21 @@ fn a_holder_transfers_and_supply_is_conserved() {
     let bob = holder(0xB2);
 
     let storage = deploy(&cc, &owner);
-    let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint(&cc, &key, &owner, 0, 500, &alice)).expect("mint");
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "mint"),
+        storage,
+        &mint(&cc, &key, &owner, 0, 500, &alice),
+    )
+    .expect("mint");
 
-    let (after, _) = run(&cc, selector_of(&cc, "transfer"), storage, &transfer_memory(&cc, &alice, &bob, 200)).expect("the transfer halts");
+    let (after, _) = run(
+        &cc,
+        selector_of(&cc, "transfer"),
+        storage,
+        &transfer_memory(&cc, &alice, &bob, 200),
+    )
+    .expect("the transfer halts");
     assert_eq!(balance(&after, &alice), 300, "the sender balance falls");
     assert_eq!(balance(&after, &bob), 200, "the recipient balance rises");
     assert_eq!(supply_u128(&after), 500, "the transfer conserves supply");
@@ -283,21 +358,59 @@ fn a_frozen_account_cannot_receive_and_unfreezing_restores_it() {
     let bob = holder(0xB2);
 
     let storage = deploy(&cc, &owner);
-    let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint(&cc, &key, &owner, 0, 500, &alice)).expect("mint");
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "mint"),
+        storage,
+        &mint(&cc, &key, &owner, 0, 500, &alice),
+    )
+    .expect("mint");
 
-    let (storage, _) = run(&cc, selector_of(&cc, "freeze"), storage, &freeze(&cc, &key, &owner, 1, &bob)).expect("freeze halts");
-    assert_eq!(storage.get(&map_key(FROZEN_BASE, &bob)), Some(&1), "bob is frozen");
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "freeze"),
+        storage,
+        &freeze(&cc, &key, &owner, 1, &bob),
+    )
+    .expect("freeze halts");
+    assert_eq!(
+        storage.get(&map_key(FROZEN_BASE, &bob)),
+        Some(&1),
+        "bob is frozen"
+    );
 
     let frozen_storage = storage.clone();
     assert_eq!(
-        run(&cc, selector_of(&cc, "transfer"), frozen_storage, &transfer_memory(&cc, &alice, &bob, 200)).map(|(s, _)| s),
+        run(
+            &cc,
+            selector_of(&cc, "transfer"),
+            frozen_storage,
+            &transfer_memory(&cc, &alice, &bob, 200)
+        )
+        .map(|(s, _)| s),
         Err(Fault::DivByZero),
         "a transfer to a frozen account reverts"
     );
 
-    let (storage, _) = run(&cc, selector_of(&cc, "unfreeze"), storage, &unfreeze(&cc, &key, &owner, 2, &bob)).expect("unfreeze halts");
-    let (after, _) = run(&cc, selector_of(&cc, "transfer"), storage, &transfer_memory(&cc, &alice, &bob, 200)).expect("the transfer halts after unfreeze");
-    assert_eq!(balance(&after, &bob), 200, "the unfrozen recipient can be paid");
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "unfreeze"),
+        storage,
+        &unfreeze(&cc, &key, &owner, 2, &bob),
+    )
+    .expect("unfreeze halts");
+    let (after, _) = run(
+        &cc,
+        selector_of(&cc, "transfer"),
+        storage,
+        &transfer_memory(&cc, &alice, &bob, 200),
+    )
+    .expect("the transfer halts after unfreeze");
+    assert_eq!(
+        balance(&after, &bob),
+        200,
+        "the unfrozen recipient can be paid"
+    );
 }
 
 #[test]
@@ -309,11 +422,29 @@ fn a_frozen_account_cannot_send() {
     let carol = holder(0xC3);
 
     let storage = deploy(&cc, &owner);
-    let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint(&cc, &key, &owner, 0, 500, &alice)).expect("mint");
-    let (storage, _) = run(&cc, selector_of(&cc, "freeze"), storage, &freeze(&cc, &key, &owner, 1, &alice)).expect("freeze halts");
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "mint"),
+        storage,
+        &mint(&cc, &key, &owner, 0, 500, &alice),
+    )
+    .expect("mint");
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "freeze"),
+        storage,
+        &freeze(&cc, &key, &owner, 1, &alice),
+    )
+    .expect("freeze halts");
 
     assert_eq!(
-        run(&cc, selector_of(&cc, "transfer"), storage, &transfer_memory(&cc, &alice, &carol, 100)).map(|(s, _)| s),
+        run(
+            &cc,
+            selector_of(&cc, "transfer"),
+            storage,
+            &transfer_memory(&cc, &alice, &carol, 100)
+        )
+        .map(|(s, _)| s),
         Err(Fault::DivByZero),
         "a frozen sender cannot transfer"
     );
@@ -327,7 +458,13 @@ fn a_mint_to_a_frozen_account_is_denied() {
     let mallory = holder(0xDD);
 
     let storage = deploy(&cc, &owner);
-    let (storage, _) = run(&cc, selector_of(&cc, "freeze"), storage, &freeze(&cc, &key, &owner, 0, &mallory)).expect("freeze halts");
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "freeze"),
+        storage,
+        &freeze(&cc, &key, &owner, 0, &mallory),
+    )
+    .expect("freeze halts");
 
     let mem = mint(&cc, &key, &owner, 1, 500, &mallory);
     assert_eq!(
@@ -345,11 +482,27 @@ fn a_burn_lowers_a_holder_balance_and_the_supply_together() {
     let alice = holder(0xA1);
 
     let storage = deploy(&cc, &owner);
-    let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint(&cc, &key, &owner, 0, 500, &alice)).expect("mint");
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "mint"),
+        storage,
+        &mint(&cc, &key, &owner, 0, 500, &alice),
+    )
+    .expect("mint");
 
-    let (after, effects) = run(&cc, selector_of(&cc, "burn"), storage, &burn(&cc, &key, &owner, 1, &alice, 200)).expect("the burn halts");
+    let (after, effects) = run(
+        &cc,
+        selector_of(&cc, "burn"),
+        storage,
+        &burn(&cc, &key, &owner, 1, &alice, 200),
+    )
+    .expect("the burn halts");
     assert_eq!(balance(&after, &alice), 300, "the burn debits the holder");
-    assert_eq!(supply_u128(&after), 300, "the burn lowers supply by the same amount");
+    assert_eq!(
+        supply_u128(&after),
+        300,
+        "the burn lowers supply by the same amount"
+    );
     assert!(
         effects.iter().any(|e| matches!(e, Effect::Event { selector: s, .. } if *s == selector("Burned(Q_Address,u128)"))),
         "a Burned event is recorded"
@@ -364,9 +517,21 @@ fn a_burn_of_more_than_the_holder_holds_reverts() {
     let alice = holder(0xA1);
 
     let storage = deploy(&cc, &owner);
-    let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint(&cc, &key, &owner, 0, 100, &alice)).expect("mint");
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "mint"),
+        storage,
+        &mint(&cc, &key, &owner, 0, 100, &alice),
+    )
+    .expect("mint");
     assert_eq!(
-        run(&cc, selector_of(&cc, "burn"), storage, &burn(&cc, &key, &owner, 1, &alice, 500)).map(|(s, _)| s),
+        run(
+            &cc,
+            selector_of(&cc, "burn"),
+            storage,
+            &burn(&cc, &key, &owner, 1, &alice, 500)
+        )
+        .map(|(s, _)| s),
         Err(Fault::DivByZero),
         "an over burn reverts on the checked debit"
     );
@@ -383,15 +548,39 @@ fn supply_and_balances_stay_consistent_across_the_word_boundary_at_large_amounts
     let storage = deploy(&cc, &owner);
 
     let big = u64::MAX;
-    let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint(&cc, &key, &owner, 0, big, &alice)).expect("first large mint");
-    assert_eq!(supply_u128(&storage), big as u128, "supply holds the first large mint");
-    let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint(&cc, &key, &owner, 1, big, &bob)).expect("second large mint");
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "mint"),
+        storage,
+        &mint(&cc, &key, &owner, 0, big, &alice),
+    )
+    .expect("first large mint");
+    assert_eq!(
+        supply_u128(&storage),
+        big as u128,
+        "supply holds the first large mint"
+    );
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "mint"),
+        storage,
+        &mint(&cc, &key, &owner, 1, big, &bob),
+    )
+    .expect("second large mint");
 
     assert_eq!(supply_hi(&storage), 1, "supply carried into the high word");
     assert_eq!(balance(&storage, &alice), big, "alice holds a full word");
     assert_eq!(balance(&storage, &bob), big, "bob holds a full word");
 
     let sum = balance(&storage, &alice) as u128 + balance(&storage, &bob) as u128;
-    assert_eq!(supply_u128(&storage), sum, "the two word supply equals the sum of the one word balances");
-    assert_eq!(supply_u128(&storage), (big as u128) * 2, "supply is twice the largest word");
+    assert_eq!(
+        supply_u128(&storage),
+        sum,
+        "the two word supply equals the sum of the one word balances"
+    );
+    assert_eq!(
+        supply_u128(&storage),
+        (big as u128) * 2,
+        "supply is twice the largest word"
+    );
 }

@@ -42,10 +42,20 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
-fn memory(cc: &CompiledContract, name: &str, caller: &[u8; 32], addrs: &[(&str, [u8; 32])]) -> Vec<u8> {
+fn memory(
+    cc: &CompiledContract,
+    name: &str,
+    caller: &[u8; 32],
+    addrs: &[(&str, [u8; 32])],
+) -> Vec<u8> {
     let mut mem = vec![0u8; 4096];
     mem[0..32].copy_from_slice(caller);
     for (key, value) in addrs {
@@ -86,10 +96,19 @@ fn a_set_stores_the_whole_address_value_and_the_event_carries_it_in_full() {
     let name = addr(0x11);
 
     let mem = memory(&cc, "claim", &caller, &[("name", name)]);
-    let (storage, effects) = run(&cc.container, entry(&cc, "claim").selector, BTreeMap::new(), &mem)
-        .expect("claim halts");
+    let (storage, effects) = run(
+        &cc.container,
+        entry(&cc, "claim").selector,
+        BTreeMap::new(),
+        &mem,
+    )
+    .expect("claim halts");
 
-    assert_eq!(read_addr_value(&storage, OWNER_OF_BASE, &name), caller, "owner_of[name] is the full caller");
+    assert_eq!(
+        read_addr_value(&storage, OWNER_OF_BASE, &name),
+        caller,
+        "owner_of[name] is the full caller"
+    );
 
     let data = event(&effects, claimed_selector(&cc)).expect("a Claimed event");
     assert_eq!(&data[0..32], &name, "the event carries the whole name");
@@ -98,11 +117,19 @@ fn a_set_stores_the_whole_address_value_and_the_event_carries_it_in_full() {
 }
 
 fn claimed_selector(cc: &CompiledContract) -> [u8; 4] {
-    cc.events.iter().find(|e| e.name == "Claimed").expect("Claimed").selector
+    cc.events
+        .iter()
+        .find(|e| e.name == "Claimed")
+        .expect("Claimed")
+        .selector
 }
 
 fn rebound_selector(cc: &CompiledContract) -> [u8; 4] {
-    cc.events.iter().find(|e| e.name == "Rebound").expect("Rebound").selector
+    cc.events
+        .iter()
+        .find(|e| e.name == "Rebound")
+        .expect("Rebound")
+        .selector
 }
 
 #[test]
@@ -123,7 +150,11 @@ fn a_get_equality_that_matches_the_whole_owner_rebinds() {
     let mem = memory(&cc, "rebind", &a, &[("name", name), ("to", b)]);
     let (after, effects) = run(&cc.container, entry(&cc, "rebind").selector, storage, &mem)
         .expect("the owner rebind halts");
-    assert_eq!(read_addr_value(&after, OWNER_OF_BASE, &name), b, "ownership moved to b in full");
+    assert_eq!(
+        read_addr_value(&after, OWNER_OF_BASE, &name),
+        b,
+        "ownership moved to b in full"
+    );
     let data = event(&effects, rebound_selector(&cc)).expect("a Rebound event");
     assert_eq!(&data[0..32], &name);
     assert_eq!(&data[32..64], &a, "the prior owner");
@@ -159,7 +190,10 @@ fn contains_on_an_address_valued_map_tracks_presence() {
         storage,
         &memory(&cc, "attest", &a, &[("name", other)]),
     );
-    assert!(matches!(result, Err(Fault::DivByZero)), "attest of an absent name reverts");
+    assert!(
+        matches!(result, Err(Fault::DivByZero)),
+        "attest of an absent name reverts"
+    );
 }
 
 #[test]
@@ -178,12 +212,33 @@ fn a_get_equality_binds_all_thirty_two_bytes_not_a_leading_word() {
 
     let mut impostor = a;
     impostor[8] ^= 0xFF;
-    let mem = memory(&cc, "rebind", &impostor, &[("name", name), ("to", impostor)]);
-    let result = run(&cc.container, entry(&cc, "rebind").selector, storage.clone(), &mem);
-    assert!(matches!(result, Err(Fault::DivByZero)), "the prefix collision impostor is reverted");
+    let mem = memory(
+        &cc,
+        "rebind",
+        &impostor,
+        &[("name", name), ("to", impostor)],
+    );
+    let result = run(
+        &cc.container,
+        entry(&cc, "rebind").selector,
+        storage.clone(),
+        &mem,
+    );
+    assert!(
+        matches!(result, Err(Fault::DivByZero)),
+        "the prefix collision impostor is reverted"
+    );
 
     let stranger = addr(0xCC);
-    let mem = memory(&cc, "rebind", &stranger, &[("name", name), ("to", stranger)]);
+    let mem = memory(
+        &cc,
+        "rebind",
+        &stranger,
+        &[("name", name), ("to", stranger)],
+    );
     let result = run(&cc.container, entry(&cc, "rebind").selector, storage, &mem);
-    assert!(matches!(result, Err(Fault::DivByZero)), "a stranger is reverted");
+    assert!(
+        matches!(result, Err(Fault::DivByZero)),
+        "a stranger is reverted"
+    );
 }

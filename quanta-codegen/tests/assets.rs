@@ -30,7 +30,13 @@ fn memory_with(cc: &CompiledContract, entry: usize, values: &[(&str, u64)]) -> V
     mem
 }
 
-fn set_addr_arg(mem: &mut [u8], cc: &CompiledContract, entry: usize, key: &str, address: &[u8; 32]) {
+fn set_addr_arg(
+    mem: &mut [u8],
+    cc: &CompiledContract,
+    entry: usize,
+    key: &str,
+    address: &[u8; 32],
+) {
     let slot = cc.entries[entry]
         .args
         .iter()
@@ -64,7 +70,11 @@ fn merge_adds_the_incoming_amount_to_the_pooled_balance() {
     storage.insert(slot_key(0), 100u64);
     let mem = memory_with(&cc, 0, &[("funds", 5), ("@value", 5)]);
     let out = run(&cc, storage, &mem).expect("clean halt");
-    assert_eq!(out.get(&slot_key(0)), Some(&105), "the pool must absorb the merge");
+    assert_eq!(
+        out.get(&slot_key(0)),
+        Some(&105),
+        "the pool must absorb the merge"
+    );
 }
 
 #[test]
@@ -96,8 +106,16 @@ fn split_moves_a_balance_between_two_asset_fields_conserving_total() {
     storage.insert(slot_key(1), 10u64);
     let mem = memory_with(&cc, 0, &[("req.amount", 30)]);
     let out = run(&cc, storage, &mem).expect("clean halt");
-    assert_eq!(out.get(&slot_key(0)), Some(&70), "reserve loses the split amount");
-    assert_eq!(out.get(&slot_key(1)), Some(&40), "pool gains the split amount");
+    assert_eq!(
+        out.get(&slot_key(0)),
+        Some(&70),
+        "reserve loses the split amount"
+    );
+    assert_eq!(
+        out.get(&slot_key(1)),
+        Some(&40),
+        "pool gains the split amount"
+    );
 }
 
 #[test]
@@ -290,7 +308,11 @@ fn an_insert_sets_a_flag_that_contains_reads_back() {
         Some(&1),
         "the registry entry is set"
     );
-    assert_eq!(out.get(&slot_key(1)), Some(&1), "the guard over contains passed");
+    assert_eq!(
+        out.get(&slot_key(1)),
+        Some(&1),
+        "the guard over contains passed"
+    );
 }
 
 const GATE: &str = "contract Gate {\n\
@@ -310,7 +332,9 @@ fn a_membership_guard_admits_a_listed_key_and_reverts_an_absent_one() {
     let mut storage = BTreeMap::new();
     storage.insert(map_key(KEYED_BASE, &who), 1u64);
     assert_eq!(
-        run(&cc, storage, &listed).expect("clean halt").get(&slot_key(1)),
+        run(&cc, storage, &listed)
+            .expect("clean halt")
+            .get(&slot_key(1)),
         Some(&1),
         "a listed key passes the guard"
     );

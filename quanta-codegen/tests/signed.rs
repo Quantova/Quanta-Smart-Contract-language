@@ -99,7 +99,11 @@ fn owned_storage(owner: &[u8; 32], count: u64) -> BTreeMap<[u8; 32], u64> {
     storage
 }
 
-fn run(cc: &CompiledContract, storage: BTreeMap<[u8; 32], u64>, mem: &[u8]) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
+fn run(
+    cc: &CompiledContract,
+    storage: BTreeMap<[u8; 32], u64>,
+    mem: &[u8],
+) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
     Interpreter::new(&cc.container.code, &cc.container.consts, 400_000)
         .with_storage(storage)
         .with_memory(mem)
@@ -125,8 +129,16 @@ fn the_owner_signature_admits_the_body_and_bumps_the_count() {
 
     let mem = bump_memory(&cc, &pk, &sk, 4, 4, 0);
     let out = run(&cc, owned_storage(&owner, 10), &mem).expect("the owner's signature is accepted");
-    assert_eq!(out.get(&slot_key(COUNT_SLOT)), Some(&14), "count advances by the step");
-    assert_eq!(out.get(&nonce_key(&owner)), Some(&1), "the nonce is consumed");
+    assert_eq!(
+        out.get(&slot_key(COUNT_SLOT)),
+        Some(&14),
+        "count advances by the step"
+    );
+    assert_eq!(
+        out.get(&nonce_key(&owner)),
+        Some(&1),
+        "the nonce is consumed"
+    );
 }
 
 #[test]
@@ -143,7 +155,11 @@ fn a_strangers_own_valid_signature_is_refused() {
         Err(Fault::DivByZero),
         "a valid signature by a non owner is refused"
     );
-    assert_eq!(storage.get(&slot_key(COUNT_SLOT)), Some(&10), "state is unchanged");
+    assert_eq!(
+        storage.get(&slot_key(COUNT_SLOT)),
+        Some(&10),
+        "state is unchanged"
+    );
 }
 
 #[test]
@@ -217,5 +233,9 @@ fn a_forged_signature_reverts() {
         Err(Fault::DivByZero),
         "a forged signature must revert"
     );
-    assert_eq!(storage.get(&slot_key(COUNT_SLOT)), Some(&10), "state is unchanged");
+    assert_eq!(
+        storage.get(&slot_key(COUNT_SLOT)),
+        Some(&10),
+        "state is unchanged"
+    );
 }

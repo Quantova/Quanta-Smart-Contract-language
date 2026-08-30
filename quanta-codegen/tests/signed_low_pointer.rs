@@ -30,18 +30,33 @@ fn compile(src: &str) -> CompiledContract {
 }
 
 fn arg_offset(cc: &CompiledContract, key: &str) -> usize {
-    cc.entries[0].args.iter().find(|s| s.key == key).unwrap().offset as usize
+    cc.entries[0]
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .unwrap()
+        .offset as usize
 }
 
 fn max_arg_end(cc: &CompiledContract) -> u64 {
-    cc.entries[0].args.iter().map(|s| s.offset + 32).max().unwrap_or(0)
+    cc.entries[0]
+        .args
+        .iter()
+        .map(|s| s.offset + 32)
+        .max()
+        .unwrap_or(0)
 }
 
 fn put_word(mem: &mut [u8], off: usize, value: u64) {
     mem[off..off + 8].copy_from_slice(&value.to_be_bytes());
 }
 
-fn canonical_message(selector: [u8; 4], signer: &[u8; 32], nonce: u64, target: &[u8; 32]) -> Vec<u8> {
+fn canonical_message(
+    selector: [u8; 4],
+    signer: &[u8; 32],
+    nonce: u64,
+    target: &[u8; 32],
+) -> Vec<u8> {
     let mut msg = Vec::new();
     msg.extend_from_slice(b"QTVSGN01");
     msg.extend_from_slice(&CONTRACT);
@@ -82,7 +97,11 @@ fn owned_storage(owner: &[u8; 32]) -> BTreeMap<[u8; 32], u64> {
     storage
 }
 
-fn run(cc: &CompiledContract, storage: BTreeMap<[u8; 32], u64>, mem: &[u8]) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
+fn run(
+    cc: &CompiledContract,
+    storage: BTreeMap<[u8; 32], u64>,
+    mem: &[u8],
+) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
     Interpreter::new(&cc.container.code, &cc.container.consts, 6_000_000)
         .with_storage(storage)
         .with_memory(mem)
@@ -101,8 +120,13 @@ fn the_owner_over_a_low_pointer_is_admitted() {
     let victim = [0x77u8; 32];
     let (region, owner) = region_for(3, selector, &victim);
     let mem = call_memory(&cc, &region, low_ptr(&cc), &victim);
-    let out = run(&cc, owned_storage(&owner), &mem).expect("a valid order over a low pointer is admitted");
-    assert_eq!(out.get(&nonce_key(&owner)), Some(&1), "the owner's nonce is consumed");
+    let out = run(&cc, owned_storage(&owner), &mem)
+        .expect("a valid order over a low pointer is admitted");
+    assert_eq!(
+        out.get(&nonce_key(&owner)),
+        Some(&1),
+        "the owner's nonce is consumed"
+    );
 }
 
 #[test]

@@ -39,7 +39,11 @@ fn memory_with(cc: &CompiledContract, values: &[(&str, u64)]) -> Vec<u8> {
     mem
 }
 
-fn run(cc: &CompiledContract, total: u64, amount: u64) -> (Result<(), Fault>, BTreeMap<[u8; 32], u64>) {
+fn run(
+    cc: &CompiledContract,
+    total: u64,
+    amount: u64,
+) -> (Result<(), Fault>, BTreeMap<[u8; 32], u64>) {
     let mut storage = BTreeMap::new();
     storage.insert(slot_key(0), total);
     let mem = memory_with(cc, &[("amount", amount)]);

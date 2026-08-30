@@ -23,7 +23,8 @@ fn a_long_comparison_chain_is_a_clean_error() {
     for _ in 0..n {
         s.push_str("<1");
     }
-    let err = quanta_parser::parse(&body(&s)).expect_err("a long comparison chain must be rejected");
+    let err =
+        quanta_parser::parse(&body(&s)).expect_err("a long comparison chain must be rejected");
     assert!(err.message.contains("nests deeper"));
 }
 

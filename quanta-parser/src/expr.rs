@@ -303,13 +303,21 @@ mod tests {
     #[test]
     fn shift_binds_looser_than_addition_and_tighter_than_comparison() {
         match parse_expr("a + b >> c").unwrap() {
-            Expr::Binary { op: BinOp::Shr, left, .. } => {
+            Expr::Binary {
+                op: BinOp::Shr,
+                left,
+                ..
+            } => {
                 assert!(matches!(*left, Expr::Binary { op: BinOp::Add, .. }));
             }
             other => panic!("unexpected {other:?}"),
         }
         match parse_expr("a >> b < c").unwrap() {
-            Expr::Binary { op: BinOp::Lt, left, .. } => {
+            Expr::Binary {
+                op: BinOp::Lt,
+                left,
+                ..
+            } => {
                 assert!(matches!(*left, Expr::Binary { op: BinOp::Shr, .. }));
             }
             other => panic!("unexpected {other:?}"),
@@ -349,7 +357,11 @@ mod tests {
     fn now_is_an_expression() {
         assert!(matches!(parse_expr("now").unwrap(), Expr::Now { .. }));
         match parse_expr("now > deadline").unwrap() {
-            Expr::Binary { op: BinOp::Gt, left, .. } => {
+            Expr::Binary {
+                op: BinOp::Gt,
+                left,
+                ..
+            } => {
                 assert!(matches!(*left, Expr::Now { .. }));
             }
             other => panic!("unexpected {other:?}"),

@@ -55,7 +55,10 @@ fn an_overflowing_base_reverts_instead_of_opening_the_gate() {
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, act, "@time", 50);
     let out = run(&cc, act, storage, &mem);
-    assert!(out.is_err(), "an overflowing base + duration reverts rather than opening the gate");
+    assert!(
+        out.is_err(),
+        "an overflowing base + duration reverts rather than opening the gate"
+    );
 }
 
 #[test]
@@ -68,10 +71,17 @@ fn a_base_that_does_not_overflow_still_gates_correctly() {
 
     let mut early = vec![0u8; 4096];
     put_arg(&mut early, act, "@time", 3699);
-    assert!(run(&cc, act, storage.clone(), &early).is_err(), "before the window the gate reverts");
+    assert!(
+        run(&cc, act, storage.clone(), &early).is_err(),
+        "before the window the gate reverts"
+    );
 
     let mut open = vec![0u8; 4096];
     put_arg(&mut open, act, "@time", 3700);
     let out = run(&cc, act, storage, &open).expect("at the window the entry halts");
-    assert_eq!(out.get(&slot_key(1)), Some(&1), "the body ran once the window opened");
+    assert_eq!(
+        out.get(&slot_key(1)),
+        Some(&1),
+        "the body ran once the window opened"
+    );
 }

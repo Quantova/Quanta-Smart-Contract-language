@@ -40,7 +40,12 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
 fn window(label: &[u8]) -> [u8; 32] {
@@ -98,15 +103,27 @@ fn addr_word_key(base: u64, label: &[u8], word: u64) -> [u8; 32] {
     sha3_256(&input)
 }
 
-fn seed_addr_value(storage: &mut BTreeMap<[u8; 32], u64>, base: u64, label: &[u8], addr: &[u8; 32]) {
+fn seed_addr_value(
+    storage: &mut BTreeMap<[u8; 32], u64>,
+    base: u64,
+    label: &[u8],
+    addr: &[u8; 32],
+) {
     for word in 0..4u64 {
-        let lane = u64::from_be_bytes(addr[(word as usize) * 8..(word as usize) * 8 + 8].try_into().unwrap());
+        let lane = u64::from_be_bytes(
+            addr[(word as usize) * 8..(word as usize) * 8 + 8]
+                .try_into()
+                .unwrap(),
+        );
         storage.insert(addr_word_key(base, label, word), lane);
     }
 }
 
 fn addr_lane(storage: &BTreeMap<[u8; 32], u64>, base: u64, label: &[u8], word: u64) -> u64 {
-    storage.get(&addr_word_key(base, label, word)).copied().unwrap_or(0)
+    storage
+        .get(&addr_word_key(base, label, word))
+        .copied()
+        .unwrap_or(0)
 }
 
 fn vault(storage: &BTreeMap<[u8; 32], u64>) -> u64 {
@@ -151,16 +168,39 @@ fn run_paid(
 fn a_zero_year_register_buys_nothing_and_reverts() {
     let cc = compiled();
     let caller = [0xC0u8; 32];
-    let r = run_paid(&cc, "register", seed(&base_params()), &caller, 0, b"alice", 5, 0, 0);
-    assert!(matches!(r, Err(Fault::DivByZero)), "a zero year registration reverts");
+    let r = run_paid(
+        &cc,
+        "register",
+        seed(&base_params()),
+        &caller,
+        0,
+        b"alice",
+        5,
+        0,
+        0,
+    );
+    assert!(
+        matches!(r, Err(Fault::DivByZero)),
+        "a zero year registration reverts"
+    );
 }
 
 #[test]
 fn a_one_year_register_is_the_shortest_term() {
     let cc = compiled();
     let caller = [0xC0u8; 32];
-    let s = run_paid(&cc, "register", seed(&base_params()), &caller, 0, b"alice", 5, 1, 100)
-        .expect("a one year registration halts");
+    let s = run_paid(
+        &cc,
+        "register",
+        seed(&base_params()),
+        &caller,
+        0,
+        b"alice",
+        5,
+        1,
+        100,
+    )
+    .expect("a one year registration halts");
     assert_eq!(vault(&s), 100, "one year of the five plus tier is charged");
 }
 
@@ -174,8 +214,21 @@ fn a_zero_year_claim_premium_reverts() {
     storage.insert(map_key(EXPIRY_BASE, &name_key(b"alice")), e);
     let now = e + p.grace + 5 * p.interval;
     let premium = p.start_premium >> 5;
-    let r = run_paid(&cc, "claim_premium", storage, &claimant, now, b"alice", 5, 0, premium);
-    assert!(matches!(r, Err(Fault::DivByZero)), "a zero year premium claim reverts");
+    let r = run_paid(
+        &cc,
+        "claim_premium",
+        storage,
+        &claimant,
+        now,
+        b"alice",
+        5,
+        0,
+        premium,
+    );
+    assert!(
+        matches!(r, Err(Fault::DivByZero)),
+        "a zero year premium claim reverts"
+    );
 }
 
 #[test]
@@ -197,7 +250,11 @@ fn re_registering_a_lapsed_name_drops_the_prior_resolution() {
 
     let taker_lane = u64::from_be_bytes(taker[0..8].try_into().unwrap());
     let prior_lane = u64::from_be_bytes(prior[0..8].try_into().unwrap());
-    assert_eq!(addr_lane(&s, OWNER_BASE, b"shop", 0), taker_lane, "the taker owns the name");
+    assert_eq!(
+        addr_lane(&s, OWNER_BASE, b"shop", 0),
+        taker_lane,
+        "the taker owns the name"
+    );
     assert_eq!(
         addr_lane(&s, RESOLVED_BASE, b"shop", 0),
         taker_lane,

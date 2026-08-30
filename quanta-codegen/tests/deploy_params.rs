@@ -16,7 +16,10 @@ fn compile(src: &str) -> CompiledContract {
     compile_contract(&program.contracts[0]).expect("compile")
 }
 
-fn run_genesis(cc: &CompiledContract, mem: &[u8]) -> Result<std::collections::BTreeMap<[u8; 32], u64>, Fault> {
+fn run_genesis(
+    cc: &CompiledContract,
+    mem: &[u8],
+) -> Result<std::collections::BTreeMap<[u8; 32], u64>, Fault> {
     Interpreter::for_entry(&cc.container, selector(GENESIS_SIGNATURE), 400_000)
         .expect("the genesis selector resolves")
         .with_memory(mem)
@@ -61,14 +64,26 @@ fn genesis_stores_an_address_param_in_full_and_a_wide_param_across_two_slots() {
     let storage = run_genesis(&cc, &params_memory(&bytes)).expect("genesis halts on a full deploy");
 
     for i in 0..4u64 {
-        let word = u64::from_be_bytes(owner[i as usize * 8..i as usize * 8 + 8].try_into().unwrap());
+        let word = u64::from_be_bytes(
+            owner[i as usize * 8..i as usize * 8 + 8]
+                .try_into()
+                .unwrap(),
+        );
         assert_eq!(storage.get(&slot_key(i)), Some(&word), "owner word {i}");
     }
     let supply_lo = supply as u64;
     let supply_hi = (supply >> 64) as u64;
-    assert_eq!(storage.get(&slot_key(4)), Some(&supply_lo), "supply low word");
+    assert_eq!(
+        storage.get(&slot_key(4)),
+        Some(&supply_lo),
+        "supply low word"
+    );
     let hi_slot = 4u64 | (1u64 << 56);
-    assert_eq!(storage.get(&slot_key(hi_slot)), Some(&supply_hi), "supply high word");
+    assert_eq!(
+        storage.get(&slot_key(hi_slot)),
+        Some(&supply_hi),
+        "supply high word"
+    );
 }
 
 #[test]
@@ -140,7 +155,11 @@ fn a_u64_deploy_param_is_read_as_one_word() {
     );
     let value: u64 = 9_000_000_000_000;
     let storage = run_genesis(&cc, &params_memory(&value.to_be_bytes())).expect("genesis halts");
-    assert_eq!(storage.get(&slot_key(0)), Some(&value), "the u64 param is stored");
+    assert_eq!(
+        storage.get(&slot_key(0)),
+        Some(&value),
+        "the u64 param is stored"
+    );
 }
 
 const GUARDIAN_PARAM: &str = "contract G {\n\
@@ -166,7 +185,8 @@ fn a_guardian_set_deploy_param_seeds_the_whole_set() {
     let storage = run_genesis(&cc, &params_memory(&bytes)).expect("genesis halts");
     for (j, a) in g.iter().enumerate() {
         for w in 0..4u64 {
-            let word = u64::from_be_bytes(a[w as usize * 8..w as usize * 8 + 8].try_into().unwrap());
+            let word =
+                u64::from_be_bytes(a[w as usize * 8..w as usize * 8 + 8].try_into().unwrap());
             assert_eq!(
                 storage.get(&slot_key(j as u64 * 4 + w)),
                 Some(&word),
@@ -185,7 +205,11 @@ fn a_deploy_param_read_outside_genesis_is_refused() {
     }\n";
     let program = quanta_parser::parse(src).expect("parse");
     quanta_typeck::check(&program).expect("typecheck");
-    let err = compile_contract(&program.contracts[0]).expect_err("a deploy param read in an entry is refused");
+    let err = compile_contract(&program.contracts[0])
+        .expect_err("a deploy param read in an entry is refused");
     let msg = err.to_string();
-    assert!(msg.contains("address"), "the refusal names the unsupported read: {msg}");
+    assert!(
+        msg.contains("address"),
+        "the refusal names the unsupported read: {msg}"
+    );
 }

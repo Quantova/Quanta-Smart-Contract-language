@@ -71,7 +71,13 @@ fn msg_start(scheme: u8) -> u64 {
     }
 }
 
-fn signed_region(scheme: u8, signer_seed: u8, selector: [u8; 4], nonce: u64, target: &[u8; 32]) -> (Vec<u8>, [u8; 32]) {
+fn signed_region(
+    scheme: u8,
+    signer_seed: u8,
+    selector: [u8; 4],
+    nonce: u64,
+    target: &[u8; 32],
+) -> (Vec<u8>, [u8; 32]) {
     match scheme {
         SCHEME_ML => {
             let (pk, sk) = ml_dsa::keygen(&[signer_seed; 32]);
@@ -85,7 +91,8 @@ fn signed_region(scheme: u8, signer_seed: u8, selector: [u8; 4], nonce: u64, tar
             (region, signer)
         }
         SCHEME_SLH => {
-            let (sk, pk) = slh_dsa::keygen(&[signer_seed; 24], &[signer_seed; 24], &[signer_seed; 24]);
+            let (sk, pk) =
+                slh_dsa::keygen(&[signer_seed; 24], &[signer_seed; 24], &[signer_seed; 24]);
             let signer = signer_address(SCHEME_SLH, &pk);
             let msg = canonical_message(selector, &signer, nonce, target);
             let sig = slh_dsa::sign(&sk, &msg, &[], &[4u8; 24]).expect("sign");
@@ -153,7 +160,11 @@ fn the_owner_over_a_bounded_pointer_is_admitted() {
     let (region, owner) = signed_region(SCHEME_ML, 3, selector, 0, &victim);
     let mem = call_memory(&cc, SCHEME_ML, &region, 8192, &victim);
     let out = run(&cc, owned_storage(&owner), &mem).expect("the owner's own order is admitted");
-    assert_eq!(out.get(&nonce_key(&owner)), Some(&1), "the owner's nonce is consumed");
+    assert_eq!(
+        out.get(&nonce_key(&owner)),
+        Some(&1),
+        "the owner's nonce is consumed"
+    );
 }
 
 fn forge_attempt(scheme: u8) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
@@ -192,8 +203,13 @@ fn a_message_ending_exactly_at_the_scratch_floor_is_admitted() {
     let (region, owner) = signed_region(SCHEME_ML, 3, selector, 0, &victim);
     let ptr = floor_ptr(SCHEME_ML);
     let mem = call_memory(&cc, SCHEME_ML, &region, ptr, &victim);
-    let out = run(&cc, owned_storage(&owner), &mem).expect("a message flush against the floor is admitted");
-    assert_eq!(out.get(&nonce_key(&owner)), Some(&1), "the owner's nonce is consumed");
+    let out = run(&cc, owned_storage(&owner), &mem)
+        .expect("a message flush against the floor is admitted");
+    assert_eq!(
+        out.get(&nonce_key(&owner)),
+        Some(&1),
+        "the owner's nonce is consumed"
+    );
 }
 
 #[test]

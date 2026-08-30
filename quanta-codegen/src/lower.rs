@@ -587,7 +587,11 @@ fn lower_unary(
         UnaryOp::Not => {
             let r = lower_expr(ctx, expr, wrapping)?;
             ctx.b.op(Instr::Ldi { d: SCRATCH, imm: 0 });
-            ctx.b.op(Instr::Eq { d: r, a: r, b: SCRATCH });
+            ctx.b.op(Instr::Eq {
+                d: r,
+                a: r,
+                b: SCRATCH,
+            });
             Ok(r)
         }
         UnaryOp::Neg => {
@@ -595,9 +599,17 @@ fn lower_unary(
             let zero = ctx.regs.alloc(span)?;
             ctx.b.op(Instr::Ldi { d: zero, imm: 0 });
             if wrapping {
-                ctx.b.op(Instr::SubW { d: r, a: zero, b: r });
+                ctx.b.op(Instr::SubW {
+                    d: r,
+                    a: zero,
+                    b: r,
+                });
             } else {
-                ctx.b.op(Instr::Sub { d: r, a: zero, b: r });
+                ctx.b.op(Instr::Sub {
+                    d: r,
+                    a: zero,
+                    b: r,
+                });
             }
             ctx.regs.free(zero);
             Ok(r)
@@ -647,7 +659,8 @@ fn lower_binary(
     {
         return Err(CodegenError::Unsupported {
             what: "a division, remainder, or shift with a u128 operand, which would truncate the \
-                   wide value to its low word".into(),
+                   wide value to its low word"
+                .into(),
             span: left.span(),
         });
     }
@@ -668,11 +681,23 @@ fn lower_binary(
         BinOp::Shr => {
             let mask = ctx.regs.alloc(left.span())?;
             ctx.b.op(Instr::Ldi { d: mask, imm: 64 });
-            ctx.b.op(Instr::LtU { d: mask, a: r, b: mask });
+            ctx.b.op(Instr::LtU {
+                d: mask,
+                a: r,
+                b: mask,
+            });
             ctx.b.op(Instr::Ldi { d: SCRATCH, imm: 0 });
-            ctx.b.op(Instr::SubW { d: mask, a: SCRATCH, b: mask });
+            ctx.b.op(Instr::SubW {
+                d: mask,
+                a: SCRATCH,
+                b: mask,
+            });
             ctx.b.op(Instr::Shr { d: l, a: l, b: r });
-            ctx.b.op(Instr::And { d: l, a: l, b: mask });
+            ctx.b.op(Instr::And {
+                d: l,
+                a: l,
+                b: mask,
+            });
             ctx.regs.free(mask);
         }
         BinOp::And | BinOp::Or => unreachable!("logical and or short circuit above"),
@@ -734,8 +759,14 @@ fn is_wide_expr(ctx: &Ctx, expr: &Expr) -> bool {
             matches!(base.as_ref(), Expr::Ident(id) if ctx.wide_keys.contains(&format!("{}.{}", id.text, name.text)))
         }
         Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => is_wide_expr(ctx, expr),
-        Expr::Unary { op: UnaryOp::Neg, expr, .. } => is_wide_expr(ctx, expr),
-        Expr::Binary { op, left, right, .. } => {
+        Expr::Unary {
+            op: UnaryOp::Neg,
+            expr,
+            ..
+        } => is_wide_expr(ctx, expr),
+        Expr::Binary {
+            op, left, right, ..
+        } => {
             matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul)
                 && (is_wide_expr(ctx, left) || is_wide_expr(ctx, right))
         }
@@ -816,9 +847,7 @@ fn wide_sinks_stmt(
             }
             mark_wide_compares(layout, params, asset_params, expr, out)
         }
-        Stmt::Guard { expr, .. } => {
-            mark_wide_compares(layout, params, asset_params, expr, out)
-        }
+        Stmt::Guard { expr, .. } => mark_wide_compares(layout, params, asset_params, expr, out),
         Stmt::Let { value, .. } => mark_wide_compares(layout, params, asset_params, value, out),
     }
 }
@@ -915,7 +944,10 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
         Expr::Int(lit) => {
             let value = parse_u128(&lit.text, lit.span)?;
             let lo = ctx.regs.alloc(lit.span)?;
-            ctx.b.op(Instr::Ldi { d: lo, imm: value as u64 });
+            ctx.b.op(Instr::Ldi {
+                d: lo,
+                imm: value as u64,
+            });
             let hi = ctx.regs.alloc(lit.span)?;
             ctx.b.op(Instr::Ldi {
                 d: hi,
@@ -925,7 +957,10 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
         }
         Expr::Ident(id) if ctx.layout.is_wide(&id.text) => {
             let slot = ctx.layout.slot(&id.text).expect("a wide field has a slot");
-            let hi_slot = ctx.layout.hi_slot(&id.text).expect("a wide field has a high slot");
+            let hi_slot = ctx
+                .layout
+                .hi_slot(&id.text)
+                .expect("a wide field has a high slot");
             let lo = load_slot(ctx, slot, id.span)?;
             let hi = load_slot(ctx, hi_slot, id.span)?;
             Ok((lo, hi))
@@ -936,9 +971,12 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
             let hi = load_arg(ctx, off + WORD, id.span)?;
             Ok((lo, hi))
         }
-        Expr::Binary { op, left, right, span }
-            if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) =>
-        {
+        Expr::Binary {
+            op,
+            left,
+            right,
+            span,
+        } if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) => {
             let (llo, lhi) = eval_wide(ctx, left, wrapping)?;
             let (rlo, rhi) = eval_wide(ctx, right, wrapping)?;
             match op {
@@ -954,8 +992,7 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
             let hi = load_arg(ctx, off + WORD, name.span)?;
             Ok((lo, hi))
         }
-        Expr::Field { base, name, .. }
-            if matches!(base.as_ref(), Expr::Ident(id) if ctx.wide_keys.contains(&format!("{}.{}", id.text, name.text))) =>
+        Expr::Field { base, name, .. } if matches!(base.as_ref(), Expr::Ident(id) if ctx.wide_keys.contains(&format!("{}.{}", id.text, name.text))) =>
         {
             let id = match base.as_ref() {
                 Expr::Ident(id) => &id.text,
@@ -967,7 +1004,11 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
             let hi = load_arg(ctx, off + WORD, name.span)?;
             Ok((lo, hi))
         }
-        Expr::Unary { op: UnaryOp::Neg, expr: inner, span } => {
+        Expr::Unary {
+            op: UnaryOp::Neg,
+            expr: inner,
+            span,
+        } => {
             let zlo = ctx.regs.alloc(*span)?;
             ctx.b.op(Instr::Ldi { d: zlo, imm: 0 });
             let zhi = ctx.regs.alloc(*span)?;
@@ -986,14 +1027,42 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
 }
 
 fn two_word_add(ctx: &mut Ctx, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg, wrapping: bool) {
-    ctx.b.op(Instr::AddW { d: llo, a: llo, b: rlo });
-    ctx.b.op(Instr::LtU { d: SCRATCH, a: llo, b: rlo });
-    ctx.b.op(Instr::AddW { d: lhi, a: lhi, b: rhi });
-    ctx.b.op(Instr::LtU { d: rlo, a: lhi, b: rhi });
-    ctx.b.op(Instr::AddW { d: lhi, a: lhi, b: SCRATCH });
-    ctx.b.op(Instr::LtU { d: rhi, a: lhi, b: SCRATCH });
+    ctx.b.op(Instr::AddW {
+        d: llo,
+        a: llo,
+        b: rlo,
+    });
+    ctx.b.op(Instr::LtU {
+        d: SCRATCH,
+        a: llo,
+        b: rlo,
+    });
+    ctx.b.op(Instr::AddW {
+        d: lhi,
+        a: lhi,
+        b: rhi,
+    });
+    ctx.b.op(Instr::LtU {
+        d: rlo,
+        a: lhi,
+        b: rhi,
+    });
+    ctx.b.op(Instr::AddW {
+        d: lhi,
+        a: lhi,
+        b: SCRATCH,
+    });
+    ctx.b.op(Instr::LtU {
+        d: rhi,
+        a: lhi,
+        b: SCRATCH,
+    });
     if !wrapping {
-        ctx.b.op(Instr::Or { d: rlo, a: rlo, b: rhi });
+        ctx.b.op(Instr::Or {
+            d: rlo,
+            a: rlo,
+            b: rhi,
+        });
         ctx.b.jnz(rlo, ctx.trap);
     }
     ctx.regs.free(rhi);
@@ -1001,14 +1070,42 @@ fn two_word_add(ctx: &mut Ctx, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg, wrapping:
 }
 
 fn two_word_sub(ctx: &mut Ctx, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg, wrapping: bool) {
-    ctx.b.op(Instr::LtU { d: SCRATCH, a: llo, b: rlo });
-    ctx.b.op(Instr::SubW { d: llo, a: llo, b: rlo });
-    ctx.b.op(Instr::LtU { d: rlo, a: lhi, b: rhi });
-    ctx.b.op(Instr::SubW { d: lhi, a: lhi, b: rhi });
-    ctx.b.op(Instr::LtU { d: rhi, a: lhi, b: SCRATCH });
-    ctx.b.op(Instr::SubW { d: lhi, a: lhi, b: SCRATCH });
+    ctx.b.op(Instr::LtU {
+        d: SCRATCH,
+        a: llo,
+        b: rlo,
+    });
+    ctx.b.op(Instr::SubW {
+        d: llo,
+        a: llo,
+        b: rlo,
+    });
+    ctx.b.op(Instr::LtU {
+        d: rlo,
+        a: lhi,
+        b: rhi,
+    });
+    ctx.b.op(Instr::SubW {
+        d: lhi,
+        a: lhi,
+        b: rhi,
+    });
+    ctx.b.op(Instr::LtU {
+        d: rhi,
+        a: lhi,
+        b: SCRATCH,
+    });
+    ctx.b.op(Instr::SubW {
+        d: lhi,
+        a: lhi,
+        b: SCRATCH,
+    });
     if !wrapping {
-        ctx.b.op(Instr::Or { d: rlo, a: rlo, b: rhi });
+        ctx.b.op(Instr::Or {
+            d: rlo,
+            a: rlo,
+            b: rhi,
+        });
         ctx.b.jnz(rlo, ctx.trap);
     }
     ctx.regs.free(rhi);
@@ -1033,32 +1130,88 @@ fn two_word_mul(
         None
     };
 
-    ctx.b.op(Instr::MulW { d: reslo, a: llo, b: rlo });
-    ctx.b.op(Instr::MulHi { d: reshi, a: llo, b: rlo });
+    ctx.b.op(Instr::MulW {
+        d: reslo,
+        a: llo,
+        b: rlo,
+    });
+    ctx.b.op(Instr::MulHi {
+        d: reshi,
+        a: llo,
+        b: rlo,
+    });
     if let Some(ov) = ov {
         ctx.b.op(Instr::Ldi { d: ov, imm: 0 });
     }
 
-    ctx.b.op(Instr::MulW { d: t, a: llo, b: rhi });
-    ctx.b.op(Instr::AddW { d: reshi, a: reshi, b: t });
+    ctx.b.op(Instr::MulW {
+        d: t,
+        a: llo,
+        b: rhi,
+    });
+    ctx.b.op(Instr::AddW {
+        d: reshi,
+        a: reshi,
+        b: t,
+    });
     if let Some(ov) = ov {
-        ctx.b.op(Instr::LtU { d: SCRATCH, a: reshi, b: t });
-        ctx.b.op(Instr::Or { d: ov, a: ov, b: SCRATCH });
+        ctx.b.op(Instr::LtU {
+            d: SCRATCH,
+            a: reshi,
+            b: t,
+        });
+        ctx.b.op(Instr::Or {
+            d: ov,
+            a: ov,
+            b: SCRATCH,
+        });
     }
 
-    ctx.b.op(Instr::MulW { d: t, a: lhi, b: rlo });
-    ctx.b.op(Instr::AddW { d: reshi, a: reshi, b: t });
+    ctx.b.op(Instr::MulW {
+        d: t,
+        a: lhi,
+        b: rlo,
+    });
+    ctx.b.op(Instr::AddW {
+        d: reshi,
+        a: reshi,
+        b: t,
+    });
     if let Some(ov) = ov {
-        ctx.b.op(Instr::LtU { d: SCRATCH, a: reshi, b: t });
-        ctx.b.op(Instr::Or { d: ov, a: ov, b: SCRATCH });
+        ctx.b.op(Instr::LtU {
+            d: SCRATCH,
+            a: reshi,
+            b: t,
+        });
+        ctx.b.op(Instr::Or {
+            d: ov,
+            a: ov,
+            b: SCRATCH,
+        });
 
-        ctx.b.op(Instr::MulHi { d: t, a: llo, b: rhi });
+        ctx.b.op(Instr::MulHi {
+            d: t,
+            a: llo,
+            b: rhi,
+        });
         ctx.b.op(Instr::Or { d: ov, a: ov, b: t });
-        ctx.b.op(Instr::MulHi { d: t, a: lhi, b: rlo });
+        ctx.b.op(Instr::MulHi {
+            d: t,
+            a: lhi,
+            b: rlo,
+        });
         ctx.b.op(Instr::Or { d: ov, a: ov, b: t });
-        ctx.b.op(Instr::MulW { d: t, a: lhi, b: rhi });
+        ctx.b.op(Instr::MulW {
+            d: t,
+            a: lhi,
+            b: rhi,
+        });
         ctx.b.op(Instr::Or { d: ov, a: ov, b: t });
-        ctx.b.op(Instr::MulHi { d: t, a: lhi, b: rhi });
+        ctx.b.op(Instr::MulHi {
+            d: t,
+            a: lhi,
+            b: rhi,
+        });
         ctx.b.op(Instr::Or { d: ov, a: ov, b: t });
     }
 
@@ -1090,28 +1243,80 @@ fn wide_compare(
 ) -> Result<Reg, CodegenError> {
     let t1 = ctx.regs.alloc(span)?;
     let t2 = ctx.regs.alloc(span)?;
-    ctx.b.op(Instr::Eq { d: SCRATCH, a: lhi, b: rhi });
-    ctx.b.op(Instr::LtU { d: t1, a: llo, b: rlo });
-    ctx.b.op(Instr::And { d: t1, a: t1, b: SCRATCH });
-    ctx.b.op(Instr::LtU { d: t2, a: lhi, b: rhi });
-    ctx.b.op(Instr::Or { d: t2, a: t2, b: t1 });
-    ctx.b.op(Instr::LtU { d: t1, a: rlo, b: llo });
-    ctx.b.op(Instr::And { d: t1, a: t1, b: SCRATCH });
-    ctx.b.op(Instr::LtU { d: llo, a: rhi, b: lhi });
-    ctx.b.op(Instr::Or { d: llo, a: llo, b: t1 });
+    ctx.b.op(Instr::Eq {
+        d: SCRATCH,
+        a: lhi,
+        b: rhi,
+    });
+    ctx.b.op(Instr::LtU {
+        d: t1,
+        a: llo,
+        b: rlo,
+    });
+    ctx.b.op(Instr::And {
+        d: t1,
+        a: t1,
+        b: SCRATCH,
+    });
+    ctx.b.op(Instr::LtU {
+        d: t2,
+        a: lhi,
+        b: rhi,
+    });
+    ctx.b.op(Instr::Or {
+        d: t2,
+        a: t2,
+        b: t1,
+    });
+    ctx.b.op(Instr::LtU {
+        d: t1,
+        a: rlo,
+        b: llo,
+    });
+    ctx.b.op(Instr::And {
+        d: t1,
+        a: t1,
+        b: SCRATCH,
+    });
+    ctx.b.op(Instr::LtU {
+        d: llo,
+        a: rhi,
+        b: lhi,
+    });
+    ctx.b.op(Instr::Or {
+        d: llo,
+        a: llo,
+        b: t1,
+    });
     match op {
-        BinOp::Lt => ctx.b.op(Instr::Or { d: llo, a: t2, b: t2 }),
+        BinOp::Lt => ctx.b.op(Instr::Or {
+            d: llo,
+            a: t2,
+            b: t2,
+        }),
         BinOp::Gt => {}
         BinOp::Le => logical_not(ctx, llo),
         BinOp::Ge => {
-            ctx.b.op(Instr::Or { d: llo, a: t2, b: t2 });
+            ctx.b.op(Instr::Or {
+                d: llo,
+                a: t2,
+                b: t2,
+            });
             logical_not(ctx, llo);
         }
         BinOp::Eq => {
-            ctx.b.op(Instr::Or { d: llo, a: llo, b: t2 });
+            ctx.b.op(Instr::Or {
+                d: llo,
+                a: llo,
+                b: t2,
+            });
             logical_not(ctx, llo);
         }
-        _ => ctx.b.op(Instr::Or { d: llo, a: llo, b: t2 }),
+        _ => ctx.b.op(Instr::Or {
+            d: llo,
+            a: llo,
+            b: t2,
+        }),
     }
     ctx.regs.free(t2);
     ctx.regs.free(t1);
@@ -1132,7 +1337,11 @@ fn logical_not(ctx: &mut Ctx, r: Reg) {
 
 fn bool_normalize(ctx: &mut Ctx, r: Reg) {
     ctx.b.op(Instr::Ldi { d: SCRATCH, imm: 0 });
-    ctx.b.op(Instr::GtU { d: r, a: r, b: SCRATCH });
+    ctx.b.op(Instr::GtU {
+        d: r,
+        a: r,
+        b: SCRATCH,
+    });
 }
 
 fn parse_int(text: &str, span: Span) -> Result<u64, CodegenError> {
@@ -1228,8 +1437,8 @@ pub fn lower_entry(
         .map(|p| p.name.text.clone())
         .collect();
     let access = layout.access(entry);
-    let writes_state = !access.writes.is_empty()
-        || access.keyed_writes.iter().any(|&b| b != NONCE_TAG);
+    let writes_state =
+        !access.writes.is_empty() || access.keyed_writes.iter().any(|&b| b != NONCE_TAG);
     let entry_mints = entry
         .clauses
         .iter()
@@ -1408,12 +1617,13 @@ fn lower_quorum_prologue(
             }
             continue;
         };
-        let (set_base, set_count) = ctx.layout.guardian_set(&set).ok_or_else(|| {
-            CodegenError::Unsupported {
-                what: format!("a quorum over `{set}`, which must be a GuardianSet state field"),
-                span: param.span,
-            }
-        })?;
+        let (set_base, set_count) =
+            ctx.layout
+                .guardian_set(&set)
+                .ok_or_else(|| CodegenError::Unsupported {
+                    what: format!("a quorum over `{set}`, which must be a GuardianSet state field"),
+                    span: param.span,
+                })?;
         if count != set_count {
             return Err(CodegenError::Unsupported {
                 what: format!(
@@ -1490,14 +1700,18 @@ fn quorum_message_fields(
     let mut specs = Vec::new();
     for param in &entry.params {
         let pname = &param.name.text;
-        if pname == quorum_name || quorum_spec(param).is_some() || ctx.asset_params.contains(pname) {
+        if pname == quorum_name || quorum_spec(param).is_some() || ctx.asset_params.contains(pname)
+        {
             continue;
         }
         if param.ty.name.text == GUARDIAN_SET_PARAM {
-            let words = guardian_set_param_words(param).ok_or_else(|| CodegenError::Unsupported {
-                what: format!("a guardian set parameter `{pname}` whose size is not a positive count"),
-                span: param.span,
-            })?;
+            let words =
+                guardian_set_param_words(param).ok_or_else(|| CodegenError::Unsupported {
+                    what: format!(
+                        "a guardian set parameter `{pname}` whose size is not a positive count"
+                    ),
+                    span: param.span,
+                })?;
             let off = ctx.args.offset_of_width(pname, words.saturating_mul(WORD));
             specs.push((off, words));
             continue;
@@ -1602,7 +1816,11 @@ fn emit_quorum_member(
         ),
     };
     let msg_start = pk + sig;
-    let fields_bytes: u64 = member.field_specs.iter().map(|(_, words)| words * WORD).sum();
+    let fields_bytes: u64 = member
+        .field_specs
+        .iter()
+        .map(|(_, words)| words * WORD)
+        .sum();
     let msg_len = MSG_FIELDS_OFF + fields_bytes;
 
     let ptr = load_arg(ctx, member.ptr_off, span)?;
@@ -1675,10 +1893,7 @@ fn emit_quorum_member(
         imm: NONCE_DIGEST_SCRATCH,
     });
     let nonce = ctx.regs.alloc(span)?;
-    ctx.b.op(Instr::SLoad {
-        d: nonce,
-        a: slot,
-    });
+    ctx.b.op(Instr::SLoad { d: nonce, a: slot });
 
     let dst = ctx.regs.alloc(span)?;
     {
@@ -1715,7 +1930,14 @@ fn emit_quorum_member(
         store_off(ctx, dst, MSG_SELECTOR_OFF, r);
         ctx.regs.free(r);
     }
-    copy_words_to_region(ctx, SIGNER_ADDR_SCRATCH, dst, MSG_SIGNER_OFF, ADDR_WORDS, span)?;
+    copy_words_to_region(
+        ctx,
+        SIGNER_ADDR_SCRATCH,
+        dst,
+        MSG_SIGNER_OFF,
+        ADDR_WORDS,
+        span,
+    )?;
     store_off(ctx, dst, MSG_NONCE_OFF, nonce);
     {
         let mut field_off_in_msg = MSG_FIELDS_OFF;
@@ -1834,10 +2056,7 @@ fn emit_quorum_member(
             a: nonce,
             b: one,
         });
-        ctx.b.op(Instr::SStore {
-            a: slot,
-            b: nonce,
-        });
+        ctx.b.op(Instr::SStore { a: slot, b: nonce });
         ctx.regs.free(one);
     }
 
@@ -1848,11 +2067,7 @@ fn emit_quorum_member(
     Ok(())
 }
 
-fn lower_after_prologue(
-    ctx: &mut Ctx,
-    entry: &EntryDecl,
-    trap: Label,
-) -> Result<(), CodegenError> {
+fn lower_after_prologue(ctx: &mut Ctx, entry: &EntryDecl, trap: Label) -> Result<(), CodegenError> {
     for clause in &entry.clauses {
         let Clause::After { target, from, span } = clause else {
             continue;
@@ -1861,19 +2076,19 @@ fn lower_after_prologue(
         let time = load_arg(ctx, time_off, *span)?;
         let threshold = match target {
             AfterTarget::Duration(duration) => {
-                let unit = unit_seconds(&duration.unit.text).ok_or_else(|| {
-                    CodegenError::Unsupported {
+                let unit =
+                    unit_seconds(&duration.unit.text).ok_or_else(|| CodegenError::Unsupported {
                         what: format!("the duration unit `{}`", duration.unit.text),
                         span: duration.span,
-                    }
-                })?;
-                let value = parse_int(&duration.value.text, duration.value.span)?;
-                let seconds = value
-                    .checked_mul(unit)
-                    .ok_or_else(|| CodegenError::IntegerTooWide {
-                        text: duration.value.text.clone(),
-                        span: duration.span,
                     })?;
+                let value = parse_int(&duration.value.text, duration.value.span)?;
+                let seconds =
+                    value
+                        .checked_mul(unit)
+                        .ok_or_else(|| CodegenError::IntegerTooWide {
+                            text: duration.value.text.clone(),
+                            span: duration.span,
+                        })?;
                 if let Some(base) = from {
                     let reg = lower_expr(ctx, base, false)?;
                     let addend = ctx.regs.alloc(*span)?;
@@ -1946,11 +2161,7 @@ fn lower_bounds_prologue(
     Ok(())
 }
 
-fn lower_name_prologue(
-    ctx: &mut Ctx,
-    entry: &EntryDecl,
-    trap: Label,
-) -> Result<(), CodegenError> {
+fn lower_name_prologue(ctx: &mut Ctx, entry: &EntryDecl, trap: Label) -> Result<(), CodegenError> {
     let names: Vec<(String, Span)> = entry
         .params
         .iter()
@@ -2067,10 +2278,7 @@ fn copy_words_to_region(
             d: SCRATCH,
             imm: src_off + i * WORD,
         });
-        ctx.b.op(Instr::MLoad {
-            d: tmp,
-            a: SCRATCH,
-        });
+        ctx.b.op(Instr::MLoad { d: tmp, a: SCRATCH });
         store_off(ctx, base, dst_off + i * WORD, tmp);
     }
     ctx.regs.free(tmp);
@@ -2090,10 +2298,7 @@ fn copy_words_fixed(
             d: SCRATCH,
             imm: src_off + i * WORD,
         });
-        ctx.b.op(Instr::MLoad {
-            d: tmp,
-            a: SCRATCH,
-        });
+        ctx.b.op(Instr::MLoad { d: tmp, a: SCRATCH });
         store_mem_word(ctx, dst_off + i * WORD, tmp);
     }
     ctx.regs.free(tmp);
@@ -2347,7 +2552,9 @@ fn anchor_rejection(display: String, is_quorum: bool, span: Span) -> CodegenErro
     let source = if is_quorum {
         format!("a time gate anchored on `{display}`, a quorum field that no guardian signs")
     } else {
-        format!("a time gate anchored on `{display}`, a caller supplied value that no signature covers")
+        format!(
+            "a time gate anchored on `{display}`, a caller supplied value that no signature covers"
+        )
     };
     CodegenError::Rejected {
         what: format!(
@@ -2488,10 +2695,7 @@ fn check_anchor_map_write(
 }
 
 fn is_recorded_time_or_const(value: &Expr) -> bool {
-    matches!(
-        value,
-        Expr::Now { .. } | Expr::Int(_) | Expr::Date { .. }
-    )
+    matches!(value, Expr::Now { .. } | Expr::Int(_) | Expr::Date { .. })
 }
 
 fn anchor_write_rejection(field: &str, span: Span) -> CodegenError {
@@ -2748,10 +2952,7 @@ fn emit_signed_binding(
         imm: NONCE_DIGEST_SCRATCH,
     });
     let nonce = ctx.regs.alloc(span)?;
-    ctx.b.op(Instr::SLoad {
-        d: nonce,
-        a: slot,
-    });
+    ctx.b.op(Instr::SLoad { d: nonce, a: slot });
 
     let dst = ctx.regs.alloc(span)?;
     {
@@ -2778,7 +2979,14 @@ fn emit_signed_binding(
         ctx.regs.free(r);
     }
     let contract_off = ctx.args.offset_of(CONTRACT_KEY);
-    copy_words_to_region(ctx, contract_off, dst, MSG_CONTRACT_OFF, ADDR_BYTES / WORD, span)?;
+    copy_words_to_region(
+        ctx,
+        contract_off,
+        dst,
+        MSG_CONTRACT_OFF,
+        ADDR_BYTES / WORD,
+        span,
+    )?;
     {
         let r = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
@@ -2859,10 +3067,7 @@ fn emit_signed_binding(
             a: nonce,
             b: one,
         });
-        ctx.b.op(Instr::SStore {
-            a: slot,
-            b: nonce,
-        });
+        ctx.b.op(Instr::SStore { a: slot, b: nonce });
         ctx.regs.free(one);
     }
 
@@ -3075,7 +3280,10 @@ fn lower_emit(ctx: &mut Ctx, name: &str, args: &[Expr], span: Span) -> Result<()
         imm: EVENT_BASE,
     });
     let len_reg = ctx.regs.alloc(span)?;
-    ctx.b.op(Instr::Ldi { d: len_reg, imm: len });
+    ctx.b.op(Instr::Ldi {
+        d: len_reg,
+        imm: len,
+    });
     let sel_reg = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi {
         d: sel_reg,
@@ -3203,17 +3411,27 @@ fn push_addr_key(expr: &Expr, params: &HashSet<String>, out: &mut Vec<String>) {
     }
 }
 
-fn address_keys_stmt(stmt: &Stmt, layout: &Layout, params: &HashSet<String>, out: &mut Vec<String>) {
+fn address_keys_stmt(
+    stmt: &Stmt,
+    layout: &Layout,
+    params: &HashSet<String>,
+    out: &mut Vec<String>,
+) {
     match stmt {
-        Stmt::Guard { expr, .. } | Stmt::Let { value: expr, .. } | Stmt::Assign { value: expr, .. } => {
-            address_keys_expr(expr, layout, params, out)
-        }
+        Stmt::Guard { expr, .. }
+        | Stmt::Let { value: expr, .. }
+        | Stmt::Assign { value: expr, .. } => address_keys_expr(expr, layout, params, out),
         Stmt::Expr { expr, .. } => address_keys_expr(expr, layout, params, out),
         Stmt::Emit { .. } => {}
     }
 }
 
-fn address_keys_expr(expr: &Expr, layout: &Layout, params: &HashSet<String>, out: &mut Vec<String>) {
+fn address_keys_expr(
+    expr: &Expr,
+    layout: &Layout,
+    params: &HashSet<String>,
+    out: &mut Vec<String>,
+) {
     if let Expr::Call { callee, args, .. } = expr {
         if let Expr::Field { base, name, .. } = callee.as_ref() {
             if matches!(
@@ -3305,7 +3523,9 @@ fn collect_address_valued_fields(
             Stmt::Guard { expr, .. } | Stmt::Expr { expr, .. } => {
                 addr_valued_expr(layout, params, &addr_params, expr, &mut out)
             }
-            Stmt::Let { value, .. } => addr_valued_expr(layout, params, &addr_params, value, &mut out),
+            Stmt::Let { value, .. } => {
+                addr_valued_expr(layout, params, &addr_params, value, &mut out)
+            }
         }
     }
     out
@@ -3319,7 +3539,9 @@ fn addr_valued_expr(
     out: &mut Vec<String>,
 ) {
     match expr {
-        Expr::Binary { op, left, right, .. } => {
+        Expr::Binary {
+            op, left, right, ..
+        } => {
             if matches!(op, BinOp::Eq | BinOp::Ne) {
                 if is_addr_map_get(layout, left) {
                     push_addr_key(right, params, out);
@@ -3731,7 +3953,8 @@ fn lower_map_read(
     let mbase = map_base_of(ctx, base, span)?;
     if map_name_is_value_wide(ctx, base) {
         return Err(CodegenError::Unsupported {
-            what: "reading a u128 map value as a single word, which would drop its high word".into(),
+            what: "reading a u128 map value as a single word, which would drop its high word"
+                .into(),
             span,
         });
     }
@@ -3774,7 +3997,12 @@ fn map_name_is_value_addr(ctx: &Ctx, base: &Expr) -> bool {
     matches!(base, Expr::Ident(id) if ctx.layout.map_value_is_addr(&id.text))
 }
 
-fn lower_map_set(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Result<(), CodegenError> {
+fn lower_map_set(
+    ctx: &mut Ctx,
+    base: &Expr,
+    args: &[Expr],
+    span: Span,
+) -> Result<(), CodegenError> {
     let mbase = map_base_of(ctx, base, span)?;
     let (key_expr, value_expr) = two_args(args, span)?;
     let key_off = map_key_region(ctx, base, key_expr, span)?;
@@ -3920,7 +4148,12 @@ fn scalar_addr_loc(ctx: &mut Ctx, expr: &Expr, span: Span) -> Result<AddrLoc, Co
     Ok(AddrLoc::Mem(lower_address(ctx, expr, span)?))
 }
 
-fn load_addr_word(ctx: &mut Ctx, loc: &AddrLoc, word: u64, span: Span) -> Result<Reg, CodegenError> {
+fn load_addr_word(
+    ctx: &mut Ctx,
+    loc: &AddrLoc,
+    word: u64,
+    span: Span,
+) -> Result<Reg, CodegenError> {
     match loc {
         AddrLoc::State(slot) => load_slot(ctx, slot + word, span),
         AddrLoc::Mem(off) => {
@@ -3949,7 +4182,11 @@ fn lower_scalar_addr_eq(
     for i in 0..ADDR_WORDS {
         let lw = load_addr_word(ctx, &lhs, i, span)?;
         let rw = load_addr_word(ctx, &rhs, i, span)?;
-        ctx.b.op(Instr::Eq { d: lw, a: lw, b: rw });
+        ctx.b.op(Instr::Eq {
+            d: lw,
+            a: lw,
+            b: rw,
+        });
         ctx.b.op(Instr::And {
             d: acc,
             a: acc,
@@ -4018,10 +4255,13 @@ fn lower_assign(
             })
         }
     };
-    let slot = ctx.layout.slot(name).ok_or_else(|| CodegenError::Unsupported {
-        what: "an assignment target that is not a state field".into(),
-        span,
-    })?;
+    let slot = ctx
+        .layout
+        .slot(name)
+        .ok_or_else(|| CodegenError::Unsupported {
+            what: "an assignment target that is not a state field".into(),
+            span,
+        })?;
 
     if let Some((base, count)) = ctx.layout.guardian_set(name) {
         if op != AssignOp::Set {
@@ -4080,7 +4320,10 @@ fn lower_assign(
     }
 
     if ctx.layout.is_wide(name) {
-        let hi_slot = ctx.layout.hi_slot(name).expect("a wide field has a high slot");
+        let hi_slot = ctx
+            .layout
+            .hi_slot(name)
+            .expect("a wide field has a high slot");
         match op {
             AssignOp::Set => {
                 let (vlo, vhi) = eval_wide(ctx, value, false)?;

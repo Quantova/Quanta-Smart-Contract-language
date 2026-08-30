@@ -30,7 +30,12 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
 fn put_word(mem: &mut [u8], off: usize, v: u64) {
@@ -77,7 +82,10 @@ fn region(
 
 fn guardians() -> (Vec<(ml_dsa::PublicKey, ml_dsa::SecretKey)>, Vec<[u8; 32]>) {
     let keys: Vec<_> = (0u8..7).map(|s| ml_dsa::keygen(&[s + 1; 32])).collect();
-    let addrs = keys.iter().map(|(pk, _)| signer_address(SCHEME_ML, pk)).collect();
+    let addrs = keys
+        .iter()
+        .map(|(pk, _)| signer_address(SCHEME_ML, pk))
+        .collect();
     (keys, addrs)
 }
 
@@ -103,7 +111,11 @@ fn withdraw_mem(
     let sel = entry(cc, "withdraw").selector;
     let mut mem = vec![0u8; 262_144];
     mem[32..64].copy_from_slice(&CONTRACT);
-    put_word(&mut mem, arg_off(cc, "withdraw", "order.amount"), plain_amount);
+    put_word(
+        &mut mem,
+        arg_off(cc, "withdraw", "order.amount"),
+        plain_amount,
+    );
     mem[arg_off(cc, "withdraw", "order.to")..arg_off(cc, "withdraw", "order.to") + 32]
         .copy_from_slice(plain_to);
     let mut cursor = 8_192usize;
@@ -113,9 +125,21 @@ fn withdraw_mem(
         let off = cursor;
         cursor += r.len();
         mem[off..off + r.len()].copy_from_slice(&r);
-        put_word(&mut mem, arg_off(cc, "withdraw", &format!("approvals#{slot}#scheme")), SCHEME_ML as u64);
-        put_word(&mut mem, arg_off(cc, "withdraw", &format!("approvals#{slot}#ptr")), off as u64);
-        put_word(&mut mem, arg_off(cc, "withdraw", &format!("approvals#{slot}#index")), *gindex);
+        put_word(
+            &mut mem,
+            arg_off(cc, "withdraw", &format!("approvals#{slot}#scheme")),
+            SCHEME_ML as u64,
+        );
+        put_word(
+            &mut mem,
+            arg_off(cc, "withdraw", &format!("approvals#{slot}#ptr")),
+            off as u64,
+        );
+        put_word(
+            &mut mem,
+            arg_off(cc, "withdraw", &format!("approvals#{slot}#index")),
+            *gindex,
+        );
     }
     mem
 }
@@ -144,16 +168,29 @@ fn a_met_quorum_sweeps_the_exact_amount_to_the_signed_recipient() {
     let (keys, addrs) = guardians();
     let to = [0x77u8; 32];
     let mem = withdraw_mem(&cc, &keys, &five(&keys), 400, &to, 400, &to);
-    let (storage, effects) = run(&cc, base_storage(&addrs, 1000), &mem).expect("a five of seven quorum sweeps");
+    let (storage, effects) =
+        run(&cc, base_storage(&addrs, 1000), &mem).expect("a five of seven quorum sweeps");
 
-    assert_eq!(storage.get(&slot_key(VAULT_SLOT)).copied().unwrap_or(0), 600, "the vault falls by the swept amount");
+    assert_eq!(
+        storage.get(&slot_key(VAULT_SLOT)).copied().unwrap_or(0),
+        600,
+        "the vault falls by the swept amount"
+    );
     let transfer = effects.iter().find_map(|e| match e {
         Effect::Transfer { to, amount } => Some((to.clone(), *amount)),
         _ => None,
     });
-    assert_eq!(transfer, Some((to.to_vec(), 400)), "the sweep sends the exact amount to the signed recipient");
+    assert_eq!(
+        transfer,
+        Some((to.to_vec(), 400)),
+        "the sweep sends the exact amount to the signed recipient"
+    );
     for i in 0..5usize {
-        assert_eq!(storage.get(&nonce_key(&addrs[i])).copied().unwrap_or(0), 1, "each signer nonce is consumed");
+        assert_eq!(
+            storage.get(&nonce_key(&addrs[i])).copied().unwrap_or(0),
+            1,
+            "each signer nonce is consumed"
+        );
     }
 }
 
@@ -166,7 +203,10 @@ fn redirecting_the_recipient_past_its_leading_word_reverts() {
     redirected[8] ^= 0xFF;
     let mem = withdraw_mem(&cc, &keys, &five(&keys), 400, &to, 400, &redirected);
     let refused = run(&cc, base_storage(&addrs, 1000), &mem);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a redirected sweep recipient is refused");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a redirected sweep recipient is refused"
+    );
 }
 
 #[test]
@@ -176,7 +216,10 @@ fn inflating_the_amount_past_the_signed_value_reverts() {
     let to = [0x77u8; 32];
     let mem = withdraw_mem(&cc, &keys, &five(&keys), 400, &to, 900, &to);
     let refused = run(&cc, base_storage(&addrs, 1000), &mem);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a sweep amount the guardians did not sign is refused");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a sweep amount the guardians did not sign is refused"
+    );
 }
 
 #[test]
@@ -187,7 +230,10 @@ fn four_guardians_do_not_meet_the_five_of_seven_threshold() {
     let members: Vec<(u64, usize, u64)> = (0..4).map(|i| (i as u64, i, 0u64)).collect();
     let mem = withdraw_mem(&cc, &keys, &members, 400, &to, 400, &to);
     let refused = run(&cc, base_storage(&addrs, 1000), &mem);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "fewer than five approvals cannot sweep");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "fewer than five approvals cannot sweep"
+    );
 }
 
 #[test]
@@ -199,11 +245,19 @@ fn a_non_guardian_in_the_fifth_slot_is_refused() {
     let mut keys2 = keys;
     keys2.push((spk, ssk));
     let stranger_idx = keys2.len() - 1;
-    let members: Vec<(u64, usize, u64)> =
-        vec![(0, 0, 0), (1, 1, 0), (2, 2, 0), (3, 3, 0), (4, stranger_idx, 0)];
+    let members: Vec<(u64, usize, u64)> = vec![
+        (0, 0, 0),
+        (1, 1, 0),
+        (2, 2, 0),
+        (3, 3, 0),
+        (4, stranger_idx, 0),
+    ];
     let mem = withdraw_mem(&cc, &keys2, &members, 400, &to, 400, &to);
     let refused = run(&cc, base_storage(&addrs, 1000), &mem);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a non guardian cannot fill a quorum slot");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a non guardian cannot fill a quorum slot"
+    );
 }
 
 #[test]
@@ -215,7 +269,10 @@ fn a_guardian_counted_twice_is_refused() {
         vec![(0, 0, 0), (1, 1, 0), (2, 2, 0), (3, 3, 0), (3, 3, 1)];
     let mem = withdraw_mem(&cc, &keys, &members, 400, &to, 400, &to);
     let refused = run(&cc, base_storage(&addrs, 1000), &mem);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a repeated guardian index is refused");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a repeated guardian index is refused"
+    );
 }
 
 #[test]
@@ -225,7 +282,10 @@ fn a_sweep_larger_than_the_vault_reverts() {
     let to = [0x77u8; 32];
     let mem = withdraw_mem(&cc, &keys, &five(&keys), 400, &to, 400, &to);
     let refused = run(&cc, base_storage(&addrs, 100), &mem);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a sweep cannot exceed the vault balance");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a sweep cannot exceed the vault balance"
+    );
 }
 
 #[test]
@@ -236,5 +296,8 @@ fn a_replayed_quorum_is_refused_after_the_nonces_advance() {
     let mem = withdraw_mem(&cc, &keys, &five(&keys), 400, &to, 400, &to);
     let (after, _) = run(&cc, base_storage(&addrs, 1000), &mem).expect("first sweep halts");
     let refused = run(&cc, after, &mem);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a captured quorum cannot be replayed after nonces advance");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a captured quorum cannot be replayed after nonces advance"
+    );
 }

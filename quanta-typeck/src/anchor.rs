@@ -219,10 +219,26 @@ fn read_eq(a: &Expr, b: &Expr) -> bool {
         (Expr::Caller { .. }, Expr::Caller { .. }) => true,
         (Expr::Now { .. }, Expr::Now { .. }) => true,
         (Expr::Int(x), Expr::Int(y)) => x.text == y.text,
-        (Expr::Field { base: ba, name: na, .. }, Expr::Field { base: bb, name: nb, .. }) => {
-            na.text == nb.text && read_eq(ba, bb)
-        }
-        (Expr::Call { callee: ca, args: aa, .. }, Expr::Call { callee: cb, args: ab, .. }) => {
+        (
+            Expr::Field {
+                base: ba, name: na, ..
+            },
+            Expr::Field {
+                base: bb, name: nb, ..
+            },
+        ) => na.text == nb.text && read_eq(ba, bb),
+        (
+            Expr::Call {
+                callee: ca,
+                args: aa,
+                ..
+            },
+            Expr::Call {
+                callee: cb,
+                args: ab,
+                ..
+            },
+        ) => {
             read_eq(ca, cb) && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| read_eq(x, y))
         }
         _ => false,
@@ -346,7 +362,9 @@ fn anchor_rejection(display: String, is_quorum: bool, span: Span) -> TypeError {
     let source = if is_quorum {
         format!("a time gate anchored on `{display}`, a quorum field that no guardian signs")
     } else {
-        format!("a time gate anchored on `{display}`, a caller supplied value that no signature covers")
+        format!(
+            "a time gate anchored on `{display}`, a caller supplied value that no signature covers"
+        )
     };
     TypeError::new(
         format!("{source}; anchor the delay on state that an authorized entry records with `now`"),

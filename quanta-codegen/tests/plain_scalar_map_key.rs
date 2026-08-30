@@ -27,7 +27,11 @@ fn ent<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
     cc.entries.iter().find(|e| e.name == name).expect("entry")
 }
 
-fn run(cc: &CompiledContract, name: &str, kv: &[(&str, u64)]) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
+fn run(
+    cc: &CompiledContract,
+    name: &str,
+    kv: &[(&str, u64)],
+) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
     let e = ent(cc, name);
     let mut mem = vec![0u8; 8192];
     for s in &e.args {
@@ -55,7 +59,10 @@ fn the_ledger_key_does_not_depend_on_the_credited_amount() {
     let b = run(&cc, "act", &[("order.k", 42), ("order.v", 200)]).expect("run b");
     let ka = slot_of(&a, 100).expect("balance a stored");
     let kb = slot_of(&b, 200).expect("balance b stored");
-    assert_eq!(ka, kb, "the same key must credit the same slot regardless of the amount");
+    assert_eq!(
+        ka, kb,
+        "the same key must credit the same slot regardless of the amount"
+    );
 }
 
 #[test]

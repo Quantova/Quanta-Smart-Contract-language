@@ -21,10 +21,20 @@ fn compile(src: &str) -> CompiledContract {
 }
 
 fn arg_off(cc: &CompiledContract, entry: usize, key: &str) -> Option<usize> {
-    cc.entries[entry].args.iter().find(|s| s.key == key).map(|s| s.offset as usize)
+    cc.entries[entry]
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .map(|s| s.offset as usize)
 }
 
-fn signed_swap_memory(cc: &CompiledContract, entry: usize, selector: [u8; 4], to: &[u8; 32], out: u64) -> (Vec<u8>, [u8; 32]) {
+fn signed_swap_memory(
+    cc: &CompiledContract,
+    entry: usize,
+    selector: [u8; 4],
+    to: &[u8; 32],
+    out: u64,
+) -> (Vec<u8>, [u8; 32]) {
     let region_off = 8192usize;
     let (pk, sk) = ml_dsa::keygen(&[9u8; 32]);
     let operator = signer_address(1, &pk);
@@ -66,7 +76,11 @@ fn signed_swap_memory(cc: &CompiledContract, entry: usize, selector: [u8; 4], to
 #[test]
 fn swap_a_for_b_verifies_the_operator_order_and_pays_out_token_b() {
     let cc = compile(DEX_SRC);
-    let entry = cc.entries.iter().position(|e| e.name == "swap_a_for_b").expect("swap_a_for_b entry");
+    let entry = cc
+        .entries
+        .iter()
+        .position(|e| e.name == "swap_a_for_b")
+        .expect("swap_a_for_b entry");
     let selector = cc.container.entries[entry].selector;
 
     let to = [0x11u8; 32];
@@ -90,10 +104,18 @@ fn swap_a_for_b_verifies_the_operator_order_and_pays_out_token_b() {
         .iter()
         .filter(|e| matches!(e, Effect::Transfer { .. }))
         .collect();
-    assert_eq!(transfers.len(), 1, "the swap pays out exactly one asset transfer");
+    assert_eq!(
+        transfers.len(),
+        1,
+        "the swap pays out exactly one asset transfer"
+    );
     match transfers[0] {
         Effect::Transfer { to: target, amount } => {
-            assert_eq!(target.len(), 64, "an asset transfer names the issuer then the holder");
+            assert_eq!(
+                target.len(),
+                64,
+                "an asset transfer names the issuer then the holder"
+            );
             assert_eq!(&target[0..32], &token_b, "the payout asset is token_b");
             assert_eq!(&target[32..64], &to, "the payout goes to order.to");
             assert_eq!(*amount as u64, out, "the amount is order.out");
@@ -105,7 +127,11 @@ fn swap_a_for_b_verifies_the_operator_order_and_pays_out_token_b() {
 #[test]
 fn a_swap_order_not_signed_by_the_operator_reverts() {
     let cc = compile(DEX_SRC);
-    let entry = cc.entries.iter().position(|e| e.name == "swap_a_for_b").expect("swap_a_for_b entry");
+    let entry = cc
+        .entries
+        .iter()
+        .position(|e| e.name == "swap_a_for_b")
+        .expect("swap_a_for_b entry");
     let selector = cc.container.entries[entry].selector;
 
     let to = [0x11u8; 32];
@@ -121,5 +147,8 @@ fn a_swap_order_not_signed_by_the_operator_reverts() {
         .with_storage(storage)
         .with_memory(&mem)
         .run();
-    assert!(result.is_err(), "an order whose signer is not the pool operator must revert");
+    assert!(
+        result.is_err(),
+        "an order whose signer is not the pool operator must revert"
+    );
 }

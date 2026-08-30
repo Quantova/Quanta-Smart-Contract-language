@@ -19,7 +19,10 @@ fn compile(src: &str) -> CompiledContract {
 }
 
 fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
-    cc.entries.iter().find(|e| e.name == name).expect("the entry")
+    cc.entries
+        .iter()
+        .find(|e| e.name == name)
+        .expect("the entry")
 }
 
 fn put_arg(mem: &mut [u8], e: &EntryArtifact, key: &str, value: u64) {
@@ -41,17 +44,14 @@ fn run(
         .map(|out| out.storage)
 }
 
-const ADD: &str =
-    "contract W { state { total: u128; cap: u128; } genesis { total = 0; cap = 0; } \
+const ADD: &str = "contract W { state { total: u128; cap: u128; } genesis { total = 0; cap = 0; } \
      entry add(amount: u64) writes(total) reads(cap) limits total + amount <= cap \
      { guard total <= cap; total += amount; } }";
 
-const SUB: &str =
-    "contract W { state { total: u128; } genesis { total = 0; } \
+const SUB: &str = "contract W { state { total: u128; } genesis { total = 0; } \
      entry take(amount: u64) writes(total) { total -= amount; } }";
 
-const LIT: &str =
-    "contract W { state { total: u128; } genesis { total = 0; } \
+const LIT: &str = "contract W { state { total: u128; } genesis { total = 0; } \
      entry set() writes(total) { total = 20_000_000_000_000_000_000; } }";
 
 #[test]
@@ -74,8 +74,16 @@ fn a_low_word_add_carries_into_the_high_word() {
     storage.insert(slot_key(0), u64::MAX);
     storage.insert(slot_key(1 | HI), 100);
     let out = run(&cc, add, storage, &mem).expect("the add halts");
-    assert_eq!(out.get(&slot_key(0)), Some(&4), "the low word wraps to four");
-    assert_eq!(out.get(&slot_key(HI)), Some(&1), "the carry lands in the high word");
+    assert_eq!(
+        out.get(&slot_key(0)),
+        Some(&4),
+        "the low word wraps to four"
+    );
+    assert_eq!(
+        out.get(&slot_key(HI)),
+        Some(&1),
+        "the carry lands in the high word"
+    );
 }
 
 #[test]
@@ -88,8 +96,16 @@ fn a_low_word_sub_borrows_from_the_high_word() {
     storage.insert(slot_key(0), 0);
     storage.insert(slot_key(HI), 1);
     let out = run(&cc, take, storage, &mem).expect("the subtract halts");
-    assert_eq!(out.get(&slot_key(0)), Some(&(u64::MAX - 4)), "the low word borrows down");
-    assert_eq!(out.get(&slot_key(HI)).copied().unwrap_or(0), 0, "the high word is spent");
+    assert_eq!(
+        out.get(&slot_key(0)),
+        Some(&(u64::MAX - 4)),
+        "the low word borrows down"
+    );
+    assert_eq!(
+        out.get(&slot_key(HI)).copied().unwrap_or(0),
+        0,
+        "the high word is spent"
+    );
 }
 
 #[test]
@@ -109,8 +125,7 @@ fn a_checked_overflow_reverts() {
     );
 }
 
-const MUL: &str =
-    "contract W { state { total: u128; } genesis { total = 0; } \
+const MUL: &str = "contract W { state { total: u128; } genesis { total = 0; } \
      entry wscale(factor: u64) writes(total) { total = wrapping(total * factor); } \
      entry cscale(factor: u64) writes(total) { total = checked(total * factor); } }";
 
@@ -123,7 +138,11 @@ fn a_wrapping_multiply_stays_in_the_low_word() {
     let mut storage = BTreeMap::new();
     storage.insert(slot_key(0), 7);
     let out = run(&cc, e, storage, &mem).expect("the multiply halts");
-    assert_eq!(out.get(&slot_key(0)), Some(&42), "seven times six is forty two");
+    assert_eq!(
+        out.get(&slot_key(0)),
+        Some(&42),
+        "seven times six is forty two"
+    );
     assert_eq!(
         out.get(&slot_key(HI)).copied().unwrap_or(0),
         0,
@@ -145,7 +164,11 @@ fn a_wrapping_multiply_carries_into_the_high_word() {
         0,
         "the low word product is zero"
     );
-    assert_eq!(out.get(&slot_key(HI)), Some(&2), "the product lands two in the high word");
+    assert_eq!(
+        out.get(&slot_key(HI)),
+        Some(&2),
+        "the product lands two in the high word"
+    );
 }
 
 #[test]
@@ -157,7 +180,11 @@ fn a_checked_multiply_without_overflow_passes() {
     let mut storage = BTreeMap::new();
     storage.insert(slot_key(0), 3);
     let out = run(&cc, e, storage, &mem).expect("the checked multiply halts");
-    assert_eq!(out.get(&slot_key(0)), Some(&15), "three times five is fifteen");
+    assert_eq!(
+        out.get(&slot_key(0)),
+        Some(&15),
+        "three times five is fifteen"
+    );
     assert_eq!(
         out.get(&slot_key(HI)).copied().unwrap_or(0),
         0,

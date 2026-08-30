@@ -39,7 +39,12 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
     mem[off..off + 8].copy_from_slice(&value.to_be_bytes());
 }
 
-fn message(cc: &CompiledContract, member: &[u8; 32], nonce: u64, new_board: &[[u8; 32]; 3]) -> Vec<u8> {
+fn message(
+    cc: &CompiledContract,
+    member: &[u8; 32],
+    nonce: u64,
+    new_board: &[[u8; 32]; 3],
+) -> Vec<u8> {
     let selector = cc.container.entries[0].selector;
     let mut msg = Vec::new();
     msg.extend_from_slice(b"QTVSGN01");
@@ -70,7 +75,11 @@ fn ml_region(
     region
 }
 
-fn scratch(cc: &CompiledContract, members: &[(Vec<u8>, u64)], submitted: &[[u8; 32]; 3]) -> Vec<u8> {
+fn scratch(
+    cc: &CompiledContract,
+    members: &[(Vec<u8>, u64)],
+    submitted: &[[u8; 32]; 3],
+) -> Vec<u8> {
     let mut mem = vec![0u8; 65536];
     mem[32..64].copy_from_slice(&CONTRACT);
     let set_off = arg_offset(cc, "new_board");
@@ -82,9 +91,21 @@ fn scratch(cc: &CompiledContract, members: &[(Vec<u8>, u64)], submitted: &[[u8; 
         let off = cursor;
         cursor += region.len();
         mem[off..off + region.len()].copy_from_slice(region);
-        put_word(&mut mem, arg_offset(cc, &format!("approvals#{i}#scheme")), SCHEME_ML as u64);
-        put_word(&mut mem, arg_offset(cc, &format!("approvals#{i}#ptr")), off as u64);
-        put_word(&mut mem, arg_offset(cc, &format!("approvals#{i}#index")), *index);
+        put_word(
+            &mut mem,
+            arg_offset(cc, &format!("approvals#{i}#scheme")),
+            SCHEME_ML as u64,
+        );
+        put_word(
+            &mut mem,
+            arg_offset(cc, &format!("approvals#{i}#ptr")),
+            off as u64,
+        );
+        put_word(
+            &mut mem,
+            arg_offset(cc, &format!("approvals#{i}#index")),
+            *index,
+        );
     }
     mem
 }
@@ -101,7 +122,10 @@ fn read_board(storage: &BTreeMap<[u8; 32], u64>) -> [[u8; 32]; 3] {
     let mut out = [[0u8; 32]; 3];
     for (g, addr) in out.iter_mut().enumerate() {
         for w in 0..4 {
-            let word = storage.get(&slot_key((g * 4 + w) as u64)).copied().unwrap_or(0);
+            let word = storage
+                .get(&slot_key((g * 4 + w) as u64))
+                .copied()
+                .unwrap_or(0);
             addr[w * 8..w * 8 + 8].copy_from_slice(&word.to_be_bytes());
         }
     }
@@ -121,7 +145,10 @@ fn run(
 }
 
 fn ml_guardians() -> (Vec<(ml_dsa::PublicKey, ml_dsa::SecretKey)>, [[u8; 32]; 3]) {
-    let keys: Vec<_> = [1u8, 2, 3].iter().map(|s| ml_dsa::keygen(&[*s; 32])).collect();
+    let keys: Vec<_> = [1u8, 2, 3]
+        .iter()
+        .map(|s| ml_dsa::keygen(&[*s; 32]))
+        .collect();
     let addrs = [
         signer_address(SCHEME_ML, &keys[0].0),
         signer_address(SCHEME_ML, &keys[1].0),
@@ -145,7 +172,11 @@ fn a_quorum_that_signs_the_new_set_rotates_the_board() {
     let mem = scratch(&cc, &[(m0, 0), (m1, 1)], &new_board);
 
     let out = run(&cc, board_storage(&addrs), &mem).expect("a quorum over the new set rotates");
-    assert_eq!(read_board(&out), new_board, "the board is now the approved new set");
+    assert_eq!(
+        read_board(&out),
+        new_board,
+        "the board is now the approved new set"
+    );
 }
 
 #[test]
@@ -186,6 +217,10 @@ fn rewriting_any_single_new_set_word_breaks_the_quorum() {
             Err(Fault::DivByZero),
             "rewriting new set word {word} must revert"
         );
-        assert_eq!(read_board(&storage), addrs, "the board is unchanged for word {word}");
+        assert_eq!(
+            read_board(&storage),
+            addrs,
+            "the board is unchanged for word {word}"
+        );
     }
 }

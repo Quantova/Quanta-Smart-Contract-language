@@ -19,7 +19,10 @@ fn compile(src: &str) -> CompiledContract {
 }
 
 fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
-    cc.entries.iter().find(|e| e.name == name).expect("the entry")
+    cc.entries
+        .iter()
+        .find(|e| e.name == name)
+        .expect("the entry")
 }
 
 fn put_arg(mem: &mut [u8], e: &EntryArtifact, key: &str, value: u64) {
@@ -71,7 +74,11 @@ fn a_checked_negation_of_zero_is_zero() {
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, e, "amount", 0);
     let out = run(&cc, e, BTreeMap::new(), &mem).expect("negating zero halts");
-    assert_eq!(out.get(&slot_key(0)).copied().unwrap_or(0), 0, "negating zero is zero");
+    assert_eq!(
+        out.get(&slot_key(0)).copied().unwrap_or(0),
+        0,
+        "negating zero is zero"
+    );
 }
 
 #[test]

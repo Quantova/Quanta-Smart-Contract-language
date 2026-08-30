@@ -115,9 +115,18 @@ fn a_correct_order_over_the_whole_field_set_verifies_and_runs() {
     let owner = signer_address(SCHEME_ML, &pk);
 
     let mem = act_memory(&cc, &pk, &sk, [100, 4, 3], [100, 4, 3], 10_000, 0);
-    let out = run(&cc, owned_storage(&owner, 10), &mem).expect("the owner's full order is accepted");
-    assert_eq!(out.get(&slot_key(COUNT_SLOT)), Some(&17), "count advances by step then extra");
-    assert_eq!(out.get(&nonce_key(&owner)), Some(&1), "the nonce is consumed");
+    let out =
+        run(&cc, owned_storage(&owner, 10), &mem).expect("the owner's full order is accepted");
+    assert_eq!(
+        out.get(&slot_key(COUNT_SLOT)),
+        Some(&17),
+        "count advances by step then extra"
+    );
+    assert_eq!(
+        out.get(&nonce_key(&owner)),
+        Some(&1),
+        "the nonce is consumed"
+    );
 }
 
 #[test]
@@ -133,7 +142,11 @@ fn rewriting_the_unsigned_time_gate_target_is_now_refused() {
         Err(Fault::DivByZero),
         "a rewritten time gate target no longer carries the signature"
     );
-    assert_eq!(storage.get(&slot_key(COUNT_SLOT)), Some(&10), "state is unchanged");
+    assert_eq!(
+        storage.get(&slot_key(COUNT_SLOT)),
+        Some(&10),
+        "state is unchanged"
+    );
 }
 
 #[test]
@@ -143,11 +156,7 @@ fn each_authorizer_field_is_bound_so_any_single_mutation_reverts() {
     let owner = signer_address(SCHEME_ML, &pk);
 
     let signed = [100u64, 4, 3];
-    let mutations = [
-        [0u64, 4, 3],
-        [100, 9, 3],
-        [100, 4, 9],
-    ];
+    let mutations = [[0u64, 4, 3], [100, 9, 3], [100, 4, 9]];
     for plain in mutations {
         let storage = owned_storage(&owner, 10);
         let mem = act_memory(&cc, &pk, &sk, signed, plain, 10_000, 0);
@@ -156,7 +165,11 @@ fn each_authorizer_field_is_bound_so_any_single_mutation_reverts() {
             Err(Fault::DivByZero),
             "mutating a single authorizer field {plain:?} must revert"
         );
-        assert_eq!(storage.get(&slot_key(COUNT_SLOT)), Some(&10), "state is unchanged");
+        assert_eq!(
+            storage.get(&slot_key(COUNT_SLOT)),
+            Some(&10),
+            "state is unchanged"
+        );
     }
 }
 

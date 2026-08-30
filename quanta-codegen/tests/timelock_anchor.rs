@@ -44,7 +44,10 @@ fn any_other_quorum_pseudo_field_anchor_is_rejected() {
         after 24 hours from approvals.digest { flag = 1; }\n\
     }\n";
     let what = rejection(src);
-    assert!(what.contains("approvals.digest"), "the digest pseudo field is rejected too: {what}");
+    assert!(
+        what.contains("approvals.digest"),
+        "the digest pseudo field is rejected too: {what}"
+    );
 }
 
 #[test]
@@ -68,7 +71,10 @@ fn a_bare_unsigned_param_anchor_is_rejected() {
       entry act(deadline: u64) writes(flag) after deadline { flag = 1; }\n\
     }\n";
     let what = rejection(src);
-    assert!(what.contains("deadline"), "a bare caller supplied parameter cannot anchor a delay: {what}");
+    assert!(
+        what.contains("deadline"),
+        "a bare caller supplied parameter cannot anchor a delay: {what}"
+    );
 }
 
 #[test]
@@ -79,7 +85,10 @@ fn an_anchor_that_mixes_a_signed_field_with_a_pseudo_field_is_rejected() {
         after 24 hours from order.start + approvals.first { flag = 1; }\n\
     }\n";
     let what = rejection(src);
-    assert!(what.contains("approvals.first"), "the unauthenticated operand still rejects the whole anchor: {what}");
+    assert!(
+        what.contains("approvals.first"),
+        "the unauthenticated operand still rejects the whole anchor: {what}"
+    );
 }
 
 #[test]
@@ -90,7 +99,10 @@ fn a_quorum_pseudo_field_in_a_denies_gate_is_rejected() {
         denies approvals.first == 0 { flag = 1; }\n\
     }\n";
     let what = rejection(src);
-    assert!(what.contains("approvals.first"), "a quorum field cannot gate a denies clause: {what}");
+    assert!(
+        what.contains("approvals.first"),
+        "a quorum field cannot gate a denies clause: {what}"
+    );
 }
 
 #[test]
@@ -101,7 +113,10 @@ fn a_quorum_pseudo_field_in_a_limits_gate_is_rejected() {
         limits approvals.first == 0 { flag = 1; }\n\
     }\n";
     let what = rejection(src);
-    assert!(what.contains("approvals.first"), "a quorum field cannot gate a limits clause: {what}");
+    assert!(
+        what.contains("approvals.first"),
+        "a quorum field cannot gate a limits clause: {what}"
+    );
 }
 
 #[test]
@@ -112,7 +127,10 @@ fn a_quorum_pseudo_field_in_a_guard_is_rejected() {
         { guard approvals.first == 0; flag = 1; }\n\
     }\n";
     let what = rejection(src);
-    assert!(what.contains("approvals.first"), "a quorum field cannot gate a guard: {what}");
+    assert!(
+        what.contains("approvals.first"),
+        "a quorum field cannot gate a guard: {what}"
+    );
 }
 
 #[test]
@@ -171,7 +189,10 @@ fn a_state_anchor_advanced_by_a_caller_param_is_rejected() {
         after 24 hours from anchor denies anchor == 0 { opened = 1; }\n\
     }\n";
     let what = rejection(src);
-    assert!(what.contains("`anchor`"), "an anchor moved by a caller value is rejected: {what}");
+    assert!(
+        what.contains("`anchor`"),
+        "an anchor moved by a caller value is rejected: {what}"
+    );
 }
 
 #[test]
@@ -183,7 +204,10 @@ fn a_state_anchor_seeded_from_a_deploy_param_is_rejected() {
         after 24 hours from anchor denies anchor == 0 { opened = 1; }\n\
     }\n";
     let what = rejection(src);
-    assert!(what.contains("`anchor`"), "a genesis seeded anchor from a deploy value is rejected: {what}");
+    assert!(
+        what.contains("`anchor`"),
+        "a genesis seeded anchor from a deploy value is rejected: {what}"
+    );
 }
 
 #[test]
@@ -194,7 +218,8 @@ fn a_recorded_now_anchor_that_a_reset_clears_still_compiles() {
       entry open(approvals: Quorum<2 of 3, board>) writes(opened, armed)\n\
         after 24 hours from armed denies armed == 0 { opened = 1; armed = 0; }\n\
     }\n";
-    try_compile(src).expect("recording the anchor with now and clearing it with a constant compiles");
+    try_compile(src)
+        .expect("recording the anchor with now and clearing it with a constant compiles");
 }
 
 #[test]
@@ -249,7 +274,10 @@ fn a_map_anchor_seeded_from_a_deploy_param_is_rejected() {
         after 24 hours from anchor.get(caller) denies anchor.get(caller) == 0 { opened = 1; }\n\
     }\n";
     let what = rejection(src);
-    assert!(what.contains("`anchor`"), "a genesis seeded keyed anchor from a deploy value is rejected: {what}");
+    assert!(
+        what.contains("`anchor`"),
+        "a genesis seeded keyed anchor from a deploy value is rejected: {what}"
+    );
 }
 
 #[test]

@@ -29,7 +29,12 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
 fn run(
@@ -52,7 +57,10 @@ fn word(mem: &mut [u8], off: usize, value: u64) {
 fn now_lowers_to_the_injected_time_word() {
     let cc = compiled();
     let time_off = arg_off(&cc, "stamp", "@time");
-    assert_eq!(time_off, 64, "the context reserves caller, then contract, then time");
+    assert_eq!(
+        time_off, 64,
+        "the context reserves caller, then contract, then time"
+    );
 
     let mut mem = vec![0u8; 4096];
     let t: u64 = 1_726_000_000;

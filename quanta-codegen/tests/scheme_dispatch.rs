@@ -140,7 +140,11 @@ fn scheme_one_verifies_and_binds_with_the_module_lattice_opcode() {
 fn scheme_two_verifies_and_binds_with_the_hash_based_opcode() {
     let cc = compile(COUNTER);
     let (mem, owner) = slh_bump(&cc, 4);
-    assert_eq!(run(&cc, Some(owner), &mem), Ok(14), "SLH DSA owner verifies");
+    assert_eq!(
+        run(&cc, Some(owner), &mem),
+        Ok(14),
+        "SLH DSA owner verifies"
+    );
 }
 
 #[test]

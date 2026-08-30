@@ -31,7 +31,12 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
 fn addr(tag: u8) -> [u8; 32] {
@@ -49,9 +54,18 @@ fn name_key(label: &[u8]) -> [u8; 32] {
     sha3_256(label)
 }
 
-fn put_map_addr(storage: &mut BTreeMap<[u8; 32], u64>, base: u64, key: &[u8; 32], value: &[u8; 32]) {
+fn put_map_addr(
+    storage: &mut BTreeMap<[u8; 32], u64>,
+    base: u64,
+    key: &[u8; 32],
+    value: &[u8; 32],
+) {
     for i in 0..4u64 {
-        let w = u64::from_be_bytes(value[i as usize * 8..i as usize * 8 + 8].try_into().unwrap());
+        let w = u64::from_be_bytes(
+            value[i as usize * 8..i as usize * 8 + 8]
+                .try_into()
+                .unwrap(),
+        );
         storage.insert(map_addr_word_key(base, key, i), w);
     }
 }
@@ -142,7 +156,11 @@ fn transfer_by_the_owner_moves_the_whole_name() {
     let to = addr(0xB2);
     let storage = seed_owner(b"alice", &owner, 1000 * DAY);
     let after = run_transfer(&cc, storage, &owner, b"alice", &to).expect("owner transfer halts");
-    assert_eq!(read_addr_value(&after, OWNER_BASE, &name_key(b"alice")), to, "ownership moved to the recipient in full");
+    assert_eq!(
+        read_addr_value(&after, OWNER_BASE, &name_key(b"alice")),
+        to,
+        "ownership moved to the recipient in full"
+    );
 }
 
 #[test]
@@ -152,7 +170,10 @@ fn transfer_by_a_non_owner_reverts() {
     let stranger = addr(0xCC);
     let storage = seed_owner(b"alice", &owner, 1000 * DAY);
     let refused = run_transfer(&cc, storage, &stranger, b"alice", &stranger);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a stranger cannot transfer a name it does not own");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a stranger cannot transfer a name it does not own"
+    );
 }
 
 #[test]
@@ -163,7 +184,10 @@ fn transfer_refuses_a_prefix_collision_impostor() {
     impostor[8] ^= 0xFF;
     let storage = seed_owner(b"alice", &owner, 1000 * DAY);
     let refused = run_transfer(&cc, storage, &impostor, b"alice", &impostor);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "an owner check that compares all thirty two bytes rejects a leading word collision");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "an owner check that compares all thirty two bytes rejects a leading word collision"
+    );
 }
 
 #[test]
@@ -172,8 +196,13 @@ fn set_resolved_by_the_owner_points_resolution() {
     let owner = addr(0xA1);
     let target = addr(0x77);
     let storage = seed_owner(b"alice", &owner, 1000 * DAY);
-    let after = run_set_resolved(&cc, storage, &owner, 10 * DAY, b"alice", &target).expect("owner set_resolved halts");
-    assert_eq!(read_addr_value(&after, RESOLVED_BASE, &name_key(b"alice")), target, "the owner points resolution at the target in full");
+    let after = run_set_resolved(&cc, storage, &owner, 10 * DAY, b"alice", &target)
+        .expect("owner set_resolved halts");
+    assert_eq!(
+        read_addr_value(&after, RESOLVED_BASE, &name_key(b"alice")),
+        target,
+        "the owner points resolution at the target in full"
+    );
 }
 
 #[test]
@@ -184,7 +213,10 @@ fn set_resolved_by_a_non_owner_reverts() {
     let target = addr(0x77);
     let storage = seed_owner(b"alice", &owner, 1000 * DAY);
     let refused = run_set_resolved(&cc, storage, &stranger, 10 * DAY, b"alice", &target);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a non owner cannot repoint a name's resolution");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a non owner cannot repoint a name's resolution"
+    );
 }
 
 #[test]
@@ -194,7 +226,10 @@ fn set_resolved_on_an_expired_name_reverts() {
     let target = addr(0x77);
     let storage = seed_owner(b"alice", &owner, 100 * DAY);
     let refused = run_set_resolved(&cc, storage, &owner, 100 * DAY, b"alice", &target);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "resolution cannot be set once the name has expired");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "resolution cannot be set once the name has expired"
+    );
 }
 
 #[test]
@@ -204,7 +239,10 @@ fn set_primary_by_a_non_owner_reverts() {
     let stranger = addr(0xCC);
     let storage = seed_owner(b"alice", &owner, 1000 * DAY);
     let refused = run_set_primary(&cc, storage, &stranger, 10 * DAY, b"alice");
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a non owner cannot claim a name as its primary");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a non owner cannot claim a name as its primary"
+    );
 }
 
 #[test]
@@ -213,7 +251,10 @@ fn set_primary_on_an_expired_name_reverts() {
     let owner = addr(0xA1);
     let storage = seed_owner(b"alice", &owner, 100 * DAY);
     let refused = run_set_primary(&cc, storage, &owner, 100 * DAY, b"alice");
-    assert!(matches!(refused, Err(Fault::DivByZero)), "an expired name cannot be set as a primary");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "an expired name cannot be set as a primary"
+    );
 }
 
 #[test]
@@ -222,5 +263,8 @@ fn set_primary_by_the_owner_within_the_term_halts() {
     let owner = addr(0xA1);
     let storage = seed_owner(b"alice", &owner, 1000 * DAY);
     let after = run_set_primary(&cc, storage, &owner, 10 * DAY, b"alice");
-    assert!(after.is_ok(), "the owner may set a live name as its primary");
+    assert!(
+        after.is_ok(),
+        "the owner may set a live name as its primary"
+    );
 }

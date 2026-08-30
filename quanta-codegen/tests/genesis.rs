@@ -63,7 +63,11 @@ fn genesis_stores_the_whole_deployer_address_as_the_owner() {
             "owner word {i} is the deployer address word"
         );
     }
-    assert_eq!(out.storage.get(&slot_key(4)), Some(&0), "count starts at zero");
+    assert_eq!(
+        out.storage.get(&slot_key(4)),
+        Some(&0),
+        "count starts at zero"
+    );
 }
 
 #[test]
@@ -78,11 +82,16 @@ fn a_bump_after_genesis_is_gated_by_the_stored_owner() {
         .with_memory(&mem)
         .run()
         .expect("genesis halts");
-    let owner: Vec<u64> = (0..4).map(|i| *out.storage.get(&slot_key(i)).unwrap()).collect();
+    let owner: Vec<u64> = (0..4)
+        .map(|i| *out.storage.get(&slot_key(i)).unwrap())
+        .collect();
     let expected: Vec<u64> = (0..4)
         .map(|i: usize| u64::from_be_bytes(deployer[i * 8..i * 8 + 8].try_into().unwrap()))
         .collect();
-    assert_eq!(owner, expected, "the stored owner is the whole deployer address");
+    assert_eq!(
+        owner, expected,
+        "the stored owner is the whole deployer address"
+    );
 }
 
 #[test]
@@ -114,7 +123,11 @@ fn genesis_run_a_second_time_on_initialized_storage_reverts_and_keeps_the_owner(
     );
 
     for i in 0..4u64 {
-        let word = u64::from_be_bytes(deployer[i as usize * 8..i as usize * 8 + 8].try_into().unwrap());
+        let word = u64::from_be_bytes(
+            deployer[i as usize * 8..i as usize * 8 + 8]
+                .try_into()
+                .unwrap(),
+        );
         assert_eq!(
             first.storage.get(&slot_key(i)),
             Some(&word),

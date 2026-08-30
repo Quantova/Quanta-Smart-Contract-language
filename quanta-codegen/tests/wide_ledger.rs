@@ -46,14 +46,22 @@ fn selector_of(cc: &CompiledContract, name: &str) -> [u8; 4] {
 }
 
 fn put_wide(mem: &mut [u8], entry: &EntryArtifact, key: &str, value: u128) {
-    let slot = entry.args.iter().find(|s| s.key == key).expect("wide argument");
+    let slot = entry
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("wide argument");
     let at = slot.offset as usize;
     mem[at..at + 8].copy_from_slice(&(value as u64).to_be_bytes());
     mem[at + 8..at + 16].copy_from_slice(&((value >> 64) as u64).to_be_bytes());
 }
 
 fn put_addr(mem: &mut [u8], entry: &EntryArtifact, key: &str, address: &[u8; 32]) {
-    let slot = entry.args.iter().find(|s| s.key == key).expect("address argument");
+    let slot = entry
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("address argument");
     let at = slot.offset as usize;
     mem[at..at + 32].copy_from_slice(address);
 }
@@ -87,7 +95,10 @@ fn seed_balance(storage: &mut BTreeMap<[u8; 32], u64>, who: &[u8; 32], value: u1
 
 fn supply(storage: &BTreeMap<[u8; 32], u64>) -> u128 {
     let lo = storage.get(&slot_key(SLOT_SUPPLY)).copied().unwrap_or(0) as u128;
-    let hi = storage.get(&slot_key(SLOT_SUPPLY | HI)).copied().unwrap_or(0) as u128;
+    let hi = storage
+        .get(&slot_key(SLOT_SUPPLY | HI))
+        .copied()
+        .unwrap_or(0) as u128;
     (hi << 64) | lo
 }
 
@@ -102,7 +113,11 @@ fn holder_b() -> [u8; 32] {
     [0xB2; 32]
 }
 
-fn deploy(cc: &CompiledContract, owner: &[u8; 32], initial_supply: u128) -> BTreeMap<[u8; 32], u64> {
+fn deploy(
+    cc: &CompiledContract,
+    owner: &[u8; 32],
+    initial_supply: u128,
+) -> BTreeMap<[u8; 32], u64> {
     let mut mem = vec![0u8; 88 + 32 + 16 + 8];
     mem[88..120].copy_from_slice(owner);
     mem[120..128].copy_from_slice(&(initial_supply as u64).to_be_bytes());
@@ -113,7 +128,12 @@ fn deploy(cc: &CompiledContract, owner: &[u8; 32], initial_supply: u128) -> BTre
         .0
 }
 
-fn transfer_memory(cc: &CompiledContract, caller: &[u8; 32], to: &[u8; 32], amount: u128) -> Vec<u8> {
+fn transfer_memory(
+    cc: &CompiledContract,
+    caller: &[u8; 32],
+    to: &[u8; 32],
+    amount: u128,
+) -> Vec<u8> {
     let transfer = find_entry(cc, "transfer");
     let mut mem = vec![0u8; 65536];
     mem[0..32].copy_from_slice(caller);
@@ -123,7 +143,13 @@ fn transfer_memory(cc: &CompiledContract, caller: &[u8; 32], to: &[u8; 32], amou
     mem
 }
 
-fn mint_message(cc: &CompiledContract, owner: &[u8; 32], nonce: u64, amount: u128, to: &[u8; 32]) -> Vec<u8> {
+fn mint_message(
+    cc: &CompiledContract,
+    owner: &[u8; 32],
+    nonce: u64,
+    amount: u128,
+    to: &[u8; 32],
+) -> Vec<u8> {
     let mut msg = Vec::new();
     msg.extend_from_slice(b"QTVSGN01");
     msg.extend_from_slice(&CONTRACT);
@@ -158,9 +184,19 @@ fn mint_memory(
     put_wide(&mut mem, mint, "order.amount", amount);
     let region_off = 8192usize;
     mem[region_off..region_off + region.len()].copy_from_slice(&region);
-    let scheme = mint.args.iter().find(|s| s.key == "order#scheme").expect("scheme").offset as usize;
+    let scheme = mint
+        .args
+        .iter()
+        .find(|s| s.key == "order#scheme")
+        .expect("scheme")
+        .offset as usize;
     mem[scheme..scheme + 8].copy_from_slice(&(SCHEME_ML as u64).to_be_bytes());
-    let ptr = mint.args.iter().find(|s| s.key == "order#ptr").expect("ptr").offset as usize;
+    let ptr = mint
+        .args
+        .iter()
+        .find(|s| s.key == "order#ptr")
+        .expect("ptr")
+        .offset as usize;
     mem[ptr..ptr + 8].copy_from_slice(&(region_off as u64).to_be_bytes());
     mem
 }
@@ -177,7 +213,11 @@ fn transferred_amount(effects: &[Effect]) -> u128 {
             _ => None,
         })
         .expect("a Transferred event is recorded");
-    assert_eq!(data.len(), 32 + 32 + 16, "the event carries two addresses and a two word amount");
+    assert_eq!(
+        data.len(),
+        32 + 32 + 16,
+        "the event carries two addresses and a two word amount"
+    );
     let lo = u64::from_be_bytes(data[64..72].try_into().unwrap()) as u128;
     let hi = u64::from_be_bytes(data[72..80].try_into().unwrap()) as u128;
     (hi << 64) | lo
@@ -195,9 +235,21 @@ fn a_transfer_above_the_word_boundary_moves_the_whole_two_word_amount() {
     let (after, effects) =
         run(&cc, selector_of(&cc, "transfer"), storage, &mem).expect("the wide transfer halts");
 
-    assert_eq!(balance(&after, &holder_b()), amount, "the recipient receives the whole two word amount, not the low word");
-    assert_eq!(balance(&after, &holder_a()), 0, "the sender is fully debited");
-    assert_eq!(transferred_amount(&effects), amount, "the event carries the whole sixteen byte amount");
+    assert_eq!(
+        balance(&after, &holder_b()),
+        amount,
+        "the recipient receives the whole two word amount, not the low word"
+    );
+    assert_eq!(
+        balance(&after, &holder_a()),
+        0,
+        "the sender is fully debited"
+    );
+    assert_eq!(
+        transferred_amount(&effects),
+        amount,
+        "the event carries the whole sixteen byte amount"
+    );
 }
 
 #[test]
@@ -212,9 +264,21 @@ fn a_transfer_of_exactly_two_to_the_sixty_fourth_passes_the_guard_and_moves_in_f
     let (after, effects) = run(&cc, selector_of(&cc, "transfer"), storage, &mem)
         .expect("the amount greater than zero guard admits a value whose low word is zero");
 
-    assert_eq!(balance(&after, &holder_b()), amount, "the recipient receives exactly two to the sixty fourth");
-    assert_eq!(balance(&after, &holder_a()), 0, "the sender is fully debited");
-    assert_eq!(transferred_amount(&effects), amount, "the event carries the two word amount in full");
+    assert_eq!(
+        balance(&after, &holder_b()),
+        amount,
+        "the recipient receives exactly two to the sixty fourth"
+    );
+    assert_eq!(
+        balance(&after, &holder_a()),
+        0,
+        "the sender is fully debited"
+    );
+    assert_eq!(
+        transferred_amount(&effects),
+        amount,
+        "the event carries the two word amount in full"
+    );
 }
 
 #[test]
@@ -227,16 +291,42 @@ fn a_mint_of_a_wide_order_amount_keeps_supply_equal_to_the_credited_balances() {
     let first = TWO_TO_64 + 100;
     let second = TWO_TO_64 + 200;
 
-    let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint_memory(&cc, &key, 0, first, &holder_a()))
-        .expect("the first wide mint halts");
-    let (storage, _) = run(&cc, selector_of(&cc, "mint"), storage, &mint_memory(&cc, &key, 1, second, &holder_b()))
-        .expect("the second wide mint halts");
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "mint"),
+        storage,
+        &mint_memory(&cc, &key, 0, first, &holder_a()),
+    )
+    .expect("the first wide mint halts");
+    let (storage, _) = run(
+        &cc,
+        selector_of(&cc, "mint"),
+        storage,
+        &mint_memory(&cc, &key, 1, second, &holder_b()),
+    )
+    .expect("the second wide mint halts");
 
-    assert_eq!(balance(&storage, &holder_a()), first, "holder a holds the whole first wide amount");
-    assert_eq!(balance(&storage, &holder_b()), second, "holder b holds the whole second wide amount");
+    assert_eq!(
+        balance(&storage, &holder_a()),
+        first,
+        "holder a holds the whole first wide amount"
+    );
+    assert_eq!(
+        balance(&storage, &holder_b()),
+        second,
+        "holder b holds the whole second wide amount"
+    );
     let credited = balance(&storage, &holder_a()) + balance(&storage, &holder_b());
-    assert_eq!(supply(&storage), credited, "the two word supply equals the sum of the two word balances");
-    assert_eq!(supply(&storage), first + second, "the supply is the sum of the wide mints");
+    assert_eq!(
+        supply(&storage),
+        credited,
+        "the two word supply equals the sum of the two word balances"
+    );
+    assert_eq!(
+        supply(&storage),
+        first + second,
+        "the supply is the sum of the wide mints"
+    );
 }
 
 #[test]

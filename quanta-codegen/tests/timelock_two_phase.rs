@@ -31,7 +31,10 @@ fn compile(src: &str) -> CompiledContract {
 }
 
 fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
-    cc.entries.iter().find(|e| e.name == name).expect("the entry")
+    cc.entries
+        .iter()
+        .find(|e| e.name == name)
+        .expect("the entry")
 }
 
 fn arg_offset(e: &EntryArtifact, key: &str) -> usize {
@@ -78,7 +81,11 @@ fn call(e: &EntryArtifact, region: Vec<u8>, now: u64) -> Vec<u8> {
     put_word(&mut mem, arg_offset(e, "@time"), now);
     let off = 8192usize;
     mem[off..off + region.len()].copy_from_slice(&region);
-    put_word(&mut mem, arg_offset(e, "approvals#0#scheme"), SCHEME_ML as u64);
+    put_word(
+        &mut mem,
+        arg_offset(e, "approvals#0#scheme"),
+        SCHEME_ML as u64,
+    );
     put_word(&mut mem, arg_offset(e, "approvals#0#ptr"), off as u64);
     put_word(&mut mem, arg_offset(e, "approvals#0#index"), 0);
     mem
@@ -114,7 +121,9 @@ fn the_recorded_anchor_is_not_a_caller_argument() {
     let cc = compile(GATE);
     let open = entry(&cc, "open");
     assert!(
-        open.args.iter().all(|s| s.key != "armed" && s.key != "approvals.first"),
+        open.args
+            .iter()
+            .all(|s| s.key != "armed" && s.key != "approvals.first"),
         "the delay anchor is host recorded state, not a caller supplied argument"
     );
 }
@@ -129,12 +138,25 @@ fn arm_then_open_after_the_delay_runs_end_to_end() {
     let t: u64 = 10_000;
     let armed = call(arm, ml_region(arm.selector, &key.0, &key.1, 0), t);
     let after_arm = run(&cc, arm, board_storage(&addr), &armed).expect("the arm records the time");
-    assert_eq!(after_arm.get(&slot_key(ARMED_SLOT)), Some(&t), "the arm recorded now under quorum");
+    assert_eq!(
+        after_arm.get(&slot_key(ARMED_SLOT)),
+        Some(&t),
+        "the arm recorded now under quorum"
+    );
 
     let open_mem = call(open, ml_region(open.selector, &key.0, &key.1, 1), t + 3600);
-    let out = run(&cc, open, after_arm.clone(), &open_mem).expect("the open passes once the delay elapses");
-    assert_eq!(out.get(&slot_key(OPENED_SLOT)), Some(&1), "the gated body ran");
-    assert_eq!(out.get(&slot_key(ARMED_SLOT)), Some(&0), "the arm is cleared after use");
+    let out = run(&cc, open, after_arm.clone(), &open_mem)
+        .expect("the open passes once the delay elapses");
+    assert_eq!(
+        out.get(&slot_key(OPENED_SLOT)),
+        Some(&1),
+        "the gated body ran"
+    );
+    assert_eq!(
+        out.get(&slot_key(ARMED_SLOT)),
+        Some(&0),
+        "the arm is cleared after use"
+    );
 }
 
 #[test]
@@ -167,7 +189,11 @@ fn a_valid_quorum_cannot_open_without_a_prior_arm() {
     let (key, addr) = guardian();
     let open = entry(&cc, "open");
 
-    let open_mem = call(open, ml_region(open.selector, &key.0, &key.1, 0), 10_000_000);
+    let open_mem = call(
+        open,
+        ml_region(open.selector, &key.0, &key.1, 0),
+        10_000_000,
+    );
     assert_eq!(
         run(&cc, open, board_storage(&addr), &open_mem),
         Err(Fault::DivByZero),

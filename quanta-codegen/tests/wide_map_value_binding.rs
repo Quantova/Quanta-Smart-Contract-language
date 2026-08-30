@@ -25,5 +25,8 @@ fn a_u128_field_credited_to_a_wide_map_is_recorded_at_full_width() {
         .iter()
         .find(|s| s.key == "order.amount")
         .expect("the amount argument");
-    assert_eq!(slot.width, 16, "a u128 map value must not be narrowed to eight bytes");
+    assert_eq!(
+        slot.width, 16,
+        "a u128 map value must not be narrowed to eight bytes"
+    );
 }

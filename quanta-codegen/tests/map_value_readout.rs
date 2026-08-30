@@ -47,10 +47,20 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
-fn addr_memory(cc: &CompiledContract, name: &str, caller: &[u8; 32], addrs: &[(&str, [u8; 32])]) -> Vec<u8> {
+fn addr_memory(
+    cc: &CompiledContract,
+    name: &str,
+    caller: &[u8; 32],
+    addrs: &[(&str, [u8; 32])],
+) -> Vec<u8> {
     let mut mem = vec![0u8; 4096];
     mem[0..32].copy_from_slice(caller);
     for (key, value) in addrs {
@@ -81,14 +91,23 @@ fn event<'a>(effects: &'a [Effect], selector: [u8; 4]) -> Option<&'a Vec<u8>> {
 }
 
 fn resolved_selector(cc: &CompiledContract) -> [u8; 4] {
-    cc.events.iter().find(|e| e.name == "Resolved").expect("Resolved").selector
+    cc.events
+        .iter()
+        .find(|e| e.name == "Resolved")
+        .expect("Resolved")
+        .selector
 }
 
 fn claim(cc: &CompiledContract, owner: &[u8; 32], name: &[u8; 32]) -> BTreeMap<[u8; 32], u64> {
     let mem = addr_memory(cc, "claim", owner, &[("name", *name)]);
-    run(&cc.container, entry(cc, "claim").selector, BTreeMap::new(), &mem)
-        .expect("claim halts")
-        .0
+    run(
+        &cc.container,
+        entry(cc, "claim").selector,
+        BTreeMap::new(),
+        &mem,
+    )
+    .expect("claim halts")
+    .0
 }
 
 #[test]
@@ -100,14 +119,22 @@ fn an_emitted_field_carries_the_stored_owner_read_out_of_the_map_not_the_caller(
 
     let stranger = addr(0xCC);
     let mem = addr_memory(&cc, "resolve", &stranger, &[("name", name)]);
-    let (_, effects) = run(&cc.container, entry(&cc, "resolve").selector, stored, &mem)
-        .expect("resolve halts");
+    let (_, effects) =
+        run(&cc.container, entry(&cc, "resolve").selector, stored, &mem).expect("resolve halts");
 
     let data = event(&effects, resolved_selector(&cc)).expect("a Resolved event");
     assert_eq!(data.len(), 64, "two full addresses, no truncation");
     assert_eq!(&data[0..32], &name, "the event carries the whole name");
-    assert_eq!(&data[32..64], &owner, "the event carries the whole stored owner, read from the map");
-    assert_ne!(&data[32..64], &stranger[..], "the resolving caller never leaks into the owner field");
+    assert_eq!(
+        &data[32..64],
+        &owner,
+        "the event carries the whole stored owner, read from the map"
+    );
+    assert_ne!(
+        &data[32..64],
+        &stranger[..],
+        "the resolving caller never leaks into the owner field"
+    );
 }
 
 #[test]
@@ -118,15 +145,19 @@ fn a_stored_owner_reads_out_and_stores_into_a_second_map_byte_identical() {
     let stored = claim(&cc, &owner, &name);
 
     let mem = addr_memory(&cc, "mirror", &addr(0xCC), &[("name", name)]);
-    let (after, _) = run(&cc.container, entry(&cc, "mirror").selector, stored, &mem)
-        .expect("mirror halts");
+    let (after, _) =
+        run(&cc.container, entry(&cc, "mirror").selector, stored, &mem).expect("mirror halts");
 
     assert_eq!(
         read_addr_value(&after, MIRROR_BASE, &name),
         owner,
         "the mirror map value reassembles to the whole owner"
     );
-    assert_eq!(read_addr_value(&after, OWNER_BASE, &name), owner, "the source owner is intact");
+    assert_eq!(
+        read_addr_value(&after, OWNER_BASE, &name),
+        owner,
+        "the source owner is intact"
+    );
 }
 
 #[test]
@@ -135,9 +166,18 @@ fn a_read_out_of_an_absent_name_yields_the_zero_address() {
     let name = addr(0x11);
 
     let mem = addr_memory(&cc, "mirror", &addr(0xCC), &[("name", name)]);
-    let (after, _) = run(&cc.container, entry(&cc, "mirror").selector, BTreeMap::new(), &mem)
-        .expect("mirror halts");
-    assert_eq!(read_addr_value(&after, MIRROR_BASE, &name), [0u8; 32], "an absent owner reads as zero");
+    let (after, _) = run(
+        &cc.container,
+        entry(&cc, "mirror").selector,
+        BTreeMap::new(),
+        &mem,
+    )
+    .expect("mirror halts");
+    assert_eq!(
+        read_addr_value(&after, MIRROR_BASE, &name),
+        [0u8; 32],
+        "an absent owner reads as zero"
+    );
 }
 
 #[test]
@@ -152,9 +192,22 @@ fn a_single_word_map_value_keeps_its_one_slot_layout() {
     let vat = arg_off(&cc, "tick", "v");
     mem[vat..vat + 8].copy_from_slice(&v.to_be_bytes());
 
-    let (storage, _) = run(&cc.container, entry(&cc, "tick").selector, BTreeMap::new(), &mem)
-        .expect("tick halts");
+    let (storage, _) = run(
+        &cc.container,
+        entry(&cc, "tick").selector,
+        BTreeMap::new(),
+        &mem,
+    )
+    .expect("tick halts");
 
-    assert_eq!(storage.len(), 1, "a scalar map value writes exactly one slot");
-    assert_eq!(storage.get(&map_key(TICK_BASE, &name)).copied(), Some(v), "the one word is at the plain map key");
+    assert_eq!(
+        storage.len(),
+        1,
+        "a scalar map value writes exactly one slot"
+    );
+    assert_eq!(
+        storage.get(&map_key(TICK_BASE, &name)).copied(),
+        Some(v),
+        "the one word is at the plain map key"
+    );
 }

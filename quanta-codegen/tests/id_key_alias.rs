@@ -25,7 +25,12 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
 fn addr(tag: u8) -> [u8; 32] {
@@ -68,8 +73,18 @@ fn a_set_whose_value_reads_another_id_slot_writes_its_own_key() {
     let bo = arg_off(&cc, "reassign", "b");
     mem[bo..bo + 8].copy_from_slice(&b_id.to_be_bytes());
 
-    let (storage, _) = run(&cc.container, entry(&cc, "reassign").selector, BTreeMap::new(), &mem).expect("halts");
-    assert_eq!(read_addr_value(&storage, OWNER_OF_BASE, &id_key(b_id)), caller, "owner_of[b] is the caller");
+    let (storage, _) = run(
+        &cc.container,
+        entry(&cc, "reassign").selector,
+        BTreeMap::new(),
+        &mem,
+    )
+    .expect("halts");
+    assert_eq!(
+        read_addr_value(&storage, OWNER_OF_BASE, &id_key(b_id)),
+        caller,
+        "owner_of[b] is the caller"
+    );
     assert_eq!(
         read_addr_value(&storage, OWNER_OF_BASE, &id_key(a_id)),
         caller,
@@ -101,7 +116,8 @@ fn a_map_set_whose_key_and_value_read_the_same_map_uses_the_intended_key() {
     let yo = arg_off(&cc, "rekey", "y");
     mem[yo..yo + 32].copy_from_slice(&y);
 
-    let (after, _) = run(&cc.container, entry(&cc, "rekey").selector, storage, &mem).expect("halts");
+    let (after, _) =
+        run(&cc.container, entry(&cc, "rekey").selector, storage, &mem).expect("halts");
     assert_eq!(
         read_addr_value(&after, LINK_BASE, &ax),
         ay,
@@ -132,7 +148,12 @@ fn a_guard_comparing_two_id_reads_uses_both_keys() {
     let xo = arg_off(&cc, "demo", "x");
     mem[xo..xo + 32].copy_from_slice(&x);
 
-    let out = run(&cc.container, entry(&cc, "demo").selector, BTreeMap::new(), &mem);
+    let out = run(
+        &cc.container,
+        entry(&cc, "demo").selector,
+        BTreeMap::new(),
+        &mem,
+    );
     assert!(
         matches!(out, Err(Fault::DivByZero)),
         "the guard compares owner_of[id] against note_of[other] and must revert, not pass on a clobbered key"

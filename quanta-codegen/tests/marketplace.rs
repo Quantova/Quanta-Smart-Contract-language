@@ -39,7 +39,12 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
 fn addr(tag: u8) -> [u8; 32] {
@@ -73,7 +78,9 @@ fn run(
 }
 
 fn transfer<'a>(effects: &'a [Effect]) -> Option<&'a Effect> {
-    effects.iter().find(|e| matches!(e, Effect::Transfer { .. }))
+    effects
+        .iter()
+        .find(|e| matches!(e, Effect::Transfer { .. }))
 }
 
 fn listed(owner: &[u8; 32], id: u64, price: u64) -> BTreeMap<[u8; 32], u64> {
@@ -82,7 +89,11 @@ fn listed(owner: &[u8; 32], id: u64, price: u64) -> BTreeMap<[u8; 32], u64> {
     storage.insert(slot_key(ESCROWED_SLOT), 0);
     storage.insert(map_key(LISTINGS_BASE, &id_key(id)), price);
     for i in 0..4u64 {
-        let w = u64::from_be_bytes(owner[i as usize * 8..i as usize * 8 + 8].try_into().unwrap());
+        let w = u64::from_be_bytes(
+            owner[i as usize * 8..i as usize * 8 + 8]
+                .try_into()
+                .unwrap(),
+        );
         storage.insert(map_addr_word_key(ITEM_OWNER_BASE, &id_key(id), i), w);
     }
     storage
@@ -100,8 +111,19 @@ fn buy_mem(cc: &CompiledContract, buyer: &[u8; 32], id: u64, payment: u64) -> Ve
     mem
 }
 
-fn buy(cc: &CompiledContract, storage: BTreeMap<[u8; 32], u64>, buyer: &[u8; 32], id: u64, payment: u64) -> Result<(BTreeMap<[u8; 32], u64>, Vec<Effect>), Fault> {
-    run(&cc.container, entry(cc, "buy").selector, storage, &buy_mem(cc, buyer, id, payment))
+fn buy(
+    cc: &CompiledContract,
+    storage: BTreeMap<[u8; 32], u64>,
+    buyer: &[u8; 32],
+    id: u64,
+    payment: u64,
+) -> Result<(BTreeMap<[u8; 32], u64>, Vec<Effect>), Fault> {
+    run(
+        &cc.container,
+        entry(cc, "buy").selector,
+        storage,
+        &buy_mem(cc, buyer, id, payment),
+    )
 }
 
 #[test]
@@ -126,7 +148,10 @@ fn a_buy_at_the_listed_price_pays_the_owner_and_hands_the_item_to_the_buyer() {
 
     assert_eq!(
         transfer(&effects),
-        Some(&Effect::Transfer { to: owner.to_vec(), amount: price }),
+        Some(&Effect::Transfer {
+            to: owner.to_vec(),
+            amount: price
+        }),
         "the exact listed price is paid to the listing owner"
     );
     assert_eq!(
@@ -135,11 +160,18 @@ fn a_buy_at_the_listed_price_pays_the_owner_and_hands_the_item_to_the_buyer() {
         "the item is handed to the buyer in full"
     );
     assert_eq!(
-        after.get(&map_key(LISTINGS_BASE, &id_key(id))).copied().unwrap_or(0),
+        after
+            .get(&map_key(LISTINGS_BASE, &id_key(id)))
+            .copied()
+            .unwrap_or(0),
         0,
         "the listing is cleared so the item cannot be sold twice"
     );
-    assert_eq!(after.get(&slot_key(ESCROWED_SLOT)).copied().unwrap_or(0), 0, "nothing strands in escrow");
+    assert_eq!(
+        after.get(&slot_key(ESCROWED_SLOT)).copied().unwrap_or(0),
+        0,
+        "nothing strands in escrow"
+    );
 }
 
 #[test]
@@ -190,7 +222,11 @@ fn a_sold_item_cannot_be_bought_again() {
     let id = 42u64;
     let price = 1000u64;
 
-    let (after, _) = buy(&cc, listed(&owner, id, price), &first, id, price).expect("first buy halts");
+    let (after, _) =
+        buy(&cc, listed(&owner, id, price), &first, id, price).expect("first buy halts");
     let again = buy(&cc, after, &second, id, price);
-    assert!(matches!(again, Err(Fault::DivByZero)), "a cleared listing refuses a second purchase");
+    assert!(
+        matches!(again, Err(Fault::DivByZero)),
+        "a cleared listing refuses a second purchase"
+    );
 }

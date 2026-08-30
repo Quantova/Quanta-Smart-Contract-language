@@ -48,25 +48,41 @@ fn run(cc: &CompiledContract, z: u64) -> Result<BTreeMap<[u8; 32], u64>, Fault> 
 fn and_skips_a_faulting_right_operand_when_the_left_is_false() {
     let cc = compile(AND_SKIP);
     let storage = run(&cc, 0).expect("a false left skips the divide by zero on the right");
-    assert_eq!(storage.get(&slot_key(0)), Some(&5), "the body ran, so the right was skipped");
+    assert_eq!(
+        storage.get(&slot_key(0)),
+        Some(&5),
+        "the body ran, so the right was skipped"
+    );
 }
 
 #[test]
 fn or_skips_a_faulting_right_operand_when_the_left_is_true() {
     let cc = compile(OR_SKIP);
     let storage = run(&cc, 0).expect("a true left skips the divide by zero on the right");
-    assert_eq!(storage.get(&slot_key(0)), Some(&5), "the body ran, so the right was skipped");
+    assert_eq!(
+        storage.get(&slot_key(0)),
+        Some(&5),
+        "the body ran, so the right was skipped"
+    );
 }
 
 #[test]
 fn or_evaluates_the_right_operand_when_the_left_does_not_decide() {
     let cc = compile(OR_SKIP);
     let storage = run(&cc, 1).expect("a false left evaluates the right");
-    assert_eq!(storage.get(&slot_key(0)), Some(&5), "the right decided the guard and the body ran");
+    assert_eq!(
+        storage.get(&slot_key(0)),
+        Some(&5),
+        "the right decided the guard and the body ran"
+    );
 }
 
 #[test]
 fn the_divide_by_zero_on_the_right_is_a_real_fault_when_reached() {
     let cc = compile(FAULTS);
-    assert_eq!(run(&cc, 0), Err(Fault::DivByZero), "dividing by zero faults when nothing skips it");
+    assert_eq!(
+        run(&cc, 0),
+        Err(Fault::DivByZero),
+        "dividing by zero faults when nothing skips it"
+    );
 }

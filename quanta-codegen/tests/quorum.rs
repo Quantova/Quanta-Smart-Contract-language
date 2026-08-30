@@ -87,9 +87,21 @@ fn scratch(cc: &CompiledContract, members: &[(u8, Vec<u8>, u64)]) -> Vec<u8> {
         let off = cursor;
         cursor += region.len();
         mem[off..off + region.len()].copy_from_slice(region);
-        put_word(&mut mem, arg_offset(cc, &format!("approvals#{i}#scheme")), *scheme as u64);
-        put_word(&mut mem, arg_offset(cc, &format!("approvals#{i}#ptr")), off as u64);
-        put_word(&mut mem, arg_offset(cc, &format!("approvals#{i}#index")), *index);
+        put_word(
+            &mut mem,
+            arg_offset(cc, &format!("approvals#{i}#scheme")),
+            *scheme as u64,
+        );
+        put_word(
+            &mut mem,
+            arg_offset(cc, &format!("approvals#{i}#ptr")),
+            off as u64,
+        );
+        put_word(
+            &mut mem,
+            arg_offset(cc, &format!("approvals#{i}#index")),
+            *index,
+        );
     }
     mem
 }
@@ -116,7 +128,10 @@ fn run(
 }
 
 fn ml_guardians() -> (Vec<(ml_dsa::PublicKey, ml_dsa::SecretKey)>, [[u8; 32]; 3]) {
-    let keys: Vec<_> = [1u8, 2, 3].iter().map(|s| ml_dsa::keygen(&[*s; 32])).collect();
+    let keys: Vec<_> = [1u8, 2, 3]
+        .iter()
+        .map(|s| ml_dsa::keygen(&[*s; 32]))
+        .collect();
     let addrs = [
         signer_address(SCHEME_ML, &keys[0].0),
         signer_address(SCHEME_ML, &keys[1].0),
@@ -133,7 +148,11 @@ fn two_distinct_guardians_construct_the_quorum_and_admit_the_entry() {
     let m1 = ml_region(&cc, &keys[1].0, &keys[1].1, 0);
     let mem = scratch(&cc, &[(SCHEME_ML, m0, 0), (SCHEME_ML, m1, 1)]);
     let out = run(&cc, board_storage(&addrs), &mem).expect("a met quorum admits the entry");
-    assert_eq!(out.get(&slot_key(COUNTER_SLOT)), Some(&11), "the gated body runs");
+    assert_eq!(
+        out.get(&slot_key(COUNTER_SLOT)),
+        Some(&11),
+        "the gated body runs"
+    );
 }
 
 #[test]

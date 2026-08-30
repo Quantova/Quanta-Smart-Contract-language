@@ -162,11 +162,15 @@ fn compile_entries(
         })
         .collect();
 
-    const RESERVED_EVENT_SELECTORS: [([u8; SELECTOR_BYTES], &str); 1] = [(*b"MINT", "the asset mint")];
+    const RESERVED_EVENT_SELECTORS: [([u8; SELECTOR_BYTES], &str); 1] =
+        [(*b"MINT", "the asset mint")];
     for item in &contract.items {
         if let Item::Event(ev) = item {
             let selector = event_selector(ev);
-            if let Some((_, what)) = RESERVED_EVENT_SELECTORS.iter().find(|(s, _)| *s == selector) {
+            if let Some((_, what)) = RESERVED_EVENT_SELECTORS
+                .iter()
+                .find(|(s, _)| *s == selector)
+            {
                 return Err(CodegenError::Rejected {
                     what: format!(
                         "the event `{}` collides with {} reserved host selector",
@@ -188,7 +192,15 @@ fn compile_entries(
     for entry in entries {
         let start = b.label();
         b.mark(start);
-        let args = lower_entry(&layout, entry, &invariants, &events_map, &mut b, trap, false)?;
+        let args = lower_entry(
+            &layout,
+            entry,
+            &invariants,
+            &events_map,
+            &mut b,
+            trap,
+            false,
+        )?;
         let selector = entry_selector(entry);
         if let Some(previous) = seen_selectors.get(&selector) {
             return Err(CodegenError::Rejected {
@@ -285,7 +297,10 @@ fn compile_entries(
         let selector = qtv_vm::container::selector(qtv_vm::container::GENESIS_SIGNATURE);
         if let Some(previous) = seen_selectors.get(&selector) {
             return Err(CodegenError::Rejected {
-                what: format!("the entry `{}` collides with the reserved genesis selector", previous),
+                what: format!(
+                    "the entry `{}` collides with the reserved genesis selector",
+                    previous
+                ),
                 span: gspan,
             });
         }

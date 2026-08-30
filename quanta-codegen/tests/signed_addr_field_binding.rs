@@ -41,7 +41,12 @@ fn arg_offset(cc: &CompiledContract, key: &str) -> usize {
 }
 
 fn arg_width(cc: &CompiledContract, key: &str) -> u64 {
-    cc.entries[0].args.iter().find(|s| s.key == key).expect("arg").width
+    cc.entries[0]
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .width
 }
 
 fn put_word(mem: &mut [u8], off: usize, value: u64) {
@@ -99,13 +104,21 @@ fn rotate_memory(
 fn admin_storage(admin: &[u8; 32]) -> BTreeMap<[u8; 32], u64> {
     let mut storage = BTreeMap::new();
     for i in 0..4u64 {
-        let w = u64::from_be_bytes(admin[i as usize * 8..i as usize * 8 + 8].try_into().unwrap());
+        let w = u64::from_be_bytes(
+            admin[i as usize * 8..i as usize * 8 + 8]
+                .try_into()
+                .unwrap(),
+        );
         storage.insert(slot_key(ADMIN_SLOT + i), w);
     }
     storage
 }
 
-fn run(cc: &CompiledContract, storage: BTreeMap<[u8; 32], u64>, mem: &[u8]) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
+fn run(
+    cc: &CompiledContract,
+    storage: BTreeMap<[u8; 32], u64>,
+    mem: &[u8],
+) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
     Interpreter::new(&cc.container.code, &cc.container.consts, 600_000)
         .with_storage(storage)
         .with_memory(mem)
@@ -140,7 +153,11 @@ fn a_signed_rotation_binds_and_stores_the_whole_new_owner() {
     let newowner = [0xABu8; 32];
     let mem = rotate_memory(&cc, &pk, &sk, &newowner, &newowner);
     let after = run(&cc, admin_storage(&admin), &mem).expect("halts");
-    assert_eq!(owner_after(&after), newowner, "owner is the full signed address");
+    assert_eq!(
+        owner_after(&after),
+        newowner,
+        "owner is the full signed address"
+    );
 }
 
 #[test]

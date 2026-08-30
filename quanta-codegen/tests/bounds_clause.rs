@@ -85,7 +85,9 @@ fn a_denies_clause_reverts_when_its_condition_holds() {
     let mut open = BTreeMap::new();
     open.insert(slot_key(0), 0u64);
     assert_eq!(
-        run(&cc, open, &mem).expect("an undenied call halts").get(&slot_key(1)),
+        run(&cc, open, &mem)
+            .expect("an undenied call halts")
+            .get(&slot_key(1)),
         Some(&7),
         "an undenied call writes its state"
     );

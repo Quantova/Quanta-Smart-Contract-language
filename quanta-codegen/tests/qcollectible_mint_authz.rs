@@ -9,7 +9,10 @@ use qtv_vm::interp::{Effect, Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 
 mod common;
-use common::{map_addr_word_key, map_key, nonce_key, put_addr_slots, read_addr_value, signer_address, slot_key};
+use common::{
+    map_addr_word_key, map_key, nonce_key, put_addr_slots, read_addr_value, signer_address,
+    slot_key,
+};
 
 const SRC: &str = include_str!("../../examples/QCollectible.qs");
 
@@ -36,7 +39,12 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
 fn id_key(id: u64) -> [u8; 32] {
@@ -85,7 +93,15 @@ fn mint_mem(
 ) -> Vec<u8> {
     let signer = signer_address(SCHEME_ML, pk);
     let sel = entry(cc, "mint").selector;
-    let msg = message(chain, sel, &signer, nonce, signed.id, &signed.to, &signed.content);
+    let msg = message(
+        chain,
+        sel,
+        &signer,
+        nonce,
+        signed.id,
+        &signed.to,
+        &signed.content,
+    );
     let sig = ml_dsa::sign(sk, &msg, &[], &[0u8; 32]).expect("sign");
 
     let mut region = Vec::new();
@@ -130,7 +146,10 @@ fn run(
 }
 
 fn holding(storage: &BTreeMap<[u8; 32], u64>, who: &[u8; 32]) -> u64 {
-    storage.get(&map_key(HOLDINGS_BASE, who)).copied().unwrap_or(0)
+    storage
+        .get(&map_key(HOLDINGS_BASE, who))
+        .copied()
+        .unwrap_or(0)
 }
 
 #[test]
@@ -145,12 +164,31 @@ fn the_admin_signature_mints_the_exact_order() {
     let mem = mint_mem(&cc, &pk, &sk, 0, &order, &order, 0);
     let (storage, effects) = run(&cc, admin_storage(&admin), &mem).expect("the admin order mints");
 
-    assert_eq!(read_addr_value(&storage, OWNER_OF_BASE, &id_key(7)), to, "owner_of[id] is the full recipient");
-    assert_eq!(read_addr_value(&storage, CONTENT_BASE, &id_key(7)), content, "content_of[id] is the full content");
-    assert_eq!(storage.get(&slot_key(SUPPLY_SLOT)).copied().unwrap_or(0), 1, "supply advanced to one");
+    assert_eq!(
+        read_addr_value(&storage, OWNER_OF_BASE, &id_key(7)),
+        to,
+        "owner_of[id] is the full recipient"
+    );
+    assert_eq!(
+        read_addr_value(&storage, CONTENT_BASE, &id_key(7)),
+        content,
+        "content_of[id] is the full content"
+    );
+    assert_eq!(
+        storage.get(&slot_key(SUPPLY_SLOT)).copied().unwrap_or(0),
+        1,
+        "supply advanced to one"
+    );
     assert_eq!(holding(&storage, &to), 1, "the recipient holds one");
-    assert_eq!(storage.get(&nonce_key(&admin)).copied().unwrap_or(0), 1, "the admin nonce is consumed");
-    assert!(effects.iter().any(|e| matches!(e, Effect::Event { .. })), "a Minted event is emitted");
+    assert_eq!(
+        storage.get(&nonce_key(&admin)).copied().unwrap_or(0),
+        1,
+        "the admin nonce is consumed"
+    );
+    assert!(
+        effects.iter().any(|e| matches!(e, Effect::Event { .. })),
+        "a Minted event is emitted"
+    );
 }
 
 #[test]
@@ -164,11 +202,18 @@ fn redirecting_the_recipient_past_its_leading_word_reverts() {
 
     let mut redirected = to;
     redirected[8] ^= 0xFF;
-    let plain = Order { id: 7, to: redirected, content };
+    let plain = Order {
+        id: 7,
+        to: redirected,
+        content,
+    };
 
     let mem = mint_mem(&cc, &pk, &sk, 0, &signed, &plain, 0);
     let refused = run(&cc, admin_storage(&admin), &mem);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a recipient rewritten past its leading word is refused");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a recipient rewritten past its leading word is refused"
+    );
 }
 
 #[test]
@@ -183,7 +228,10 @@ fn retargeting_the_token_id_reverts() {
 
     let mem = mint_mem(&cc, &pk, &sk, 0, &signed, &plain, 0);
     let refused = run(&cc, admin_storage(&admin), &mem);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a rewritten token id is refused");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a rewritten token id is refused"
+    );
 }
 
 #[test]
@@ -196,11 +244,18 @@ fn rewriting_the_content_reverts() {
     let signed = Order { id: 7, to, content };
     let mut other = content;
     other[8] ^= 0xFF;
-    let plain = Order { id: 7, to, content: other };
+    let plain = Order {
+        id: 7,
+        to,
+        content: other,
+    };
 
     let mem = mint_mem(&cc, &pk, &sk, 0, &signed, &plain, 0);
     let refused = run(&cc, admin_storage(&admin), &mem);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "rewritten content is refused");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "rewritten content is refused"
+    );
 }
 
 #[test]
@@ -216,7 +271,10 @@ fn a_non_admin_signer_sharing_the_admin_leading_word_is_refused() {
 
     let mem = mint_mem(&cc, &pk, &sk, 0, &order, &order, 0);
     let refused = run(&cc, admin_storage(&admin), &mem);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a leading word collision does not forge the admin");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a leading word collision does not forge the admin"
+    );
 }
 
 #[test]
@@ -233,7 +291,10 @@ fn a_replayed_admin_order_is_refused_after_the_nonce_advances() {
     let order2 = Order { id: 8, to, content };
     let mem2 = mint_mem(&cc, &pk, &sk, 0, &order2, &order2, 0);
     let refused = run(&cc, after, &mem2);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "the captured nonce zero order cannot be replayed");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "the captured nonce zero order cannot be replayed"
+    );
 }
 
 #[test]
@@ -269,6 +330,9 @@ fn an_order_captured_on_another_chain_does_not_verify_here() {
     mem[REGION_OFF as usize..].copy_from_slice(&region);
 
     let refused = run(&cc, admin_storage(&admin), &mem);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a cross chain order does not verify");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a cross chain order does not verify"
+    );
     let _ = map_addr_word_key(OWNER_OF_BASE, &id_key(7), 0);
 }

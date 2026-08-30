@@ -42,7 +42,12 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
     mem[off..off + 8].copy_from_slice(&value.to_be_bytes());
 }
 
-fn message(cc: &CompiledContract, member: &[u8; 32], nonce: u64, new_board: &[[u8; 32]; 3]) -> Vec<u8> {
+fn message(
+    cc: &CompiledContract,
+    member: &[u8; 32],
+    nonce: u64,
+    new_board: &[[u8; 32]; 3],
+) -> Vec<u8> {
     let selector = cc.container.entries[0].selector;
     let mut msg = Vec::new();
     msg.extend_from_slice(b"QTVSGN01");
@@ -85,7 +90,10 @@ fn read_board(storage: &BTreeMap<[u8; 32], u64>) -> [[u8; 32]; 3] {
     let mut out = [[0u8; 32]; 3];
     for (g, addr) in out.iter_mut().enumerate() {
         for w in 0..4 {
-            let word = storage.get(&slot_key((g * 4 + w) as u64)).copied().unwrap_or(0);
+            let word = storage
+                .get(&slot_key((g * 4 + w) as u64))
+                .copied()
+                .unwrap_or(0);
             addr[w * 8..w * 8 + 8].copy_from_slice(&word.to_be_bytes());
         }
     }
@@ -105,7 +113,10 @@ fn run(
 }
 
 fn ml_guardians() -> (Vec<(ml_dsa::PublicKey, ml_dsa::SecretKey)>, [[u8; 32]; 3]) {
-    let keys: Vec<_> = [1u8, 2, 3].iter().map(|s| ml_dsa::keygen(&[*s; 32])).collect();
+    let keys: Vec<_> = [1u8, 2, 3]
+        .iter()
+        .map(|s| ml_dsa::keygen(&[*s; 32]))
+        .collect();
     let addrs = [
         signer_address(SCHEME_ML, &keys[0].0),
         signer_address(SCHEME_ML, &keys[1].0),
@@ -137,12 +148,27 @@ fn an_honest_quorum_over_a_bounded_pointer_rotates_the_board() {
     place_member(&cc, &mut mem, 1, 8192 + m0.len() as u64, &m1, 1);
 
     let out = run(&cc, board_storage(&addrs), &mem).expect("an honest quorum rotates");
-    assert_eq!(read_board(&out), new_board, "the board is the approved new set");
+    assert_eq!(
+        read_board(&out),
+        new_board,
+        "the board is the approved new set"
+    );
 }
 
-fn place_member(cc: &CompiledContract, mem: &mut [u8], i: usize, ptr: u64, region: &[u8], index: u64) {
+fn place_member(
+    cc: &CompiledContract,
+    mem: &mut [u8],
+    i: usize,
+    ptr: u64,
+    region: &[u8],
+    index: u64,
+) {
     mem[ptr as usize..ptr as usize + region.len()].copy_from_slice(region);
-    put_word(mem, arg_offset(cc, &format!("approvals#{i}#scheme")), SCHEME_ML as u64);
+    put_word(
+        mem,
+        arg_offset(cc, &format!("approvals#{i}#scheme")),
+        SCHEME_ML as u64,
+    );
     put_word(mem, arg_offset(cc, &format!("approvals#{i}#ptr")), ptr);
     put_word(mem, arg_offset(cc, &format!("approvals#{i}#index")), index);
 }

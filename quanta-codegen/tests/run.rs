@@ -51,8 +51,15 @@ fn meter_advance_runs_metered_and_writes_state() {
         .run()
         .expect("clean halt");
 
-    assert_eq!(out.storage.get(&slot_key(0)), Some(&12), "reading must become twelve");
-    assert_eq!(out.meter_used, 955, "metered meter cost of the advance entry");
+    assert_eq!(
+        out.storage.get(&slot_key(0)),
+        Some(&12),
+        "reading must become twelve"
+    );
+    assert_eq!(
+        out.meter_used, 955,
+        "metered meter cost of the advance entry"
+    );
 }
 
 #[test]

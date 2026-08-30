@@ -38,7 +38,12 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
 fn window(label: &[u8]) -> [u8; 32] {
@@ -106,7 +111,10 @@ fn a_reserved_name_cannot_be_registered() {
     let mut storage = seed();
     storage.insert(map_key(RESERVED_BASE, &name_key(b"sol")), 1);
     let refused = run_paid(&cc, "register", storage, &caller, 0, b"sol", 3, 1, 500);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a reserved name is not registrable");
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a reserved name is not registrable"
+    );
 }
 
 #[test]
@@ -129,8 +137,21 @@ fn a_reserved_name_cannot_be_claimed_in_the_premium_auction() {
     storage.insert(map_key(EXPIRY_BASE, &name_key(b"alice")), e);
     storage.insert(map_key(RESERVED_BASE, &name_key(b"alice")), 1);
     let now = e + grace + 5 * DAY;
-    let refused = run_paid(&cc, "claim_premium", storage, &claimant, now, b"alice", 5, 1, 1 << 21);
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a reserved lapsed name cannot be premium claimed");
+    let refused = run_paid(
+        &cc,
+        "claim_premium",
+        storage,
+        &claimant,
+        now,
+        b"alice",
+        5,
+        1,
+        1 << 21,
+    );
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a reserved lapsed name cannot be premium claimed"
+    );
 }
 
 #[test]
@@ -138,6 +159,19 @@ fn a_registration_term_that_overflows_the_price_reverts_rather_than_wrapping_che
     let cc = compiled();
     let caller = [0xC0u8; 32];
     let years = 1u64 << 60;
-    let refused = run_paid(&cc, "register", seed(), &caller, 0, b"alice", 5, years, u64::MAX);
-    assert!(matches!(refused, Err(Fault::Overflow)), "a wrapping cheap price is not reachable");
+    let refused = run_paid(
+        &cc,
+        "register",
+        seed(),
+        &caller,
+        0,
+        b"alice",
+        5,
+        years,
+        u64::MAX,
+    );
+    assert!(
+        matches!(refused, Err(Fault::Overflow)),
+        "a wrapping cheap price is not reachable"
+    );
 }

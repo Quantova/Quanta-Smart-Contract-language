@@ -11,14 +11,28 @@ pub struct Emit {
 pub fn compile_json(src: &str) -> Emit {
     let program = match quanta_parser::parse(src) {
         Ok(program) => program,
-        Err(e) => return Emit { json: error_json(src, &e.message, e.span.start), ok: false },
+        Err(e) => {
+            return Emit {
+                json: error_json(src, &e.message, e.span.start),
+                ok: false,
+            }
+        }
     };
     if let Err(e) = quanta_typeck::check(&program) {
-        return Emit { json: error_json(src, &e.message, e.span.start), ok: false };
+        return Emit {
+            json: error_json(src, &e.message, e.span.start),
+            ok: false,
+        };
     }
     match quanta_codegen::compile(&program) {
-        Ok(contracts) => Emit { json: contracts_json(&contracts), ok: true },
-        Err(e) => Emit { json: error_json(src, &e.to_string(), e.span().start), ok: false },
+        Ok(contracts) => Emit {
+            json: contracts_json(&contracts),
+            ok: true,
+        },
+        Err(e) => Emit {
+            json: error_json(src, &e.to_string(), e.span().start),
+            ok: false,
+        },
     }
 }
 
@@ -50,7 +64,10 @@ fn contracts_json(contracts: &[CompiledContract]) -> String {
                 }
                 out.push_str("{\"key\":");
                 json_str(&mut out, &arg.key);
-                out.push_str(&format!(",\"offset\":{},\"width\":{}}}", arg.offset, arg.width));
+                out.push_str(&format!(
+                    ",\"offset\":{},\"width\":{}}}",
+                    arg.offset, arg.width
+                ));
             }
             out.push_str("],\"signed_orders\":[");
             for (s, order) in entry.signed_orders.iter().enumerate() {
@@ -105,7 +122,9 @@ fn error_json(src: &str, message: &str, offset: usize) -> String {
     let (line, col) = line_col(src, offset);
     let mut out = String::from("{\"ok\":false,\"errors\":[{\"message\":");
     json_str(&mut out, message);
-    out.push_str(&format!(",\"line\":{line},\"col\":{col},\"offset\":{offset}}}]}}"));
+    out.push_str(&format!(
+        ",\"line\":{line},\"col\":{col},\"offset\":{offset}}}]}}"
+    ));
     out
 }
 
@@ -161,7 +180,9 @@ mod tests {
         let tail = &json[at..];
         let w = tail.find("\"width\":").expect("a width follows the key") + "\"width\":".len();
         let rest = &tail[w..];
-        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
         rest[..end].parse().expect("the width is a number")
     }
 
@@ -172,9 +193,21 @@ mod tests {
                    { total = checked(total + order.amount); reg.credit(order.to, order.amount); } }";
         let emit = compile_json(src);
         assert!(emit.ok, "the contract compiles: {}", emit.json);
-        assert_eq!(width_of(&emit.json, "order.amount"), 16, "a u128 signed field is sixteen bytes");
-        assert_eq!(width_of(&emit.json, "order.to"), 32, "an address signed field is a full word set");
-        assert_eq!(width_of(&emit.json, "@caller"), 32, "the caller context is a full address");
+        assert_eq!(
+            width_of(&emit.json, "order.amount"),
+            16,
+            "a u128 signed field is sixteen bytes"
+        );
+        assert_eq!(
+            width_of(&emit.json, "order.to"),
+            32,
+            "an address signed field is a full word set"
+        );
+        assert_eq!(
+            width_of(&emit.json, "@caller"),
+            32,
+            "the caller context is a full address"
+        );
         assert!(
             emit.json.contains("\"signed_orders\":[{\"param\":\"order\",\"fields\":[\"order.amount\",\"order.to\"]}]"),
             "the descriptor exposes the signed fields in message order: {}",
@@ -191,9 +224,14 @@ mod tests {
                    { send(who, vault.split(1000)); } }";
         let emit = compile_json(src);
         assert!(emit.ok, "the contract compiles: {}", emit.json);
-        assert_eq!(width_of(&emit.json, "who"), 32, "the recipient is a full address");
+        assert_eq!(
+            width_of(&emit.json, "who"),
+            32,
+            "the recipient is a full address"
+        );
         assert!(
-            emit.json.contains("\"signed_orders\":[{\"param\":\"who\",\"fields\":[\"who\"]}]"),
+            emit.json
+                .contains("\"signed_orders\":[{\"param\":\"who\",\"fields\":[\"who\"]}]"),
             "the signer binds the bare address parameter it authorizes: {}",
             emit.json
         );
@@ -206,6 +244,10 @@ mod tests {
                    { guard who == owner; flag = 1; } }";
         let emit = compile_json(src);
         assert!(emit.ok, "the contract compiles: {}", emit.json);
-        assert_eq!(width_of(&emit.json, "who"), 32, "a scalar address compare binds the full address");
+        assert_eq!(
+            width_of(&emit.json, "who"),
+            32,
+            "a scalar address compare binds the full address"
+        );
     }
 }

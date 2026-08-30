@@ -51,7 +51,10 @@ fn compile_src(src: &str) -> CompiledContract {
 }
 
 fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
-    cc.entries.iter().find(|e| e.name == name).expect("entry present")
+    cc.entries
+        .iter()
+        .find(|e| e.name == name)
+        .expect("entry present")
 }
 
 fn offset(cc: &CompiledContract, name: &str, key: &str) -> u64 {
@@ -64,12 +67,36 @@ fn offset(cc: &CompiledContract, name: &str, key: &str) -> u64 {
 }
 
 fn assert_host_context(cc: &CompiledContract, name: &str) {
-    assert_eq!(offset(cc, name, "@caller"), CTX_CALLER_OFF, "@caller leads the context");
-    assert_eq!(offset(cc, name, "@contract"), CTX_CONTRACT_OFF, "@contract is one address in");
-    assert_eq!(offset(cc, name, "@time"), CTX_TIME_OFF, "@time follows the two addresses");
-    assert_eq!(offset(cc, name, "@chain"), CTX_CHAIN_OFF, "@chain is the last context word");
-    assert_eq!(offset(cc, name, "@value"), CTX_VALUE_OFF, "@value is the last context word");
-    assert_eq!(CTX_VALUE_OFF + SDK_WORD, SDK_CONTEXT_BYTES, "the five context words span eighty eight bytes");
+    assert_eq!(
+        offset(cc, name, "@caller"),
+        CTX_CALLER_OFF,
+        "@caller leads the context"
+    );
+    assert_eq!(
+        offset(cc, name, "@contract"),
+        CTX_CONTRACT_OFF,
+        "@contract is one address in"
+    );
+    assert_eq!(
+        offset(cc, name, "@time"),
+        CTX_TIME_OFF,
+        "@time follows the two addresses"
+    );
+    assert_eq!(
+        offset(cc, name, "@chain"),
+        CTX_CHAIN_OFF,
+        "@chain is the last context word"
+    );
+    assert_eq!(
+        offset(cc, name, "@value"),
+        CTX_VALUE_OFF,
+        "@value is the last context word"
+    );
+    assert_eq!(
+        CTX_VALUE_OFF + SDK_WORD,
+        SDK_CONTEXT_BYTES,
+        "the five context words span eighty eight bytes"
+    );
     for slot in &entry(cc, name).args {
         if slot.key.starts_with('@') {
             continue;
@@ -91,11 +118,30 @@ fn the_qasset_mint_offsets_equal_the_sdk_canonical_layout() {
     let scheme = offset(&cc, "mint", "order#scheme");
     let ptr = offset(&cc, "mint", "order#ptr");
     let amount = offset(&cc, "mint", "order.amount");
-    assert_eq!(to, SDK_CONTEXT_BYTES, "the destination address opens the argument region");
-    assert_eq!(scheme, to + SDK_ADDR, "the scheme word sits one whole address past the destination");
-    assert_eq!(ptr, scheme + SDK_WORD, "the region pointer follows the scheme word");
-    assert_eq!(amount, ptr + SDK_WORD, "the amount follows the pointer word");
-    assert_eq!((to, scheme, ptr, amount), (88, 120, 128, 136), "the frozen QAsset mint layout");
+    assert_eq!(
+        to, SDK_CONTEXT_BYTES,
+        "the destination address opens the argument region"
+    );
+    assert_eq!(
+        scheme,
+        to + SDK_ADDR,
+        "the scheme word sits one whole address past the destination"
+    );
+    assert_eq!(
+        ptr,
+        scheme + SDK_WORD,
+        "the region pointer follows the scheme word"
+    );
+    assert_eq!(
+        amount,
+        ptr + SDK_WORD,
+        "the amount follows the pointer word"
+    );
+    assert_eq!(
+        (to, scheme, ptr, amount),
+        (88, 120, 128, 136),
+        "the frozen QAsset mint layout"
+    );
 }
 
 #[test]
@@ -104,8 +150,15 @@ fn the_qasset_transfer_offsets_equal_the_sdk_canonical_layout() {
     assert_host_context(&cc, "transfer");
     let to = offset(&cc, "transfer", "to");
     let amount = offset(&cc, "transfer", "amount");
-    assert_eq!(to, SDK_CONTEXT_BYTES, "the destination address opens the argument region");
-    assert_eq!(amount, to + SDK_ADDR, "the amount sits one whole address past the destination");
+    assert_eq!(
+        to, SDK_CONTEXT_BYTES,
+        "the destination address opens the argument region"
+    );
+    assert_eq!(
+        amount,
+        to + SDK_ADDR,
+        "the amount sits one whole address past the destination"
+    );
     assert_eq!((to, amount), (88, 120), "the frozen QAsset transfer layout");
 }
 
@@ -188,7 +241,14 @@ fn mint_memory(
     client_context: u64,
 ) -> Vec<u8> {
     let signer = signer_address(SCHEME_ML, &key.0);
-    let msg = canonical_order_message(chain_id, &signer, selector_of(cc, "mint"), nonce, amount, to);
+    let msg = canonical_order_message(
+        chain_id,
+        &signer,
+        selector_of(cc, "mint"),
+        nonce,
+        amount,
+        to,
+    );
     let sig = ml_dsa::sign(&key.1, &msg, &[], &[0u8; 32]).expect("sign");
 
     let mut region = Vec::new();
@@ -198,7 +258,8 @@ fn mint_memory(
 
     let mut mem = vec![0u8; 65536];
     mem[CTX_CONTRACT_OFF as usize..CTX_CONTRACT_OFF as usize + 32].copy_from_slice(&CONTRACT);
-    mem[CTX_CHAIN_OFF as usize..CTX_CHAIN_OFF as usize + 8].copy_from_slice(&chain_id.to_be_bytes());
+    mem[CTX_CHAIN_OFF as usize..CTX_CHAIN_OFF as usize + 8]
+        .copy_from_slice(&chain_id.to_be_bytes());
 
     let to_off = client_context as usize;
     let scheme_off = (client_context + SDK_ADDR) as usize;
@@ -216,13 +277,19 @@ fn mint_memory(
 
 fn balance(storage: &BTreeMap<[u8; 32], u64>, who: &[u8; 32]) -> u128 {
     let lo = storage.get(&map_key(BAL_BASE, who)).copied().unwrap_or(0) as u128;
-    let hi = storage.get(&map_addr_word_key(BAL_BASE, who, 1)).copied().unwrap_or(0) as u128;
+    let hi = storage
+        .get(&map_addr_word_key(BAL_BASE, who, 1))
+        .copied()
+        .unwrap_or(0) as u128;
     (hi << 64) | lo
 }
 
 fn supply(storage: &BTreeMap<[u8; 32], u64>) -> u128 {
     let lo = storage.get(&slot_key(SLOT_SUPPLY)).copied().unwrap_or(0) as u128;
-    let hi = storage.get(&slot_key(SLOT_SUPPLY | HI)).copied().unwrap_or(0) as u128;
+    let hi = storage
+        .get(&slot_key(SLOT_SUPPLY | HI))
+        .copied()
+        .unwrap_or(0) as u128;
     (hi << 64) | lo
 }
 
@@ -239,11 +306,23 @@ fn a_signed_order_at_the_emitted_offsets_verifies_and_the_stale_shift_is_rejecte
     let mem = mint_memory(&cc, &key, chain_id, 0, amount, &holder, SDK_CONTEXT_BYTES);
     let (after, _) = run(&cc, selector_of(&cc, "mint"), storage, &mem)
         .expect("an order placed at the emitted offsets verifies and mints");
-    assert_eq!(balance(&after, &holder), amount, "the whole two word amount is credited");
+    assert_eq!(
+        balance(&after, &holder),
+        amount,
+        "the whole two word amount is credited"
+    );
     assert_eq!(supply(&after), amount, "supply tracks the wide mint");
 
     let storage = deploy(&cc, &owner);
-    let stale = mint_memory(&cc, &key, chain_id, 0, amount, &holder, SDK_CONTEXT_BYTES - SDK_WORD);
+    let stale = mint_memory(
+        &cc,
+        &key,
+        chain_id,
+        0,
+        amount,
+        &holder,
+        SDK_CONTEXT_BYTES - SDK_WORD,
+    );
     assert!(
         run(&cc, selector_of(&cc, "mint"), storage, &stale).is_err(),
         "an order laid out for the stale seventy two byte context must be rejected, never silently \

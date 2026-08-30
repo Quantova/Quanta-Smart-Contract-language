@@ -57,7 +57,12 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
 fn addr(tag: u8) -> [u8; 32] {
@@ -73,16 +78,29 @@ fn id_key(id: u64) -> [u8; 32] {
 fn put_owner(storage: &mut BTreeMap<[u8; 32], u64>, base: u64, id: u64, owner: &[u8; 32]) {
     let key = id_key(id);
     for i in 0..4u64 {
-        let w = u64::from_be_bytes(owner[i as usize * 8..i as usize * 8 + 8].try_into().unwrap());
+        let w = u64::from_be_bytes(
+            owner[i as usize * 8..i as usize * 8 + 8]
+                .try_into()
+                .unwrap(),
+        );
         storage.insert(map_addr_word_key(base, &key, i), w);
     }
 }
 
 fn holding(storage: &BTreeMap<[u8; 32], u64>, who: &[u8; 32]) -> u64 {
-    storage.get(&map_key(HOLDINGS_BASE, who)).copied().unwrap_or(0)
+    storage
+        .get(&map_key(HOLDINGS_BASE, who))
+        .copied()
+        .unwrap_or(0)
 }
 
-fn mem_mint(cc: &CompiledContract, _caller: &[u8; 32], id: u64, to: &[u8; 32], content: &[u8; 32]) -> Vec<u8> {
+fn mem_mint(
+    cc: &CompiledContract,
+    _caller: &[u8; 32],
+    id: u64,
+    to: &[u8; 32],
+    content: &[u8; 32],
+) -> Vec<u8> {
     let mut mem = vec![0u8; 4096];
     let ido = arg_off(cc, "mint", "id");
     mem[ido..ido + 8].copy_from_slice(&id.to_be_bytes());
@@ -124,7 +142,11 @@ fn event<'a>(effects: &'a [Effect], selector: [u8; 4]) -> Option<&'a Vec<u8>> {
 }
 
 fn selector_of(cc: &CompiledContract, name: &str) -> [u8; 4] {
-    cc.events.iter().find(|e| e.name == name).expect("event").selector
+    cc.events
+        .iter()
+        .find(|e| e.name == name)
+        .expect("event")
+        .selector
 }
 
 #[test]
@@ -135,18 +157,43 @@ fn mint_sets_the_full_owner_and_bumps_the_supply_and_holding_counts() {
     let id = 7u64;
 
     let mem = mem_mint(&cc, &a, id, &a, &content);
-    let (storage, effects) =
-        run(&cc.container, entry(&cc, "mint").selector, BTreeMap::new(), &mem).expect("mint halts");
+    let (storage, effects) = run(
+        &cc.container,
+        entry(&cc, "mint").selector,
+        BTreeMap::new(),
+        &mem,
+    )
+    .expect("mint halts");
 
-    assert_eq!(read_addr_value(&storage, OWNER_OF_BASE, &id_key(id)), a, "owner_of[id] is the full recipient");
-    assert_eq!(read_addr_value(&storage, CONTENT_BASE, &id_key(id)), content, "content_of[id] is the full content");
-    assert_eq!(storage.get(&slot_key(SUPPLY_SLOT)).copied().unwrap_or(0), 1, "supply is one");
+    assert_eq!(
+        read_addr_value(&storage, OWNER_OF_BASE, &id_key(id)),
+        a,
+        "owner_of[id] is the full recipient"
+    );
+    assert_eq!(
+        read_addr_value(&storage, CONTENT_BASE, &id_key(id)),
+        content,
+        "content_of[id] is the full content"
+    );
+    assert_eq!(
+        storage.get(&slot_key(SUPPLY_SLOT)).copied().unwrap_or(0),
+        1,
+        "supply is one"
+    );
     assert_eq!(holding(&storage, &a), 1, "the recipient holds one");
 
     let data = event(&effects, selector_of(&cc, "Minted")).expect("a Minted event");
-    assert_eq!(&data[0..8], &id.to_be_bytes(), "the event leads with the token id word");
+    assert_eq!(
+        &data[0..8],
+        &id.to_be_bytes(),
+        "the event leads with the token id word"
+    );
     assert_eq!(&data[8..40], &a, "the event carries the whole recipient");
-    assert_eq!(&data[40..72], &content, "the event carries the whole content");
+    assert_eq!(
+        &data[40..72],
+        &content,
+        "the event carries the whole content"
+    );
 }
 
 #[test]
@@ -156,12 +203,24 @@ fn a_minted_id_cannot_be_minted_again() {
     let content = addr(0xC0);
     let id = 7u64;
 
-    let (storage, _) =
-        run(&cc.container, entry(&cc, "mint").selector, BTreeMap::new(), &mem_mint(&cc, &a, id, &a, &content))
-            .expect("mint halts");
+    let (storage, _) = run(
+        &cc.container,
+        entry(&cc, "mint").selector,
+        BTreeMap::new(),
+        &mem_mint(&cc, &a, id, &a, &content),
+    )
+    .expect("mint halts");
 
-    let again = run(&cc.container, entry(&cc, "mint").selector, storage, &mem_mint(&cc, &a, id, &a, &content));
-    assert!(matches!(again, Err(Fault::DivByZero)), "a second mint of a live id reverts");
+    let again = run(
+        &cc.container,
+        entry(&cc, "mint").selector,
+        storage,
+        &mem_mint(&cc, &a, id, &a, &content),
+    );
+    assert!(
+        matches!(again, Err(Fault::DivByZero)),
+        "a second mint of a live id reverts"
+    );
 }
 
 #[test]
@@ -175,12 +234,29 @@ fn move_moves_the_whole_owner_and_adjusts_the_holding_counts() {
     put_owner(&mut storage, OWNER_OF_BASE, id, &a);
     storage.insert(map_key(HOLDINGS_BASE, &a), 1);
 
-    let (after, effects) = run(&cc.container, entry(&cc, "move_to").selector, storage, &mem_move(&cc, &a, id, &b))
-        .expect("the owner move halts");
+    let (after, effects) = run(
+        &cc.container,
+        entry(&cc, "move_to").selector,
+        storage,
+        &mem_move(&cc, &a, id, &b),
+    )
+    .expect("the owner move halts");
 
-    assert_eq!(read_addr_value(&after, OWNER_OF_BASE, &id_key(id)), b, "ownership moved to b in full");
-    assert_eq!(holding(&after, &a), 0, "the prior owner's holding fell to zero");
-    assert_eq!(holding(&after, &b), 1, "the new owner's holding rose to one");
+    assert_eq!(
+        read_addr_value(&after, OWNER_OF_BASE, &id_key(id)),
+        b,
+        "ownership moved to b in full"
+    );
+    assert_eq!(
+        holding(&after, &a),
+        0,
+        "the prior owner's holding fell to zero"
+    );
+    assert_eq!(
+        holding(&after, &b),
+        1,
+        "the new owner's holding rose to one"
+    );
 
     let data = event(&effects, selector_of(&cc, "Moved")).expect("a Moved event");
     assert_eq!(&data[0..8], &id.to_be_bytes());
@@ -200,12 +276,28 @@ fn a_move_binds_all_thirty_two_bytes_of_the_caller_not_a_leading_word() {
 
     let mut impostor = a;
     impostor[8] ^= 0xFF;
-    let refused = run(&cc.container, entry(&cc, "move_to").selector, storage.clone(), &mem_move(&cc, &impostor, id, &impostor));
-    assert!(matches!(refused, Err(Fault::DivByZero)), "the prefix collision impostor is refused");
+    let refused = run(
+        &cc.container,
+        entry(&cc, "move_to").selector,
+        storage.clone(),
+        &mem_move(&cc, &impostor, id, &impostor),
+    );
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "the prefix collision impostor is refused"
+    );
 
     let stranger = addr(0xCC);
-    let refused = run(&cc.container, entry(&cc, "move_to").selector, storage, &mem_move(&cc, &stranger, id, &stranger));
-    assert!(matches!(refused, Err(Fault::DivByZero)), "a stranger is refused");
+    let refused = run(
+        &cc.container,
+        entry(&cc, "move_to").selector,
+        storage,
+        &mem_move(&cc, &stranger, id, &stranger),
+    );
+    assert!(
+        matches!(refused, Err(Fault::DivByZero)),
+        "a stranger is refused"
+    );
 }
 
 #[test]
@@ -214,26 +306,55 @@ fn a_token_id_keyed_owner_is_independent_across_ids() {
     let a = addr(0xA1);
     let b = addr(0xB2);
 
-    let (mut storage, _) =
-        run(&cc.container, entry(&cc, "mint").selector, BTreeMap::new(), &mem_mint(&cc, &a, 1, &a, &addr(0xC1)))
-            .expect("mint one halts");
-    let (storage2, _) =
-        run(&cc.container, entry(&cc, "mint").selector, storage.clone(), &mem_mint(&cc, &b, 2, &b, &addr(0xC2)))
-            .expect("mint two halts");
+    let (mut storage, _) = run(
+        &cc.container,
+        entry(&cc, "mint").selector,
+        BTreeMap::new(),
+        &mem_mint(&cc, &a, 1, &a, &addr(0xC1)),
+    )
+    .expect("mint one halts");
+    let (storage2, _) = run(
+        &cc.container,
+        entry(&cc, "mint").selector,
+        storage.clone(),
+        &mem_mint(&cc, &b, 2, &b, &addr(0xC2)),
+    )
+    .expect("mint two halts");
     storage = storage2;
 
-    assert_eq!(read_addr_value(&storage, OWNER_OF_BASE, &id_key(1)), a, "id one is owned by a");
-    assert_eq!(read_addr_value(&storage, OWNER_OF_BASE, &id_key(2)), b, "id two is owned by b");
+    assert_eq!(
+        read_addr_value(&storage, OWNER_OF_BASE, &id_key(1)),
+        a,
+        "id one is owned by a"
+    );
+    assert_eq!(
+        read_addr_value(&storage, OWNER_OF_BASE, &id_key(2)),
+        b,
+        "id two is owned by b"
+    );
     assert_ne!(
         map_addr_word_key(OWNER_OF_BASE, &id_key(1), 0),
         map_addr_word_key(OWNER_OF_BASE, &id_key(2), 0),
         "distinct ids land on distinct slots"
     );
 
-    let (after, _) = run(&cc.container, entry(&cc, "move_to").selector, storage, &mem_move(&cc, &a, 1, &b))
-        .expect("move id one halts");
-    assert_eq!(read_addr_value(&after, OWNER_OF_BASE, &id_key(1)), b, "id one moved to b");
-    assert_eq!(read_addr_value(&after, OWNER_OF_BASE, &id_key(2)), b, "id two is untouched by the move of id one");
+    let (after, _) = run(
+        &cc.container,
+        entry(&cc, "move_to").selector,
+        storage,
+        &mem_move(&cc, &a, 1, &b),
+    )
+    .expect("move id one halts");
+    assert_eq!(
+        read_addr_value(&after, OWNER_OF_BASE, &id_key(1)),
+        b,
+        "id one moved to b"
+    );
+    assert_eq!(
+        read_addr_value(&after, OWNER_OF_BASE, &id_key(2)),
+        b,
+        "id two is untouched by the move of id one"
+    );
 }
 
 #[test]

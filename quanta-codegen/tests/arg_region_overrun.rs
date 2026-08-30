@@ -21,7 +21,8 @@ const SMALL_BOARD: &str = "contract Board {\n\
 fn a_wide_argument_region_is_refused_before_it_overruns_the_scratch_floor() {
     let program = quanta_parser::parse(BIG_BOARD).expect("parse");
     quanta_typeck::check(&program).expect("typecheck");
-    let err = compile_contract(&program.contracts[0]).expect_err("the oversized board must be refused");
+    let err =
+        compile_contract(&program.contracts[0]).expect_err("the oversized board must be refused");
     let text = format!("{err:?}");
     assert!(
         text.contains("scratch memory floor"),

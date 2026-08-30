@@ -18,7 +18,10 @@ fn compile(src: &str) -> CompiledContract {
 }
 
 fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
-    cc.entries.iter().find(|e| e.name == name).expect("the entry")
+    cc.entries
+        .iter()
+        .find(|e| e.name == name)
+        .expect("the entry")
 }
 
 fn put_arg(mem: &mut [u8], e: &EntryArtifact, key: &str, value: u64) {
@@ -61,7 +64,11 @@ fn an_after_guard_reverts_before_its_window_and_passes_after() {
     let mut mem = vec![0u8; 4096];
     put_arg(&mut mem, act, "@time", 3700);
     let out = run(&cc, act, storage, &mem).expect("the entry halts at the window");
-    assert_eq!(out.get(&slot_key(1)), Some(&1), "the body ran once the window opened");
+    assert_eq!(
+        out.get(&slot_key(1)),
+        Some(&1),
+        "the body ran once the window opened"
+    );
 }
 
 const CONFIGURABLE: &str =
@@ -88,5 +95,9 @@ fn an_expression_target_still_honours_its_from_anchor() {
     let mut open = vec![0u8; 4096];
     put_arg(&mut open, release, "@time", 1_604_800);
     let out = run(&cc, release, storage, &open).expect("the entry halts at the anchored window");
-    assert_eq!(out.get(&slot_key(2)), Some(&1), "the body ran once the anchored window opened");
+    assert_eq!(
+        out.get(&slot_key(2)),
+        Some(&1),
+        "the body ran once the anchored window opened"
+    );
 }

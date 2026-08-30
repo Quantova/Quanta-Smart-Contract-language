@@ -146,7 +146,12 @@ fn mint_memory(
         let off = cursor;
         cursor += region.len();
         mem[off..off + region.len()].copy_from_slice(region);
-        put_arg(&mut mem, mint, &format!("approvals#{i}#scheme"), SCHEME_ML as u64);
+        put_arg(
+            &mut mem,
+            mint,
+            &format!("approvals#{i}#scheme"),
+            SCHEME_ML as u64,
+        );
         put_arg(&mut mem, mint, &format!("approvals#{i}#ptr"), off as u64);
         put_arg(&mut mem, mint, &format!("approvals#{i}#index"), *index);
     }
@@ -179,7 +184,11 @@ fn a_quorum_gated_mint_binds_three_distinct_guardians_and_credits_the_recipient(
     storage.insert(slot_key(SLOT_MAX), CEILING);
 
     let out = run(&cc, mint.selector, storage, &mem).expect("a met quorum admits the mint");
-    assert_eq!(out.get(&slot_key(SLOT_SUPPLY)), Some(&500), "supply grows under the quorum");
+    assert_eq!(
+        out.get(&slot_key(SLOT_SUPPLY)),
+        Some(&500),
+        "supply grows under the quorum"
+    );
     assert_eq!(
         out.get(&map_key(BAL_BASE, &to)),
         Some(&500),

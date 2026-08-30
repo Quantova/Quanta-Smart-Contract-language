@@ -40,7 +40,12 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
 fn window(label: &[u8]) -> [u8; 32] {
@@ -130,7 +135,10 @@ fn vault(storage: &BTreeMap<[u8; 32], u64>) -> u64 {
 }
 
 fn expiry(storage: &BTreeMap<[u8; 32], u64>, label: &[u8]) -> u64 {
-    storage.get(&map_key(EXPIRY_BASE, &name_key(label))).copied().unwrap_or(0)
+    storage
+        .get(&map_key(EXPIRY_BASE, &name_key(label)))
+        .copied()
+        .unwrap_or(0)
 }
 
 fn owner_word(storage: &BTreeMap<[u8; 32], u64>, label: &[u8], word: u64) -> u64 {
@@ -163,15 +171,33 @@ fn tier_selection_charges_base_by_label_length() {
         (b"alice".as_slice(), 5, 100),
         (b"satoshi".as_slice(), 7, 100),
     ] {
-        let s = run_paid(&cc, "register", seed(&base_params()), &caller, 0, label, len, 1, tier)
-            .expect("register halts");
-        assert_eq!(vault(&s), tier, "a {len} character label is charged its tier for one year");
+        let s = run_paid(
+            &cc,
+            "register",
+            seed(&base_params()),
+            &caller,
+            0,
+            label,
+            len,
+            1,
+            tier,
+        )
+        .expect("register halts");
+        assert_eq!(
+            vault(&s),
+            tier,
+            "a {len} character label is charged its tier for one year"
+        );
         assert_eq!(
             owner_word(&s, label, 0),
             u64::from_be_bytes(caller[0..8].try_into().unwrap()),
             "owner_of[label] is the caller"
         );
-        assert_eq!(expiry(&s, label), 0 + YEAR, "a fresh registration expires one year out");
+        assert_eq!(
+            expiry(&s, label),
+            0 + YEAR,
+            "a fresh registration expires one year out"
+        );
     }
 }
 
@@ -179,8 +205,18 @@ fn tier_selection_charges_base_by_label_length() {
 fn a_multi_year_registration_charges_the_tier_per_year() {
     let cc = compiled();
     let caller = [0xC0u8; 32];
-    let s = run_paid(&cc, "register", seed(&base_params()), &caller, 0, b"jeff", 4, 3, 300 * 3)
-        .expect("register halts");
+    let s = run_paid(
+        &cc,
+        "register",
+        seed(&base_params()),
+        &caller,
+        0,
+        b"jeff",
+        4,
+        3,
+        300 * 3,
+    )
+    .expect("register halts");
     assert_eq!(vault(&s), 300 * 3, "three years of the four character tier");
 }
 
@@ -189,20 +225,63 @@ fn the_absolute_expiry_is_now_plus_whole_years() {
     let cc = compiled();
     let caller = [0xC0u8; 32];
     let t0 = 1000 * DAY;
-    let s = run_paid(&cc, "register", seed(&base_params()), &caller, t0, b"alice", 5, 4, 100 * 4)
-        .expect("register halts");
-    assert_eq!(expiry(&s, b"alice"), t0 + 4 * YEAR, "expiry is now plus four whole years");
-    assert_eq!(expiry(&s, b"alice") % DAY, 0, "the expiry lands on a whole day");
+    let s = run_paid(
+        &cc,
+        "register",
+        seed(&base_params()),
+        &caller,
+        t0,
+        b"alice",
+        5,
+        4,
+        100 * 4,
+    )
+    .expect("register halts");
+    assert_eq!(
+        expiry(&s, b"alice"),
+        t0 + 4 * YEAR,
+        "expiry is now plus four whole years"
+    );
+    assert_eq!(
+        expiry(&s, b"alice") % DAY,
+        0,
+        "the expiry lands on a whole day"
+    );
 }
 
 #[test]
 fn a_label_shorter_than_three_reverts() {
     let cc = compiled();
     let caller = [0xC0u8; 32];
-    let r = run(&cc, "register", seed(&base_params()), &caller, 0, b"ab", 2, 1);
-    assert!(matches!(r, Err(Fault::DivByZero)), "a two character label reverts and charges nothing");
-    let r3 = run_paid(&cc, "register", seed(&base_params()), &caller, 0, b"bob", 3, 1, 500);
-    assert!(r3.is_ok(), "a three character label is the shortest that registers");
+    let r = run(
+        &cc,
+        "register",
+        seed(&base_params()),
+        &caller,
+        0,
+        b"ab",
+        2,
+        1,
+    );
+    assert!(
+        matches!(r, Err(Fault::DivByZero)),
+        "a two character label reverts and charges nothing"
+    );
+    let r3 = run_paid(
+        &cc,
+        "register",
+        seed(&base_params()),
+        &caller,
+        0,
+        b"bob",
+        3,
+        1,
+        500,
+    );
+    assert!(
+        r3.is_ok(),
+        "a three character label is the shortest that registers"
+    );
 }
 
 #[test]
@@ -210,14 +289,42 @@ fn renew_extends_by_whole_years_within_grace() {
     let cc = compiled();
     let caller = [0xC0u8; 32];
     let t0 = 1000 * DAY;
-    let s = run_paid(&cc, "register", seed(&base_params()), &caller, t0, b"jeff", 4, 1, 300)
-        .expect("register halts");
+    let s = run_paid(
+        &cc,
+        "register",
+        seed(&base_params()),
+        &caller,
+        t0,
+        b"jeff",
+        4,
+        1,
+        300,
+    )
+    .expect("register halts");
     let e1 = expiry(&s, b"jeff");
     assert_eq!(e1, t0 + YEAR);
-    let s2 = run_paid(&cc, "renew", s, &caller, t0 + 10 * DAY, b"jeff", 4, 2, 300 * 2)
-        .expect("renew halts");
-    assert_eq!(expiry(&s2, b"jeff"), e1 + 2 * YEAR, "renew adds two whole years to the expiry");
-    assert_eq!(vault(&s2), 300 + 300 * 2, "renew charges the tier per renewed year");
+    let s2 = run_paid(
+        &cc,
+        "renew",
+        s,
+        &caller,
+        t0 + 10 * DAY,
+        b"jeff",
+        4,
+        2,
+        300 * 2,
+    )
+    .expect("renew halts");
+    assert_eq!(
+        expiry(&s2, b"jeff"),
+        e1 + 2 * YEAR,
+        "renew adds two whole years to the expiry"
+    );
+    assert_eq!(
+        vault(&s2),
+        300 + 300 * 2,
+        "renew charges the tier per renewed year"
+    );
 }
 
 #[test]
@@ -231,7 +338,10 @@ fn renew_past_grace_reverts() {
     let e1 = expiry(&s, b"jeff");
     let past = e1 + p.grace + DAY;
     let r = run(&cc, "renew", s, &caller, past, b"jeff", 4, 1);
-    assert!(matches!(r, Err(Fault::DivByZero)), "a name past its grace cannot be renewed");
+    assert!(
+        matches!(r, Err(Fault::DivByZero)),
+        "a name past its grace cannot be renewed"
+    );
 }
 
 #[test]
@@ -248,8 +358,18 @@ fn the_premium_halves_by_start_premium_shifted_right_k() {
         let now = grace_end + k * p.interval;
         let premium = p.start_premium >> (k & 63);
         let pay = premium + p.base_5_plus;
-        let s = run_paid(&cc, "claim_premium", storage, &claimant, now, b"alice", 5, 1, pay)
-            .expect("claim_premium halts inside the auction window");
+        let s = run_paid(
+            &cc,
+            "claim_premium",
+            storage,
+            &claimant,
+            now,
+            b"alice",
+            5,
+            1,
+            pay,
+        )
+        .expect("claim_premium halts inside the auction window");
         assert_eq!(
             vault(&s),
             premium + p.base_5_plus,
@@ -260,7 +380,11 @@ fn the_premium_halves_by_start_premium_shifted_right_k() {
             u64::from_be_bytes(claimant[0..8].try_into().unwrap()),
             "the premium claimant takes ownership"
         );
-        assert_eq!(expiry(&s, b"alice"), now + YEAR, "claim resets the expiry one year out");
+        assert_eq!(
+            expiry(&s, b"alice"),
+            now + YEAR,
+            "claim resets the expiry one year out"
+        );
     }
 }
 
@@ -275,11 +399,35 @@ fn claim_premium_before_grace_end_and_after_auction_reverts() {
     let mut storage = seed(&p);
     storage.insert(map_key(EXPIRY_BASE, &name_key(b"alice")), e);
 
-    let before = run(&cc, "claim_premium", storage.clone(), &claimant, grace_end - DAY, b"alice", 5, 1);
-    assert!(matches!(before, Err(Fault::DivByZero)), "before the auction opens the claim reverts");
+    let before = run(
+        &cc,
+        "claim_premium",
+        storage.clone(),
+        &claimant,
+        grace_end - DAY,
+        b"alice",
+        5,
+        1,
+    );
+    assert!(
+        matches!(before, Err(Fault::DivByZero)),
+        "before the auction opens the claim reverts"
+    );
 
-    let after = run(&cc, "claim_premium", storage, &claimant, grace_end + p.auction, b"alice", 5, 1);
-    assert!(matches!(after, Err(Fault::DivByZero)), "after the auction closes the claim reverts");
+    let after = run(
+        &cc,
+        "claim_premium",
+        storage,
+        &claimant,
+        grace_end + p.auction,
+        b"alice",
+        5,
+        1,
+    );
+    assert!(
+        matches!(after, Err(Fault::DivByZero)),
+        "after the auction closes the claim reverts"
+    );
 }
 
 #[test]
@@ -289,11 +437,15 @@ fn a_registered_name_cannot_be_re_registered_before_it_fully_lapses() {
     let b = [0xB2u8; 32];
     let p = base_params();
     let t0 = 1000 * DAY;
-    let s = run_paid(&cc, "register", seed(&p), &a, t0, b"jeff", 4, 1, 300).expect("register halts");
+    let s =
+        run_paid(&cc, "register", seed(&p), &a, t0, b"jeff", 4, 1, 300).expect("register halts");
     let e1 = expiry(&s, b"jeff");
 
     let held = run(&cc, "register", s.clone(), &b, t0 + DAY, b"jeff", 4, 1);
-    assert!(matches!(held, Err(Fault::DivByZero)), "an unexpired name cannot be taken");
+    assert!(
+        matches!(held, Err(Fault::DivByZero)),
+        "an unexpired name cannot be taken"
+    );
 
     let free_at = e1 + p.grace + p.auction;
     let s2 = run_paid(&cc, "register", s, &b, free_at, b"jeff", 4, 1, 300)

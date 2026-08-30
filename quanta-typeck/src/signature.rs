@@ -135,7 +135,10 @@ fn forged_signed_authority(model: &Model, entry: &EntryDecl) -> Option<TypeError
     if backing.is_empty() {
         return None;
     }
-    if backing.iter().any(|(field, _)| authority_anchor_protected(model, field)) {
+    if backing
+        .iter()
+        .any(|(field, _)| authority_anchor_protected(model, field))
+    {
         return None;
     }
     let (field, span) = backing[0];
@@ -153,8 +156,15 @@ fn forged_signed_authority_error(field: &str, span: Span) -> TypeError {
     )
 }
 
-fn forged_caller_anchor(model: &Model, entry: &EntryDecl, signed: &HashSet<&str>) -> Option<TypeError> {
-    if !entry_moves_value(model, entry) || !signed.is_empty() || entry.params.iter().any(is_quorum_param) {
+fn forged_caller_anchor(
+    model: &Model,
+    entry: &EntryDecl,
+    signed: &HashSet<&str>,
+) -> Option<TypeError> {
+    if !entry_moves_value(model, entry)
+        || !signed.is_empty()
+        || entry.params.iter().any(is_quorum_param)
+    {
         return None;
     }
     if entry_binds_caller(model, entry, signed) {
@@ -718,7 +728,9 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                     let decrement = reads && expr_has_sub(value, &sub_locals);
                                     let backed = asset_amount_backer(value, &asset_params)
                                         .is_some_and(|a| used_asset_backers.insert(a));
-                                    if !decrement && !backed && (ledgers.contains(&map.text) || reads)
+                                    if !decrement
+                                        && !backed
+                                        && (ledgers.contains(&map.text) || reads)
                                     {
                                         moves = true;
                                     }
@@ -877,17 +889,48 @@ fn expr_eq(a: &Expr, b: &Expr) -> bool {
         (Expr::Ident(x), Expr::Ident(y)) => x.text == y.text,
         (Expr::Caller { .. }, Expr::Caller { .. }) => true,
         (Expr::Now { .. }, Expr::Now { .. }) => true,
-        (Expr::Field { base: ba, name: na, .. }, Expr::Field { base: bb, name: nb, .. }) => {
-            na.text == nb.text && expr_eq(ba, bb)
-        }
-        (Expr::Unary { op: oa, expr: ea, .. }, Expr::Unary { op: ob, expr: eb, .. }) => {
-            oa == ob && expr_eq(ea, eb)
-        }
         (
-            Expr::Binary { op: oa, left: la, right: ra, .. },
-            Expr::Binary { op: ob, left: lb, right: rb, .. },
+            Expr::Field {
+                base: ba, name: na, ..
+            },
+            Expr::Field {
+                base: bb, name: nb, ..
+            },
+        ) => na.text == nb.text && expr_eq(ba, bb),
+        (
+            Expr::Unary {
+                op: oa, expr: ea, ..
+            },
+            Expr::Unary {
+                op: ob, expr: eb, ..
+            },
+        ) => oa == ob && expr_eq(ea, eb),
+        (
+            Expr::Binary {
+                op: oa,
+                left: la,
+                right: ra,
+                ..
+            },
+            Expr::Binary {
+                op: ob,
+                left: lb,
+                right: rb,
+                ..
+            },
         ) => oa == ob && expr_eq(la, lb) && expr_eq(ra, rb),
-        (Expr::Call { callee: ca, args: aa, .. }, Expr::Call { callee: cb, args: ab, .. }) => {
+        (
+            Expr::Call {
+                callee: ca,
+                args: aa,
+                ..
+            },
+            Expr::Call {
+                callee: cb,
+                args: ab,
+                ..
+            },
+        ) => {
             expr_eq(ca, cb) && aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| expr_eq(x, y))
         }
         (Expr::Checked { expr: ea, .. }, Expr::Checked { expr: eb, .. }) => expr_eq(ea, eb),
@@ -942,7 +985,10 @@ fn expr_reads_map(map: &str, expr: &Expr, reads_of: &HashMap<String, HashSet<Str
             found = true;
         }
         if let Expr::Ident(id) = e {
-            if reads_of.get(id.text.as_str()).is_some_and(|s| s.contains(map)) {
+            if reads_of
+                .get(id.text.as_str())
+                .is_some_and(|s| s.contains(map))
+            {
                 found = true;
             }
         }
@@ -1215,7 +1261,10 @@ fn is_caller_membership(model: &Model, expr: &Expr) -> bool {
 }
 
 fn caller_membership_present(model: &Model, expr: &Expr) -> bool {
-    let Expr::Binary { op, left, right, .. } = expr else {
+    let Expr::Binary {
+        op, left, right, ..
+    } = expr
+    else {
         return false;
     };
     let threshold = if is_caller_membership(model, left) {
@@ -1800,7 +1849,11 @@ mod tests {
     fn an_unauthenticated_asset_send_is_rejected() {
         let src = "contract C { asset TKN; state { owner: Q_Address; } genesis { owner = deployer; } \
                    entry transfer(order: sealed TransferOrder) { send_asset(self, order.to, order.amount); } }";
-        assert!(error_for(src).contains("no authority"), "{}", error_for(src));
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
     }
 
     #[test]
@@ -1816,7 +1869,11 @@ mod tests {
                    genesis { owner = deployer; supply = 0; } \
                    entry issue(order: MintOrder) mints TKN writes(supply) \
                    { supply += order.amount; mint_asset(order.to, order.amount); } }";
-        assert!(error_for(src).contains("no authority"), "{}", error_for(src));
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
     }
 
     #[test]
@@ -1824,7 +1881,11 @@ mod tests {
         let src = "contract C { state { pool: Q_Asset<QTOV>; } \
                    entry drain(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV writes(pool) \
                    { send(to, pool.split(funds.amount)); send(caller, funds); } }";
-        assert!(error_for(src).contains("no authority"), "{}", error_for(src));
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
     }
 
     #[test]
@@ -1832,7 +1893,11 @@ mod tests {
         let src = "contract C { state { pool: Q_Asset<QTOV>; sink: Q_Asset<QTOV>; } \
                    entry drain(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV writes(pool, sink) \
                    { send(to, pool.split(funds.amount)); sink.merge(funds); } }";
-        assert!(error_for(src).contains("no authority"), "{}", error_for(src));
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
     }
 
     #[test]
@@ -2089,7 +2154,9 @@ mod tests {
     #[test]
     fn a_deep_authority_chain_checks_in_polynomial_time() {
         let n = 30;
-        let mut src = String::from("import { Q_Asset } from \"quantova/primitives\";\ncontract C {\n  state {");
+        let mut src = String::from(
+            "import { Q_Asset } from \"quantova/primitives\";\ncontract C {\n  state {",
+        );
         for i in 0..n {
             src.push_str(&format!(" f{i}: Q_Address;"));
         }

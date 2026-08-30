@@ -77,7 +77,11 @@ fn identical_addresses_pass() {
     let a = [0x11u8; 32];
     let mem = mem_with(&cc, "act", &[("order.a", a), ("order.b", a)]);
     let out = run(&cc, "act", &mem).expect("equal addresses pass the guard");
-    assert_eq!(out.get(&qtv_vm::abi::scalar_key(1)), Some(&1), "the body ran");
+    assert_eq!(
+        out.get(&qtv_vm::abi::scalar_key(1)),
+        Some(&1),
+        "the body ran"
+    );
 }
 
 #[test]

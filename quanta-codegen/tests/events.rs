@@ -17,7 +17,10 @@ fn compile(src: &str) -> CompiledContract {
 }
 
 fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
-    cc.entries.iter().find(|e| e.name == name).expect("the entry")
+    cc.entries
+        .iter()
+        .find(|e| e.name == name)
+        .expect("the entry")
 }
 
 fn put_arg(mem: &mut [u8], e: &EntryArtifact, key: &str, value: u64) {

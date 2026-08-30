@@ -34,7 +34,12 @@ fn entry<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
 }
 
 fn arg_off(cc: &CompiledContract, name: &str, key: &str) -> usize {
-    entry(cc, name).args.iter().find(|s| s.key == key).expect("arg").offset as usize
+    entry(cc, name)
+        .args
+        .iter()
+        .find(|s| s.key == key)
+        .expect("arg")
+        .offset as usize
 }
 
 fn window(label: &[u8]) -> [u8; 32] {
@@ -77,8 +82,15 @@ fn the_abi_places_the_window_then_the_length_word() {
     let cc = compiled();
     let name_off = arg_off(&cc, "claim", "name");
     let len_off = arg_off(&cc, "claim", "name#len");
-    assert_eq!(name_off, 88, "the window follows the caller, contract, time, and chain context");
-    assert_eq!(len_off, name_off + 32, "the length word sits directly after the window");
+    assert_eq!(
+        name_off, 88,
+        "the window follows the caller, contract, time, and chain context"
+    );
+    assert_eq!(
+        len_off,
+        name_off + 32,
+        "the length word sits directly after the window"
+    );
 }
 
 #[test]
@@ -90,9 +102,21 @@ fn the_same_label_yields_the_same_key_and_the_length_round_trips() {
 
     let k = expected_key(&w, 5);
     assert_eq!(s1.get(&k).copied(), Some(100));
-    assert_eq!(s2.get(&k).copied(), Some(100), "the same label lands on the same key every call");
-    assert_eq!(s1.get(&slot_key(1)).copied(), Some(5), "name.len equals the supplied byte length");
-    assert_eq!(s1.get(&slot_key(2)).copied(), Some(100), "a get by the same name round trips the word");
+    assert_eq!(
+        s2.get(&k).copied(),
+        Some(100),
+        "the same label lands on the same key every call"
+    );
+    assert_eq!(
+        s1.get(&slot_key(1)).copied(),
+        Some(5),
+        "name.len equals the supplied byte length"
+    );
+    assert_eq!(
+        s1.get(&slot_key(2)).copied(),
+        Some(100),
+        "a get by the same name round trips the word"
+    );
 }
 
 #[test]
@@ -108,7 +132,10 @@ fn different_labels_hash_to_different_keys() {
     assert_ne!(ka, kb, "distinct labels land on distinct keys");
     assert_eq!(sa.get(&ka).copied(), Some(1));
     assert_eq!(sb.get(&kb).copied(), Some(2));
-    assert!(sa.contains_key(&ka) && !sa.contains_key(&kb), "each run writes only its own key");
+    assert!(
+        sa.contains_key(&ka) && !sa.contains_key(&kb),
+        "each run writes only its own key"
+    );
 }
 
 #[test]
@@ -120,13 +147,30 @@ fn the_declared_length_is_bound_into_the_key() {
 
     let k5 = expected_key(&w, 5);
     let k3 = expected_key(&w, 3);
-    assert_ne!(k5, k3, "a shorter declared length derives a different key from the same window");
+    assert_ne!(
+        k5, k3,
+        "a shorter declared length derives a different key from the same window"
+    );
     assert_eq!(s5.get(&k5).copied(), Some(10));
     assert_eq!(s3.get(&k3).copied(), Some(20));
-    assert_eq!(s5.get(&slot_key(1)).copied(), Some(5), "the length reported is the length declared");
-    assert_eq!(s3.get(&slot_key(1)).copied(), Some(3), "the length reported is the length declared");
-    assert!(!s3.contains_key(&k5), "a run that reports length 3 never reaches the length 5 key");
-    assert!(!s5.contains_key(&k3), "a run that reports length 5 never reaches the length 3 key");
+    assert_eq!(
+        s5.get(&slot_key(1)).copied(),
+        Some(5),
+        "the length reported is the length declared"
+    );
+    assert_eq!(
+        s3.get(&slot_key(1)).copied(),
+        Some(3),
+        "the length reported is the length declared"
+    );
+    assert!(
+        !s3.contains_key(&k5),
+        "a run that reports length 3 never reaches the length 5 key"
+    );
+    assert!(
+        !s5.contains_key(&k3),
+        "a run that reports length 5 never reaches the length 3 key"
+    );
 }
 
 #[test]
@@ -134,7 +178,10 @@ fn a_length_past_the_window_reverts() {
     let cc = compiled();
     let w = window(b"alice");
     let r = run_claim(&cc, &w, 33, 1);
-    assert!(matches!(r, Err(Fault::DivByZero)), "a length past the 32 byte window reverts");
+    assert!(
+        matches!(r, Err(Fault::DivByZero)),
+        "a length past the 32 byte window reverts"
+    );
 }
 
 #[test]

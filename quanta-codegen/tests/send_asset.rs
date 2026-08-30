@@ -46,7 +46,11 @@ fn mint_asset_emits_a_mint_control_event_with_the_holder_and_amount() {
         })
         .expect("a MINT control event");
     assert_eq!(mint.len(), 40, "the mint data is a holder then an amount");
-    assert_eq!(&mint[0..32], &caller, "the deployer holder leads the mint data");
+    assert_eq!(
+        &mint[0..32],
+        &caller,
+        "the deployer holder leads the mint data"
+    );
     assert_eq!(
         u64::from_be_bytes(mint[32..40].try_into().unwrap()),
         100,
@@ -85,9 +89,17 @@ fn send_asset_emits_a_sixty_four_byte_issuer_and_holder_transfer() {
     assert_eq!(transfers.len(), 1, "claim sends exactly one asset transfer");
     match transfers[0] {
         Effect::Transfer { to, amount } => {
-            assert_eq!(to.len(), 64, "an asset transfer names the issuer then the holder");
+            assert_eq!(
+                to.len(),
+                64,
+                "an asset transfer names the issuer then the holder"
+            );
             assert_eq!(&to[0..32], &caller, "the issuer address leads the target");
-            assert_eq!(&to[32..64], &caller, "the holder address follows the issuer");
+            assert_eq!(
+                &to[32..64],
+                &caller,
+                "the holder address follows the issuer"
+            );
             assert_eq!(*amount, 40, "the amount is the third argument");
         }
         _ => unreachable!(),
