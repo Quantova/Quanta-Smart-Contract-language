@@ -57,6 +57,8 @@ impl Parser {
     }
 
     fn field_decl(&mut self) -> Result<FieldDecl, ParseError> {
+        let start = self.peek_span();
+        let meta = self.eat(&TokenKind::Meta);
         let name = self.expect_ident()?;
         self.expect(&TokenKind::Colon)?;
         let ty = self.ty()?;
@@ -67,10 +69,11 @@ impl Parser {
         };
         let semi = self.expect(&TokenKind::Semi)?;
         Ok(FieldDecl {
-            span: name.span.join(semi.span),
+            span: start.join(semi.span),
             name,
             ty,
             default,
+            meta,
         })
     }
 
@@ -350,6 +353,21 @@ mod tests {
     fn sealed_parameter_is_recorded() {
         match parse_item("entry fund(payment: sealed Q_Asset<QTOV>) { }").unwrap() {
             Item::Entry(e) => assert!(e.params[0].sealed),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_meta_field_is_recorded_and_a_plain_field_is_not() {
+        match parse_item(
+            "state { meta expiry_of: Map<Q_Address, u64>; balances: Map<Q_Address, u64>; }",
+        )
+        .unwrap()
+        {
+            Item::State(s) => {
+                assert!(s.fields[0].meta);
+                assert!(!s.fields[1].meta);
+            }
             other => panic!("unexpected {other:?}"),
         }
     }

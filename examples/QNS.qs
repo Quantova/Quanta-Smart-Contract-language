@@ -11,11 +11,11 @@ contract QNS {
     start_premium: u64;
     interval: u64;
     vault: Q_Asset<QTOV>;
-    expiry_of: Map<Q_Address, u64>;
+    meta expiry_of: Map<Q_Address, u64>;
     owner_of: Map<Q_Address, Q_Address>;
     resolved_of: Map<Q_Address, Q_Address>;
     primary_of: Map<Q_Address, Q_Address>;
-    reserved: Map<Q_Address, u64>;
+    meta reserved: Map<Q_Address, u64>;
   }
   genesis {
     guardians = deploy_params.guardians;

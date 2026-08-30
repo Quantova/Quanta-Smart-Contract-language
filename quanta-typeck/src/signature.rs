@@ -64,6 +64,9 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if let Some(err) = forged_map_authority(model, entry, &params, &signed, &derived) {
         return Err(err);
     }
+    if let Some(err) = forged_meta_flow(model, entry) {
+        return Err(err);
+    }
     if let Some(err) = forged_caller_anchor(model, entry, &signed) {
         return Err(err);
     }
@@ -584,6 +587,131 @@ fn map_authority_error(field: &str, span: Span) -> TypeError {
     )
 }
 
+fn meta_maps<'a>(model: &Model<'a>) -> HashSet<&'a str> {
+    model
+        .state
+        .iter()
+        .filter(|(_, f)| f.meta && f.ty.name.text == "Map")
+        .map(|(n, _)| *n)
+        .collect()
+}
+
+fn is_meta_map(model: &Model, name: &str) -> bool {
+    model
+        .state
+        .get(name)
+        .is_some_and(|f| f.meta && f.ty.name.text == "Map")
+}
+
+fn meta_read_span(
+    meta: &HashSet<&str>,
+    meta_locals: &HashSet<String>,
+    expr: &Expr,
+) -> Option<Span> {
+    let mut hit = None;
+    walk(expr, &mut |e| {
+        if hit.is_some() {
+            return;
+        }
+        if let Expr::Call { callee, span, .. } = e {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if name.text == "get" {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if meta.contains(m.text.as_str()) {
+                            hit = Some(*span);
+                        }
+                    }
+                }
+            }
+        }
+        if let Expr::Ident(id) = e {
+            if meta_locals.contains(id.text.as_str()) {
+                hit = Some(id.span);
+            }
+        }
+    });
+    hit
+}
+
+fn meta_write_target<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
+    if let Expr::Call { callee, .. } = expr {
+        if let Expr::Field { base, name, .. } = callee.as_ref() {
+            if matches!(name.text.as_str(), "set" | "insert" | "remove") {
+                if let Expr::Ident(m) = base.as_ref() {
+                    if is_meta_map(model, m.text.as_str()) {
+                        return Some(m.text.as_str());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn forged_meta_flow(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
+    let meta = meta_maps(model);
+    if meta.is_empty() {
+        return None;
+    }
+    let (reads_of, _) = local_seize_taint(entry);
+    let meta_locals: HashSet<String> = reads_of
+        .iter()
+        .filter(|(_, maps)| maps.iter().any(|m| meta.contains(m.as_str())))
+        .map(|(local, _)| local.clone())
+        .collect();
+    for stmt in &entry.body {
+        let mut ledger_op = None;
+        stmt_exprs(stmt, &mut |e| {
+            if ledger_op.is_some() {
+                return;
+            }
+            if let Expr::Call { callee, .. } = e {
+                if let Expr::Field { base, name, span } = callee.as_ref() {
+                    if matches!(name.text.as_str(), "credit" | "debit") {
+                        if let Expr::Ident(m) = base.as_ref() {
+                            if meta.contains(m.text.as_str()) {
+                                ledger_op = Some(*span);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        if let Some(span) = ledger_op {
+            return Some(meta_value_error(span));
+        }
+    }
+    for stmt in &entry.body {
+        match stmt {
+            Stmt::Guard { .. } | Stmt::Emit { .. } | Stmt::Let { .. } => {}
+            Stmt::Assign { value, .. } => {
+                if let Some(span) = meta_read_span(&meta, &meta_locals, value) {
+                    return Some(meta_value_error(span));
+                }
+            }
+            Stmt::Expr { expr, .. } => {
+                if meta_write_target(model, expr).is_some() {
+                    continue;
+                }
+                if let Some(span) = meta_read_span(&meta, &meta_locals, expr) {
+                    return Some(meta_value_error(span));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn meta_value_error(span: Span) -> TypeError {
+    TypeError::new(
+        "a `meta` map holds non fungible metadata and cannot enter a value flow: its stored \
+         value may only be compared in a guard or emitted, never credited, debited, sent, split, \
+         or written into another balance; drop the `meta` marker from any map that moves value"
+            .to_string(),
+        span,
+    )
+}
+
 fn entry_moves_value(model: &Model, entry: &EntryDecl) -> bool {
     entry_value_move(model, entry, false)
 }
@@ -721,6 +849,9 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                     {
                         let foreign_key = !matches!(args.first(), Some(Expr::Caller { .. }));
                         if let Expr::Ident(map) = base.as_ref() {
+                            if is_meta_map(model, map.text.as_str()) {
+                                return;
+                            }
                             if foreign_key {
                                 if ledgers.contains(&map.text) {
                                     moves = true;
@@ -736,7 +867,6 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                     if let Some(value) = args.get(1) {
                                         if caller_chosen_key
                                             && !expr_reads_map(&map.text, value, &reads_of)
-                                            && !expr_uses_now(value)
                                         {
                                             moves = true;
                                         }
@@ -748,9 +878,8 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                             .is_some_and(|a| used_asset_backers.insert(a));
                                         let merge_backed = merged_pool.is_some()
                                             && asset_param_name.is_some_and(|p| {
-                                                read_add_amount_bound(
-                                                    value, &map.text, &reads_of, p,
-                                                ) && used_asset_backers.insert(p)
+                                                read_add_amount_bound(value, &map.text, p)
+                                                    && used_asset_backers.insert(p)
                                             });
                                         if reads && !decrement && !backed && !merge_backed {
                                             moves = true;
@@ -869,12 +998,7 @@ fn asset_amount_backer<'a>(value: &Expr, asset_params: &HashSet<&'a str>) -> Opt
     None
 }
 
-fn read_add_amount_bound(
-    value: &Expr,
-    map: &str,
-    reads_of: &HashMap<String, HashSet<String>>,
-    asset_param: &str,
-) -> bool {
+fn read_add_amount_bound(value: &Expr, map: &str, asset_param: &str) -> bool {
     if let Expr::Binary {
         op: BinOp::Add,
         left,
@@ -882,10 +1006,8 @@ fn read_add_amount_bound(
         ..
     } = value
     {
-        let left_reads = expr_reads_map(map, left, reads_of);
-        let right_reads = expr_reads_map(map, right, reads_of);
-        return (left_reads && is_asset_amount_expr(right, asset_param))
-            || (right_reads && is_asset_amount_expr(left, asset_param));
+        return (reads_map(map, left) && is_asset_amount_expr(right, asset_param))
+            || (reads_map(map, right) && is_asset_amount_expr(left, asset_param));
     }
     false
 }
@@ -1051,16 +1173,6 @@ fn expr_reads_map(map: &str, expr: &Expr, reads_of: &HashMap<String, HashSet<Str
             {
                 found = true;
             }
-        }
-    });
-    found
-}
-
-fn expr_uses_now(expr: &Expr) -> bool {
-    let mut found = false;
-    walk(expr, &mut |e| {
-        if matches!(e, Expr::Now { .. }) {
-            found = true;
         }
     });
     found
@@ -2439,5 +2551,196 @@ mod tests {
                 }
             }"#;
         assert!(error_for(src).contains("forged authority"));
+    }
+
+    #[test]
+    fn a_now_absolute_set_to_an_unmarked_address_balance_is_rejected() {
+        let src = "contract C { state { balances: Map<Q_Address, u64>; } \
+                   entry mint(to: Q_Address, bonus: u64) writes(balances) \
+                   { balances.set(to, now + bonus); } }";
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_now_scaled_absolute_set_to_an_unmarked_address_balance_is_rejected() {
+        let src = "contract C { state { balances: Map<Q_Address, u64>; } \
+                   entry mint(to: Q_Address) writes(balances) \
+                   { balances.set(to, now * 1000000000); } }";
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_now_plus_a_paid_amount_is_still_a_forged_move_because_now_is_unbacked() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Airdrop {
+                state { balances: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry mint(to: Q_Address, payment: Q_Asset<QTOV>) conserves QTOV writes(balances, vault) {
+                    balances.set(to, now + payment.amount);
+                    vault.merge(payment);
+                }
+            }"#;
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_paid_amount_plus_a_nested_bonus_read_is_a_forged_move() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Airdrop {
+                state { balances: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry mint(to: Q_Address, bonus: u64, payment: Q_Asset<QTOV>) conserves QTOV writes(balances, vault) {
+                    balances.set(to, payment.amount + (balances.get(to) + bonus));
+                    vault.merge(payment);
+                }
+            }"#;
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_nested_bonus_read_then_a_paid_amount_is_a_forged_move() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Airdrop {
+                state { balances: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry mint(to: Q_Address, bonus: u64, payment: Q_Asset<QTOV>) conserves QTOV writes(balances, vault) {
+                    balances.set(to, (balances.get(to) + bonus) + payment.amount);
+                    vault.merge(payment);
+                }
+            }"#;
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_paid_amount_plus_a_scaled_balance_read_is_a_forged_move() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Airdrop {
+                state { balances: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry mint(to: Q_Address, payment: Q_Asset<QTOV>) conserves QTOV writes(balances, vault) {
+                    balances.set(to, payment.amount + balances.get(to) * 1000000);
+                    vault.merge(payment);
+                }
+            }"#;
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_single_asset_cannot_back_two_paid_credits_on_two_maps() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Airdrop {
+                state { a: Map<Q_Address, u64>; b: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry mint(x: Q_Address, y: Q_Address, payment: Q_Asset<QTOV>) conserves QTOV writes(a, b, vault) {
+                    a.set(x, a.get(x) + payment.amount);
+                    b.set(y, b.get(y) + payment.amount);
+                    vault.merge(payment);
+                }
+            }"#;
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_meta_map_exempts_a_now_derived_absolute_set() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Lease {
+                state { meta expiry_of: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry rent(name: Q_Address, years: u64, payment: Q_Asset<QTOV>) conserves QTOV writes(expiry_of, vault) {
+                    guard years >= 1;
+                    expiry_of.set(name, now + years * 31536000);
+                    vault.merge(payment);
+                }
+            }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn an_unmarked_map_of_the_same_name_is_still_mint_checked() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Lease {
+                state { expiry_of: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry rent(name: Q_Address, years: u64, payment: Q_Asset<QTOV>) conserves QTOV writes(expiry_of, vault) {
+                    guard years >= 1;
+                    expiry_of.set(name, now + years * 31536000);
+                    vault.merge(payment);
+                }
+            }"#;
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_meta_map_value_cannot_be_split_into_a_send() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Launder {
+                state { owner: Q_Address; meta bal: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                genesis { owner = deployer; }
+                entry inflate(to: Q_Address) writes(bal) { bal.set(to, now + 1000000000000000000); }
+                entry withdraw() conserves QTOV writes(vault) {
+                    guard caller == owner;
+                    send(caller, vault.split(bal.get(caller)));
+                }
+            }"#;
+        assert!(error_for(src).contains("meta"), "{}", error_for(src));
+    }
+
+    #[test]
+    fn a_meta_map_value_cannot_be_credited_into_another_balance() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Launder {
+                state { meta bal: Map<Q_Address, u64>; real: Map<Q_Address, u64>; }
+                entry inflate(to: Q_Address) writes(bal) { bal.set(to, now + 1000000000000000000); }
+                entry drain(to: Q_Address) writes(real) { real.credit(to, bal.get(to)); }
+            }"#;
+        assert!(error_for(src).contains("meta"), "{}", error_for(src));
+    }
+
+    #[test]
+    fn a_meta_map_cannot_be_credited_directly() {
+        let src = "contract Launder { state { meta bal: Map<Q_Address, u64>; } \
+                   entry give(to: Q_Address, amount: u64) writes(bal) { bal.credit(to, amount); } }";
+        assert!(error_for(src).contains("meta"), "{}", error_for(src));
+    }
+
+    #[test]
+    fn a_meta_map_value_cannot_be_laundered_through_a_scalar_field() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Launder {
+                state { owner: Q_Address; meta bal: Map<Q_Address, u64>; total: u128; vault: Q_Asset<QTOV>; }
+                genesis { owner = deployer; }
+                entry inflate(to: Q_Address) writes(bal) { bal.set(to, now + 1000000000000000000); }
+                entry drain() conserves QTOV writes(total, vault) {
+                    guard caller == owner;
+                    total = bal.get(caller);
+                    send(caller, vault.split(total));
+                }
+            }"#;
+        assert!(error_for(src).contains("meta"), "{}", error_for(src));
     }
 }

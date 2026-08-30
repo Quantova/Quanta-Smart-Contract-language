@@ -84,12 +84,13 @@ impl Printer {
 
     fn field(&mut self, f: &FieldDecl, ind: usize) {
         let ty = type_str(&f.ty);
+        let prefix = if f.meta { "meta " } else { "" };
         match &f.default {
             Some(d) => self.line(
                 ind,
-                &format!("{}: {} = {};", f.name.text, ty, expr_str(d, 0)),
+                &format!("{}{}: {} = {};", prefix, f.name.text, ty, expr_str(d, 0)),
             ),
-            None => self.line(ind, &format!("{}: {};", f.name.text, ty)),
+            None => self.line(ind, &format!("{}{}: {};", prefix, f.name.text, ty)),
         }
     }
 

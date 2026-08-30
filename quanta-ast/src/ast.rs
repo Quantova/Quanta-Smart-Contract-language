@@ -69,6 +69,7 @@ pub struct FieldDecl {
     pub name: Ident,
     pub ty: Type,
     pub default: Option<Expr>,
+    pub meta: bool,
     pub span: Span,
 }
 
