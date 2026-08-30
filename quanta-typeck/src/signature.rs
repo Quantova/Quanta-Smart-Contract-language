@@ -741,6 +741,19 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                             moves = true;
                                         }
                                     }
+                                    if let Some(value) = args.get(1) {
+                                        let reads = expr_reads_map(&map.text, value, &reads_of);
+                                        let decrement = reads && expr_has_sub(value, &sub_locals);
+                                        let backed = asset_amount_backer(value, &asset_params)
+                                            .is_some_and(|a| used_asset_backers.insert(a));
+                                        if reads
+                                            && !decrement
+                                            && !backed
+                                            && merged_pool.is_none()
+                                        {
+                                            moves = true;
+                                        }
+                                    }
                                 }
                                 if let Some(value) = args.get(1) {
                                     if set_seizes_map(&map.text, value, &reads_of, &sub_locals) {
@@ -966,9 +979,8 @@ fn expr_eq(a: &Expr, b: &Expr) -> bool {
 
 fn ledger_maps(model: &Model) -> HashSet<String> {
     let mut maps = HashSet::new();
-    let no_alias_reads: HashMap<String, HashSet<String>> = HashMap::new();
-    let no_alias_subs: HashSet<String> = HashSet::new();
     for entry in &model.entries {
+        let (reads_of, sub_locals) = local_seize_taint(entry);
         for stmt in &entry.body {
             stmt_exprs(stmt, &mut |e| {
                 if let Expr::Call { callee, args, .. } = e {
@@ -978,8 +990,8 @@ fn ledger_maps(model: &Model) -> HashSet<String> {
                                 maps.insert(id.text.clone());
                             } else if matches!(name.text.as_str(), "set" | "insert") {
                                 if let Some(value) = args.get(1) {
-                                    if expr_reads_map(&id.text, value, &no_alias_reads)
-                                        && expr_has_sub(value, &no_alias_subs)
+                                    if expr_reads_map(&id.text, value, &reads_of)
+                                        && expr_has_sub(value, &sub_locals)
                                     {
                                         maps.insert(id.text.clone());
                                     }
@@ -2264,6 +2276,98 @@ mod tests {
                    genesis { owner = deployer; } \
                    entry set_balance(order: MintOrder signed by owner) writes(balances) \
                    { balances.set(order.to, order.amount); } }";
+        ok(src);
+    }
+
+    #[test]
+    fn a_self_referential_credit_to_a_foreign_address_is_rejected() {
+        let src = "contract Airdrop { state { balances: Map<Q_Address, u64>; } \
+                   entry mint(to: Q_Address, amount: u64) writes(balances) \
+                   { balances.set(to, balances.get(to) + amount); } }";
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_self_referential_credit_with_insert_to_a_foreign_address_is_rejected() {
+        let src = "contract Airdrop { state { balances: Map<Q_Address, u64>; } \
+                   entry mint(to: Q_Address, amount: u64) writes(balances) \
+                   { balances.insert(to, balances.get(to) + amount); } }";
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_self_referential_credit_on_a_wide_value_map_is_rejected() {
+        let src = "contract Airdrop { state { balances: Map<Q_Address, u128>; } \
+                   entry mint(to: Q_Address, amount: u128) writes(balances) \
+                   { balances.set(to, balances.get(to) + amount); } }";
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_self_referential_credit_with_reversed_operands_is_rejected() {
+        let src = "contract Airdrop { state { balances: Map<Q_Address, u64>; } \
+                   entry mint(to: Q_Address, amount: u64) writes(balances) \
+                   { balances.set(to, amount + balances.get(to)); } }";
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_self_referential_credit_through_a_let_alias_is_rejected() {
+        let src = "contract Airdrop { state { balances: Map<Q_Address, u64>; } \
+                   entry mint(to: Q_Address, amount: u64) writes(balances) \
+                   { let cur = balances.get(to); balances.set(to, cur + amount); } }";
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_caller_guarded_self_referential_credit_to_a_foreign_address_is_accepted() {
+        let src = "contract Airdrop { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   genesis { owner = deployer; } \
+                   entry mint(to: Q_Address, amount: u64) writes(balances) \
+                   { guard caller == owner; balances.set(to, balances.get(to) + amount); } }";
+        ok(src);
+    }
+
+    #[test]
+    fn a_signed_by_self_referential_credit_to_a_foreign_address_is_accepted() {
+        let src = "contract Airdrop { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   genesis { owner = deployer; } \
+                   entry mint(order: MintOrder signed by owner) writes(balances) \
+                   { balances.set(order.to, balances.get(order.to) + order.amount); } }";
+        ok(src);
+    }
+
+    #[test]
+    fn a_paid_read_and_add_extension_backed_by_an_incoming_asset_is_accepted() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Lease {
+                state { expiry_of: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry extend(who: Q_Address, years: u64, payment: Q_Asset<QTOV>) conserves QTOV writes(expiry_of, vault) {
+                    guard payment.amount >= years;
+                    expiry_of.set(who, expiry_of.get(who) + years * 31536000);
+                    vault.merge(payment);
+                }
+            }"#;
         ok(src);
     }
 
