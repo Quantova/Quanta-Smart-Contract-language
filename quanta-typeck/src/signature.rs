@@ -746,11 +746,13 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                         let decrement = reads && expr_has_sub(value, &sub_locals);
                                         let backed = asset_amount_backer(value, &asset_params)
                                             .is_some_and(|a| used_asset_backers.insert(a));
-                                        if reads
-                                            && !decrement
-                                            && !backed
-                                            && merged_pool.is_none()
-                                        {
+                                        let merge_backed = merged_pool.is_some()
+                                            && asset_param_name.is_some_and(|p| {
+                                                read_add_amount_bound(
+                                                    value, &map.text, &reads_of, p,
+                                                ) && used_asset_backers.insert(p)
+                                            });
+                                        if reads && !decrement && !backed && !merge_backed {
                                             moves = true;
                                         }
                                     }
@@ -865,6 +867,27 @@ fn asset_amount_backer<'a>(value: &Expr, asset_params: &HashSet<&'a str>) -> Opt
         }
     }
     None
+}
+
+fn read_add_amount_bound(
+    value: &Expr,
+    map: &str,
+    reads_of: &HashMap<String, HashSet<String>>,
+    asset_param: &str,
+) -> bool {
+    if let Expr::Binary {
+        op: BinOp::Add,
+        left,
+        right,
+        ..
+    } = value
+    {
+        let left_reads = expr_reads_map(map, left, reads_of);
+        let right_reads = expr_reads_map(map, right, reads_of);
+        return (left_reads && is_asset_amount_expr(right, asset_param))
+            || (right_reads && is_asset_amount_expr(left, asset_param));
+    }
+    false
 }
 
 fn self_spend_amounts(
@@ -2358,7 +2381,20 @@ mod tests {
     }
 
     #[test]
-    fn a_paid_read_and_add_extension_backed_by_an_incoming_asset_is_accepted() {
+    fn a_paid_read_and_add_credit_bound_to_the_incoming_asset_amount_is_accepted() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Airdrop {
+                state { balances: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry mint(to: Q_Address, payment: Q_Asset<QTOV>) conserves QTOV writes(balances, vault) {
+                    balances.set(to, balances.get(to) + payment.amount);
+                    vault.merge(payment);
+                }
+            }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn a_read_and_add_extension_unbound_to_the_merged_asset_amount_is_rejected() {
         let src = r#"import { Q_Asset } from "quantova/primitives";
             contract Lease {
                 state { expiry_of: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
@@ -2368,7 +2404,28 @@ mod tests {
                     vault.merge(payment);
                 }
             }"#;
-        ok(src);
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_constant_credit_masked_by_a_merged_dust_asset_is_rejected() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Airdrop {
+                state { balances: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry mint(to: Q_Address, dust: Q_Asset<QTOV>) conserves QTOV writes(balances, vault) {
+                    balances.set(to, balances.get(to) + 1000000000000000000);
+                    vault.merge(dust);
+                }
+            }"#;
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
     }
 
     #[test]

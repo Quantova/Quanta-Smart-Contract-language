@@ -44,16 +44,17 @@ contract QNS {
     emit Registered(label, caller, now + years * 31536000, years);
   }
   entry renew(label: sealed Q_Name, years: u64, payment: sealed Q_Asset<QTOV>)
-    reads(base_3, base_4, base_5_plus, grace_period)
+    reads(base_3, base_4, base_5_plus, grace_period, owner_of)
     writes(expiry_of, vault)
     conserves QTOV
   {
     guard years >= 1;
     guard label.len >= 3;
+    guard caller == owner_of.get(label);
     guard expiry_of.get(label) > 0;
     guard now <= expiry_of.get(label) + grace_period;
     guard payment.amount >= (base_3 * (3 / label.len) + base_4 * ((4 / label.len) - (3 / label.len)) + base_5_plus * (1 - (4 / label.len))) * years;
-    expiry_of.set(label, expiry_of.get(label) + years * 31536000);
+    expiry_of.set(label, now + years * 31536000);
     vault.merge(payment);
     emit Renewed(label, expiry_of.get(label), years);
   }

@@ -288,7 +288,7 @@ fn a_label_shorter_than_three_reverts() {
 }
 
 #[test]
-fn renew_extends_by_whole_years_within_grace() {
+fn renew_resets_expiry_to_now_plus_whole_years_within_grace() {
     let cc = compiled();
     let caller = [0xC0u8; 32];
     let t0 = 1000 * DAY;
@@ -306,22 +306,13 @@ fn renew_extends_by_whole_years_within_grace() {
     .expect("register halts");
     let e1 = expiry(&s, b"jeff");
     assert_eq!(e1, t0 + YEAR);
-    let s2 = run_paid(
-        &cc,
-        "renew",
-        s,
-        &caller,
-        t0 + 10 * DAY,
-        b"jeff",
-        4,
-        2,
-        300 * 2,
-    )
-    .expect("renew halts");
+    let renewed_at = t0 + 10 * DAY;
+    let s2 = run_paid(&cc, "renew", s, &caller, renewed_at, b"jeff", 4, 2, 300 * 2)
+        .expect("renew halts");
     assert_eq!(
         expiry(&s2, b"jeff"),
-        e1 + 2 * YEAR,
-        "renew adds two whole years to the expiry"
+        renewed_at + 2 * YEAR,
+        "renew resets the expiry to now plus the whole renewed years"
     );
     assert_eq!(
         vault(&s2),
