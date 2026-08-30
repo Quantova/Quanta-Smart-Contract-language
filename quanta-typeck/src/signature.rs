@@ -878,8 +878,9 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                             .is_some_and(|a| used_asset_backers.insert(a));
                                         let merge_backed = merged_pool.is_some()
                                             && asset_param_name.is_some_and(|p| {
-                                                read_add_amount_bound(value, &map.text, p)
-                                                    && used_asset_backers.insert(p)
+                                                args.first().is_some_and(|k| {
+                                                    read_add_amount_bound(value, &map.text, k, p)
+                                                }) && used_asset_backers.insert(p)
                                             });
                                         if reads && !decrement && !backed && !merge_backed {
                                             moves = true;
@@ -998,7 +999,7 @@ fn asset_amount_backer<'a>(value: &Expr, asset_params: &HashSet<&'a str>) -> Opt
     None
 }
 
-fn read_add_amount_bound(value: &Expr, map: &str, asset_param: &str) -> bool {
+fn read_add_amount_bound(value: &Expr, map: &str, set_key: &Expr, asset_param: &str) -> bool {
     if let Expr::Binary {
         op: BinOp::Add,
         left,
@@ -1006,8 +1007,8 @@ fn read_add_amount_bound(value: &Expr, map: &str, asset_param: &str) -> bool {
         ..
     } = value
     {
-        return (reads_map(map, left) && is_asset_amount_expr(right, asset_param))
-            || (reads_map(map, right) && is_asset_amount_expr(left, asset_param));
+        return (reads_map_key(map, left, set_key) && is_asset_amount_expr(right, asset_param))
+            || (reads_map_key(map, right, set_key) && is_asset_amount_expr(left, asset_param));
     }
     false
 }
@@ -1231,6 +1232,17 @@ fn reads_map(map: &str, expr: &Expr) -> bool {
         if let Expr::Field { base, name, .. } = callee.as_ref() {
             if name.text == "get" {
                 return matches!(base.as_ref(), Expr::Ident(id) if id.text == map);
+            }
+        }
+    }
+    false
+}
+
+fn reads_map_key(map: &str, expr: &Expr, key: &Expr) -> bool {
+    if let Expr::Call { callee, args, .. } = expr {
+        if let Expr::Field { base, name, .. } = callee.as_ref() {
+            if name.text == "get" && matches!(base.as_ref(), Expr::Ident(id) if id.text == map) {
+                return args.first().is_some_and(|k| expr_eq(k, key));
             }
         }
     }
@@ -2498,6 +2510,53 @@ mod tests {
             contract Airdrop {
                 state { balances: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
                 entry mint(to: Q_Address, payment: Q_Asset<QTOV>) conserves QTOV writes(balances, vault) {
+                    balances.set(to, balances.get(to) + payment.amount);
+                    vault.merge(payment);
+                }
+            }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn a_paid_read_and_add_credit_reading_a_foreign_map_key_is_rejected() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Airdrop {
+                state { balances: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry mint(to: Q_Address, src: Q_Address, payment: Q_Asset<QTOV>) conserves QTOV writes(balances, vault) {
+                    balances.set(to, balances.get(src) + payment.amount);
+                    vault.merge(payment);
+                }
+            }"#;
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_paid_read_and_add_credit_reading_the_caller_key_into_a_foreign_key_is_rejected() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Airdrop {
+                state { balances: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry mint(to: Q_Address, payment: Q_Asset<QTOV>) conserves QTOV writes(balances, vault) {
+                    balances.set(to, balances.get(caller) + payment.amount);
+                    vault.merge(payment);
+                }
+            }"#;
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_paid_read_and_add_credit_reading_the_written_key_is_accepted() {
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract Airdrop {
+                state { balances: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry mint(to: Q_Address, src: Q_Address, payment: Q_Asset<QTOV>) conserves QTOV writes(balances, vault) {
                     balances.set(to, balances.get(to) + payment.amount);
                     vault.merge(payment);
                 }
