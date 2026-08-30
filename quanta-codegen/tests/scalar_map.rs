@@ -14,8 +14,10 @@ const BAL_BASE: u64 = 1 << 40;
 const GAS: u64 = 8_000_000;
 
 const SRC: &str = "contract Bank { \
-    state { bal: Map<Q_Address, u64>; r1: u64; r2: u64; } \
-    entry probe(k1: Q_Address, k2: Q_Address, v1: u64, v2: u64) reads(bal) writes(bal, r1, r2) { \
+    state { bal: Map<Q_Address, u64>; r1: u64; r2: u64; admin: Q_Address; } \
+    genesis { admin = deployer; } \
+    entry probe(k1: Q_Address, k2: Q_Address, v1: u64, v2: u64) reads(bal, admin) writes(bal, r1, r2) { \
+        guard caller == admin; \
         bal.set(k1, v1); \
         bal.set(k2, v2); \
         r1 = bal.get(k1); \

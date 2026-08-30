@@ -23,7 +23,9 @@ const SRC: &str = "contract Resolver { \
         owner_of: Map<Q_Address, Q_Address>; \
         mirror_of: Map<Q_Address, Q_Address>; \
         tick_of: Map<Q_Address, u64>; \
+        admin: Q_Address; \
     } \
+    genesis { admin = deployer; } \
     entry claim(name: Q_Address) writes(owner_of) { \
         owner_of.set(name, caller); \
     } \
@@ -33,7 +35,8 @@ const SRC: &str = "contract Resolver { \
     entry mirror(name: Q_Address) reads(owner_of) writes(mirror_of) { \
         mirror_of.set(name, owner_of.get(name)); \
     } \
-    entry tick(name: Q_Address, v: u64) writes(tick_of) { \
+    entry tick(name: Q_Address, v: u64) reads(admin) writes(tick_of) { \
+        guard caller == admin; \
         tick_of.set(name, v); \
     } \
     event Resolved(name: Q_Address, owner: Q_Address); \

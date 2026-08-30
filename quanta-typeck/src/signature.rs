@@ -595,6 +595,14 @@ fn entry_moves_ledger_value(model: &Model, entry: &EntryDecl) -> bool {
 fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool {
     let (reads_of, sub_locals) = local_seize_taint(entry);
     let ledgers = ledger_maps(model);
+    let signed_params: HashSet<&str> = entry
+        .params
+        .iter()
+        .filter(|p| p.signed_by.is_some())
+        .map(|p| p.name.text.as_str())
+        .collect();
+    let all_params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
+    let derived_params = param_derived_locals(entry, &all_params, &signed_params);
     let asset_params: HashSet<&str> = entry
         .params
         .iter()
@@ -716,6 +724,23 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                             if foreign_key {
                                 if ledgers.contains(&map.text) {
                                     moves = true;
+                                }
+                                if matches!(name.text.as_str(), "set" | "insert")
+                                    && is_addr_keyed(model, map.text.as_str())
+                                    && is_amount_valued(model, map.text.as_str())
+                                {
+                                    let caller_chosen_key = args.first().is_some_and(|k| {
+                                        param_field(&all_params, &signed_params, &derived_params, k)
+                                            .is_some()
+                                    });
+                                    if let Some(value) = args.get(1) {
+                                        if caller_chosen_key
+                                            && !expr_reads_map(&map.text, value, &reads_of)
+                                            && !expr_uses_now(value)
+                                        {
+                                            moves = true;
+                                        }
+                                    }
                                 }
                                 if let Some(value) = args.get(1) {
                                     if set_seizes_map(&map.text, value, &reads_of, &sub_locals) {
@@ -991,6 +1016,16 @@ fn expr_reads_map(map: &str, expr: &Expr, reads_of: &HashMap<String, HashSet<Str
             {
                 found = true;
             }
+        }
+    });
+    found
+}
+
+fn expr_uses_now(expr: &Expr) -> bool {
+    let mut found = false;
+    walk(expr, &mut |e| {
+        if matches!(e, Expr::Now { .. }) {
+            found = true;
         }
     });
     found
@@ -1336,6 +1371,17 @@ fn is_addr_keyed(model: &Model, ident: &str) -> bool {
         if matches!(f.ty.name.text.as_str(), "Map" | "Set") {
             if let Some(GenericArg::Type(k)) = f.ty.args.first() {
                 return k.name.text == "Q_Address";
+            }
+        }
+    }
+    false
+}
+
+fn is_amount_valued(model: &Model, ident: &str) -> bool {
+    if let Some(f) = model.state.get(ident) {
+        if f.ty.name.text == "Map" {
+            if let Some(GenericArg::Type(v)) = f.ty.args.get(1) {
+                return crate::model::is_integer_type(v.name.text.as_str());
             }
         }
     }
@@ -2189,6 +2235,36 @@ mod tests {
                 { guard caller == owner; send(order.to, vault.split(order.amount)); }
             }"#;
         assert!(error_for(src).contains("forgeable"));
+    }
+
+    #[test]
+    fn a_pure_mint_only_absolute_set_to_an_address_balance_is_rejected() {
+        let src = "contract C { state { balances: Map<Q_Address, u64>; } \
+                   entry set_balance(to: Q_Address, amount: u64) writes(balances) \
+                   { balances.set(to, amount); } }";
+        assert!(
+            error_for(src).contains("no authority"),
+            "{}",
+            error_for(src)
+        );
+    }
+
+    #[test]
+    fn a_caller_guarded_absolute_set_to_an_address_balance_is_accepted() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   genesis { owner = deployer; } \
+                   entry set_balance(to: Q_Address, amount: u64) writes(balances) \
+                   { guard caller == owner; balances.set(to, amount); } }";
+        ok(src);
+    }
+
+    #[test]
+    fn a_signed_by_absolute_set_to_an_address_balance_is_accepted() {
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+                   genesis { owner = deployer; } \
+                   entry set_balance(order: MintOrder signed by owner) writes(balances) \
+                   { balances.set(order.to, order.amount); } }";
+        ok(src);
     }
 
     #[test]
