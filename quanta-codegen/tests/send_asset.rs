@@ -1,6 +1,8 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+#![allow(clippy::redundant_guards)]
+
 use qtv_vm::interp::{Effect, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 

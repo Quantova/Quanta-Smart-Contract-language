@@ -1,6 +1,9 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+#![allow(clippy::identity_op)]
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::BTreeMap;
 
 use qtv_crypto::sha3::sha3_256;

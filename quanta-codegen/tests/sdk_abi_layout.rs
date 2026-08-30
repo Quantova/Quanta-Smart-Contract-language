@@ -1,6 +1,8 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+#![allow(clippy::type_complexity)]
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 

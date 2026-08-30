@@ -1,6 +1,10 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+#![allow(clippy::collapsible_match)]
+#![allow(clippy::single_match)]
+#![allow(clippy::unnecessary_map_or)]
+
 mod access;
 mod anchor;
 mod asset_identity;
