@@ -184,6 +184,7 @@ fn walk(expr: &Expr, f: &mut impl FnMut(&Expr)) {
         | Expr::Str(_)
         | Expr::Ident(_)
         | Expr::Caller { .. }
+        | Expr::InAsset { .. }
         | Expr::Now { .. } => {}
     }
 }

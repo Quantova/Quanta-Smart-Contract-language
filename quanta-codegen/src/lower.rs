@@ -41,6 +41,7 @@ const TIME_KEY: &str = "@time";
 
 const CHAIN_KEY: &str = "@chain";
 const VALUE_KEY: &str = "@value";
+const IN_ASSET_KEY: &str = "@in_asset";
 
 const SIGNER_ADDR_SCRATCH: u64 = 40960;
 const NONCE_PREIMAGE_SCRATCH: u64 = 41088;
@@ -333,6 +334,10 @@ pub fn lower_expr(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<Reg, Cod
         } => lower_binary(ctx, *op, left, right, wrapping),
         Expr::Caller { span } => {
             let off = ctx.args.offset_of(CALLER_KEY);
+            load_arg(ctx, off, *span)
+        }
+        Expr::InAsset { span } => {
+            let off = ctx.args.offset_of(IN_ASSET_KEY);
             load_arg(ctx, off, *span)
         }
         Expr::Now { span } => {
@@ -1481,6 +1486,7 @@ pub fn lower_entry(
         ctx.args.offset_of_width(TIME_KEY, WORD);
         ctx.args.offset_of_width(CHAIN_KEY, WORD);
         ctx.args.offset_of_width(VALUE_KEY, WORD);
+        ctx.args.offset_of_width(IN_ASSET_KEY, ADDR_BYTES);
         for param in &entry.params {
             if param.ty.name.text == NAME_TYPE {
                 ctx.args.offset_of_width(&param.name.text, NAME_WINDOW);
@@ -3303,6 +3309,7 @@ fn lower_emit(ctx: &mut Ctx, name: &str, args: &[Expr], span: Span) -> Result<()
 fn addr_key_of(expr: &Expr, params: &HashSet<String>) -> Option<String> {
     match expr {
         Expr::Caller { .. } => Some(CALLER_KEY.to_string()),
+        Expr::InAsset { .. } => Some(IN_ASSET_KEY.to_string()),
         Expr::Ident(id) if id.text == "deployer" => Some(CALLER_KEY.to_string()),
         Expr::Ident(id) if id.text == "self" => Some(CONTRACT_KEY.to_string()),
         Expr::Ident(id) if params.contains(&id.text) => Some(id.text.clone()),
@@ -4122,6 +4129,7 @@ enum AddrLoc {
 fn is_scalar_addr(ctx: &Ctx, expr: &Expr) -> bool {
     match expr {
         Expr::Caller { .. } => true,
+        Expr::InAsset { .. } => true,
         Expr::Ident(id) => {
             ctx.layout.is_addr(&id.text)
                 || id.text == "deployer"

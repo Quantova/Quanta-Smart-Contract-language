@@ -235,6 +235,10 @@ impl Parser {
                 self.bump();
                 Ok(Expr::Caller { span })
             }
+            TokenKind::InAsset => {
+                self.bump();
+                Ok(Expr::InAsset { span })
+            }
             TokenKind::Now => {
                 self.bump();
                 Ok(Expr::Now { span })

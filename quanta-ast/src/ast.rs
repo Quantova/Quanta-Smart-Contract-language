@@ -221,6 +221,9 @@ pub enum Expr {
     Caller {
         span: Span,
     },
+    InAsset {
+        span: Span,
+    },
     Now {
         span: Span,
     },
@@ -263,6 +266,7 @@ impl Expr {
             Expr::Str(v) => v.span,
             Expr::Ident(v) => v.span,
             Expr::Caller { span } => *span,
+            Expr::InAsset { span } => *span,
             Expr::Now { span } => *span,
             Expr::Unary { span, .. } => *span,
             Expr::Binary { span, .. } => *span,

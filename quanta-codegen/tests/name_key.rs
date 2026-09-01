@@ -83,8 +83,8 @@ fn the_abi_places_the_window_then_the_length_word() {
     let name_off = arg_off(&cc, "claim", "name");
     let len_off = arg_off(&cc, "claim", "name#len");
     assert_eq!(
-        name_off, 88,
-        "the window follows the caller, contract, time, and chain context"
+        name_off, 120,
+        "the window follows the caller, contract, time, chain, value, and in_asset context"
     );
     assert_eq!(
         len_off,

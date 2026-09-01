@@ -187,6 +187,7 @@ impl Tree {
             Expr::Str(v) => self.line(ind, &format!("Str \"{}\" {}", v.value, at(v.span))),
             Expr::Ident(v) => self.line(ind, &format!("Ident {} {}", v.text, at(v.span))),
             Expr::Caller { span } => self.line(ind, &format!("Caller {}", at(*span))),
+            Expr::InAsset { span } => self.line(ind, &format!("InAsset {}", at(*span))),
             Expr::Now { span } => self.line(ind, &format!("Now {}", at(*span))),
             Expr::Unary { op, expr, span } => {
                 let sym = match op {

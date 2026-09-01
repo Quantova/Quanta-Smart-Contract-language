@@ -120,11 +120,11 @@ fn deploy(
     owner: &[u8; 32],
     initial_supply: u128,
 ) -> BTreeMap<[u8; 32], u64> {
-    let mut mem = vec![0u8; 88 + 32 + 16 + 8];
-    mem[88..120].copy_from_slice(owner);
-    mem[120..128].copy_from_slice(&(initial_supply as u64).to_be_bytes());
-    mem[128..136].copy_from_slice(&((initial_supply >> 64) as u64).to_be_bytes());
-    mem[136..144].copy_from_slice(&SENTINEL);
+    let mut mem = vec![0u8; 120 + 32 + 16 + 8];
+    mem[120..152].copy_from_slice(owner);
+    mem[152..160].copy_from_slice(&(initial_supply as u64).to_be_bytes());
+    mem[160..168].copy_from_slice(&((initial_supply >> 64) as u64).to_be_bytes());
+    mem[168..176].copy_from_slice(&SENTINEL);
     run(cc, selector(GENESIS_SIGNATURE), BTreeMap::new(), &mem)
         .expect("genesis initializes from the deploy parameters")
         .0
