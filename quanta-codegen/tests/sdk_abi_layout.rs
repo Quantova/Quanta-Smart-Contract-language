@@ -167,7 +167,11 @@ fn the_qasset_transfer_offsets_equal_the_sdk_canonical_layout() {
         to + SDK_ADDR,
         "the amount sits one whole address past the destination"
     );
-    assert_eq!((to, amount), (120, 152), "the frozen QAsset transfer layout");
+    assert_eq!(
+        (to, amount),
+        (120, 152),
+        "the frozen QAsset transfer layout"
+    );
 }
 
 #[test]
