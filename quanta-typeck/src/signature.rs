@@ -76,6 +76,9 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if let Some(err) = forged_signed_authority(model, entry) {
         return Err(err);
     }
+    if let Some(err) = forged_ownership_transfer(model, entry, &signed) {
+        return Err(err);
+    }
     if entry_moves_ledger_value(model, entry) && !entry_binds_caller(model, entry, &signed) {
         return Err(no_ledger_authority_error(entry));
     }
@@ -124,6 +127,73 @@ fn no_ledger_authority_error(entry: &EntryDecl) -> TypeError {
         ),
         entry.name.span,
     )
+}
+
+fn forged_ownership_transfer(
+    model: &Model,
+    entry: &EntryDecl,
+    signed: &HashSet<&str>,
+) -> Option<TypeError> {
+    if entry_binds_caller(model, entry, signed) || has_protected_signed_authority(model, entry) {
+        return None;
+    }
+    let mut guarded_on_caller = false;
+    for stmt in &entry.body {
+        if matches!(stmt, Stmt::Guard { .. }) {
+            stmt_exprs(stmt, &mut |e| {
+                if matches!(e, Expr::Caller { .. }) {
+                    guarded_on_caller = true;
+                }
+            });
+        }
+    }
+    if guarded_on_caller {
+        return None;
+    }
+    let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
+    let handed = |value: &Expr| match value {
+        Expr::Ident(id) => params.contains(id.text.as_str()),
+        Expr::Field { base, .. } => match base.as_ref() {
+            Expr::Ident(id) => params.contains(id.text.as_str()),
+            _ => false,
+        },
+        _ => false,
+    };
+    let mut forged: Option<String> = None;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if forged.is_some() {
+                return;
+            }
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(map) = base.as_ref() {
+                        if matches!(name.text.as_str(), "set" | "insert")
+                            && is_addr_valued(model, map.text.as_str())
+                        {
+                            if let Some(value) = args.get(1) {
+                                if handed(value) {
+                                    forged = Some(map.text.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    forged.map(|map| {
+        TypeError::new(
+            format!(
+                "this entry `{}` hands ownership in `{}` to an address it was given, with no \
+                 authority: it carries no `caller` check, `signed by`, or quorum binding, so \
+                 anyone may reassign anything the map holds; either write `caller` so it is a \
+                 claim, or guard the current holder against `caller` before reassigning it",
+                entry.name.text, map
+            ),
+            entry.name.span,
+        )
+    })
 }
 
 fn forged_signed_authority(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
@@ -1679,6 +1749,36 @@ fn is_state_address(model: &Model, expr: &Expr) -> bool {
 mod tests {
     use crate::model::Model;
 
+    fn accepts(src: &str) {
+        let program = quanta_parser::parse(src).expect("source parses");
+        let model = Model::build(&program.contracts[0]);
+        if let Err(e) = super::check(&model) {
+            panic!("checker should accept this contract, got {}", e.message);
+        }
+    }
+
+    #[test]
+    fn reassigning_ownership_to_a_handed_address_with_no_authority_is_refused() {
+        let src = "contract C { state { holder: Map<u64, Q_Address>; } \
+                   entry seize(id: u64, to: Q_Address) writes(holder) { holder.set(id, to); } }";
+        assert!(error_for(src).contains("hands ownership"));
+    }
+
+    #[test]
+    fn claiming_ownership_for_the_caller_is_not_a_takeover() {
+        let src = "contract C { state { holder: Map<u64, Q_Address>; } \
+                   entry claim(id: u64) writes(holder) { holder.set(id, caller); } }";
+        accepts(src);
+    }
+
+    #[test]
+    fn handing_ownership_on_is_allowed_once_the_holder_is_bound_to_the_caller() {
+        let src = "contract C { state { holder: Map<u64, Q_Address>; } \
+                   entry transfer(id: u64, to: Q_Address) reads(holder) writes(holder) \
+                   { guard holder.get(id) == caller; holder.set(id, to); } }";
+        accepts(src);
+    }
+
     fn error_for(src: &str) -> String {
         let program = quanta_parser::parse(src).expect("source parses");
         let model = Model::build(&program.contracts[0]);
@@ -2353,7 +2453,11 @@ mod tests {
                 entry drain(order: Rel) conserves QTOV writes(vault)
                 { guard owner_of.get(order.id) == caller; send(order.to, vault.split(order.amount)); }
             }"#;
-        assert!(error_for(src).contains("forgeable"));
+        let e = error_for(src);
+        assert!(
+            e.contains("forgeable") || e.contains("hands ownership"),
+            "a settable owner map must be refused, got {e}"
+        );
     }
 
     #[test]

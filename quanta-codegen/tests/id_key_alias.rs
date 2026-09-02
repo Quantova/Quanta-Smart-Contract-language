@@ -130,8 +130,8 @@ fn a_map_set_whose_key_and_value_read_the_same_map_uses_the_intended_key() {
 #[test]
 fn a_guard_comparing_two_id_reads_uses_both_keys() {
     let src = "contract C { state { owner_of: Map<Q_Id, Q_Address>; note_of: Map<Q_Id, Q_Address>; flag: u64; } \
-               entry demo(id: Q_Id, other: Q_Id, x: Q_Address) writes(owner_of, note_of, flag) { \
-                   owner_of.set(id, x); \
+               entry demo(id: Q_Id, other: Q_Id) reads(note_of) writes(owner_of, note_of, flag) { \
+                   owner_of.set(id, note_of.get(id)); \
                    owner_of.set(other, caller); \
                    note_of.set(other, caller); \
                    guard owner_of.get(id) == note_of.get(other); \
@@ -139,7 +139,6 @@ fn a_guard_comparing_two_id_reads_uses_both_keys() {
                } }";
     let cc = compile(src);
     let caller = addr(0x33);
-    let x = addr(0x44);
     let (id, other) = (5u64, 9u64);
     let mut mem = vec![0u8; 4096];
     mem[0..32].copy_from_slice(&caller);
@@ -147,8 +146,6 @@ fn a_guard_comparing_two_id_reads_uses_both_keys() {
     mem[ido..ido + 8].copy_from_slice(&id.to_be_bytes());
     let oo = arg_off(&cc, "demo", "other");
     mem[oo..oo + 8].copy_from_slice(&other.to_be_bytes());
-    let xo = arg_off(&cc, "demo", "x");
-    mem[xo..xo + 32].copy_from_slice(&x);
 
     let out = run(
         &cc.container,
