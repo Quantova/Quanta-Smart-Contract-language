@@ -101,10 +101,10 @@ contract Pool {
     guard (funds.amount * 997 * reserve_b) / (reserve_a * 1000 + funds.amount * 997) > 0;
     guard reserve_b > (funds.amount * 997 * reserve_b) / (reserve_a * 1000 + funds.amount * 997);
     send_asset(token_b, caller, (funds.amount * 997 * reserve_b) / (reserve_a * 1000 + funds.amount * 997));
+    emit Swapped(caller, token_a, funds.amount, (funds.amount * 997 * reserve_b) / (reserve_a * 1000 + funds.amount * 997));
     reserve_b = reserve_b - (funds.amount * 997 * reserve_b) / (reserve_a * 1000 + funds.amount * 997);
     reserve_a = reserve_a + funds.amount;
     vault.merge(funds);
-    emit Swapped(caller, token_a, funds.amount, min_out);
   }
   entry swap_b_for_a(funds: Q_Asset<QTOV>, min_out: u128)
     reads(token_a, token_b, reserve_a, reserve_b, max_reserve)
@@ -120,13 +120,13 @@ contract Pool {
     guard (funds.amount * 997 * reserve_a) / (reserve_b * 1000 + funds.amount * 997) > 0;
     guard reserve_a > (funds.amount * 997 * reserve_a) / (reserve_b * 1000 + funds.amount * 997);
     send_asset(token_a, caller, (funds.amount * 997 * reserve_a) / (reserve_b * 1000 + funds.amount * 997));
+    emit Swapped(caller, token_b, funds.amount, (funds.amount * 997 * reserve_a) / (reserve_b * 1000 + funds.amount * 997));
     reserve_a = reserve_a - (funds.amount * 997 * reserve_a) / (reserve_b * 1000 + funds.amount * 997);
     reserve_b = reserve_b + funds.amount;
     vault.merge(funds);
-    emit Swapped(caller, token_b, funds.amount, min_out);
   }
   event Deposited(who: Q_Address, token: Q_Address, amount: u128);
   event LiquidityAdded(who: Q_Address, amount_a: u128, amount_b: u128, minted: u128);
   event LiquidityRemoved(who: Q_Address, burned: u128);
-  event Swapped(who: Q_Address, token_in: Q_Address, amount_in: u128, floor_out: u128);
+  event Swapped(who: Q_Address, token_in: Q_Address, amount_in: u128, amount_out: u128);
 }
