@@ -1,6 +1,8 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+#![allow(clippy::type_complexity)]
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -81,7 +83,7 @@ fn call(
 ) -> Result<(BTreeMap<[u8; 32], u64>, Vec<Effect>), Fault> {
     let e = entry_of(cc, name);
     let mut mem = context(caller, value, in_asset);
-    let mut put = |mem: &mut [u8], key: &str, v: u64| {
+    let put = |mem: &mut [u8], key: &str, v: u64| {
         let slot = e
             .args
             .iter()
