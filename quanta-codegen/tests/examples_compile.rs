@@ -26,8 +26,8 @@ fn every_example_lowers_to_a_container() {
     let files = qs_files(&examples_dir());
     assert_eq!(
         files.len(),
-        21,
-        "the example corpus has twenty one contracts"
+        22,
+        "the example corpus has twenty two contracts"
     );
     for file in files {
         let src = fs::read_to_string(&file).unwrap();

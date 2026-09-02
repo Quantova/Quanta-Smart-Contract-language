@@ -7,8 +7,8 @@ contract Pool {
     reserve_a: u128;
     reserve_b: u128;
     total_shares: u128;
-    shares: Map<Q_Address, u128>;
-    pending_a: Map<Q_Address, u128>;
+    shares: Map<Q_Address, u64>;
+    pending_a: Map<Q_Address, u64>;
     max_reserve: u128 = 1_000_000_000_000_000;
     vault: Q_Asset<QTOV>;
   }

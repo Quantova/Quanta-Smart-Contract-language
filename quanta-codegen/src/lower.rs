@@ -659,13 +659,21 @@ fn lower_binary(
         let (rlo, rhi) = eval_wide(ctx, right, wrapping)?;
         return wide_compare(ctx, op, llo, lhi, rlo, rhi, left.span());
     }
-    if matches!(op, BinOp::Div | BinOp::Rem | BinOp::Shr)
+    if matches!(op, BinOp::Div | BinOp::Rem)
         && (is_wide_expr(ctx, left) || is_wide_expr(ctx, right))
     {
+        let (llo, lhi) = eval_wide(ctx, left, wrapping)?;
+        let (rlo, rhi) = eval_wide(ctx, right, wrapping)?;
+        two_word_div(ctx, llo, lhi, rlo, rhi, matches!(op, BinOp::Rem));
+        ctx.b.jnz(lhi, ctx.trap);
+        ctx.regs.free(lhi);
+        return Ok(llo);
+    }
+    if matches!(op, BinOp::Shr) && (is_wide_expr(ctx, left) || is_wide_expr(ctx, right)) {
         return Err(CodegenError::Unsupported {
-            what: "a division, remainder, or shift with a u128 operand, which would truncate the \
-                   wide value to its low word"
-                .into(),
+            what:
+                "a shift with a u128 operand, which would truncate the wide value to its low word"
+                    .into(),
             span: left.span(),
         });
     }
@@ -981,12 +989,18 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
             left,
             right,
             span,
-        } if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) => {
+        } if matches!(
+            op,
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem
+        ) =>
+        {
             let (llo, lhi) = eval_wide(ctx, left, wrapping)?;
             let (rlo, rhi) = eval_wide(ctx, right, wrapping)?;
             match op {
                 BinOp::Add => two_word_add(ctx, llo, lhi, rlo, rhi, wrapping),
                 BinOp::Sub => two_word_sub(ctx, llo, lhi, rlo, rhi, wrapping),
+                BinOp::Div => two_word_div(ctx, llo, lhi, rlo, rhi, false),
+                BinOp::Rem => two_word_div(ctx, llo, lhi, rlo, rhi, true),
                 _ => two_word_mul(ctx, llo, lhi, rlo, rhi, wrapping, *span)?,
             }
             Ok((llo, lhi))
@@ -1029,6 +1043,30 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
             Ok((lo, hi))
         }
     }
+}
+
+fn two_word_div(ctx: &mut Ctx, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg, remainder: bool) {
+    if remainder {
+        ctx.b.op(Instr::RemW {
+            dlo: llo,
+            dhi: lhi,
+            alo: llo,
+            ahi: lhi,
+            blo: rlo,
+            bhi: rhi,
+        });
+    } else {
+        ctx.b.op(Instr::DivW {
+            dlo: llo,
+            dhi: lhi,
+            alo: llo,
+            ahi: lhi,
+            blo: rlo,
+            bhi: rhi,
+        });
+    }
+    ctx.regs.free(rhi);
+    ctx.regs.free(rlo);
 }
 
 fn two_word_add(ctx: &mut Ctx, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg, wrapping: bool) {

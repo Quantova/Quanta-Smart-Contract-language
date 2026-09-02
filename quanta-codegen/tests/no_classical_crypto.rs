@@ -55,6 +55,8 @@ fn is_cryptographic(op: OpCode) -> bool {
         | OpCode::SubW
         | OpCode::MulW
         | OpCode::MulHi
+        | OpCode::DivW
+        | OpCode::RemW
         | OpCode::And
         | OpCode::Or
         | OpCode::Xor

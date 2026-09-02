@@ -21,19 +21,19 @@ fn compiles(src: &str) {
 }
 
 #[test]
-fn dividing_a_wide_field_is_rejected() {
+fn dividing_a_wide_field_keeps_the_whole_value() {
     let src =
         "contract W { state { total: u128; result: u128; } genesis { total = 0; result = 0; } \
                entry divide(d: u64) writes(result) reads(total) { result = total / d; } }";
-    assert!(compile_error(src).contains("truncate"));
+    compiles(src);
 }
 
 #[test]
-fn a_wide_remainder_is_rejected() {
+fn a_wide_remainder_keeps_the_whole_value() {
     let src =
         "contract W { state { total: u128; result: u128; } genesis { total = 0; result = 0; } \
                entry rem(d: u64) writes(result) reads(total) { result = total % d; } }";
-    assert!(compile_error(src).contains("truncate"));
+    compiles(src);
 }
 
 #[test]
