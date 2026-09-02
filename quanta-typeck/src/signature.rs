@@ -79,13 +79,95 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if let Some(err) = forged_ownership_transfer(model, entry, &signed) {
         return Err(err);
     }
-    if entry_moves_ledger_value(model, entry) && !entry_binds_caller(model, entry, &signed) {
+    if entry_moves_ledger_value(model, entry)
+        && !entry_binds_caller(model, entry, &signed)
+        && !ledger_move_is_paid_for_by_the_caller(entry)
+    {
         return Err(no_ledger_authority_error(entry));
     }
-    if entry_moves_asset(entry) && !entry_binds_caller(model, entry, &signed) {
+    if entry_moves_asset(entry)
+        && !entry_binds_caller(model, entry, &signed)
+        && !asset_outflow_is_paid_for_by_the_caller(entry)
+    {
         return Err(no_asset_authority_error(entry));
     }
     Ok(())
+}
+
+/// A swap has no owner to check. The authority is that the caller paid an asset
+/// in, and the only place value can leave is back to that same caller. Minting is
+/// deliberately excluded, since creating units is never paid for by an inflow.
+fn asset_outflow_is_paid_for_by_the_caller(entry: &EntryDecl) -> bool {
+    let paid_in = entry.params.iter().any(crate::model::is_asset_param);
+    let mut burns_its_own_row = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if matches!(base.as_ref(), Expr::Ident(_))
+                        && name.text == "debit"
+                        && matches!(args.first(), Some(Expr::Caller { .. }))
+                    {
+                        burns_its_own_row = true;
+                    }
+                }
+            }
+        });
+    }
+    if !paid_in && !burns_its_own_row {
+        return false;
+    }
+    let mut sends_only_to_caller = true;
+    let mut saw_send = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Ident(id) = callee.as_ref() {
+                    if id.text == "mint_asset" {
+                        sends_only_to_caller = false;
+                    }
+                    if id.text == "send_asset" {
+                        saw_send = true;
+                        if !matches!(args.get(1), Some(Expr::Caller { .. })) {
+                            sends_only_to_caller = false;
+                        }
+                    }
+                }
+            }
+        });
+    }
+    saw_send && sends_only_to_caller
+}
+
+/// The caller paid an asset in and every ledger row this entry touches is under
+/// the caller's own key, so it can neither credit itself from nothing nor reach
+/// anybody else's row. This is what a pool does when it books what you provided.
+fn ledger_move_is_paid_for_by_the_caller(entry: &EntryDecl) -> bool {
+    if !entry.params.iter().any(crate::model::is_asset_param) {
+        return false;
+    }
+    let mut saw = false;
+    let mut all_caller_keyed = true;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if matches!(base.as_ref(), Expr::Ident(_))
+                        && matches!(
+                            name.text.as_str(),
+                            "credit" | "debit" | "set" | "insert" | "remove"
+                        )
+                    {
+                        saw = true;
+                        if !matches!(args.first(), Some(Expr::Caller { .. })) {
+                            all_caller_keyed = false;
+                        }
+                    }
+                }
+            }
+        });
+    }
+    saw && all_caller_keyed
 }
 
 fn entry_moves_asset(entry: &EntryDecl) -> bool {
@@ -442,6 +524,9 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
     let mut tainted = false;
     for entry in &model.entries {
         if entry_writes_field(entry, field) {
+            if writes_field_only_under_the_caller_key(entry, field) {
+                continue;
+            }
             let (authorized, sub_tainted) = writer_authorized(model, entry, prot);
             if !authorized {
                 protected = false;
@@ -459,6 +544,43 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
         prot.memo.insert(field.to_string(), true);
     }
     (true, tainted)
+}
+
+/// A write that can only ever land under the caller's own key cannot forge
+/// anybody else's entry, so it does not make the map an unsafe anchor. This is
+/// what lets a pool credit what you paid in and then gate on it later.
+fn writes_field_only_under_the_caller_key(entry: &EntryDecl, field: &str) -> bool {
+    let mut saw = false;
+    let mut all_caller_keyed = true;
+    for stmt in &entry.body {
+        if let Stmt::Assign { target, .. } = stmt {
+            if let Expr::Ident(id) = target {
+                if id.text == field {
+                    all_caller_keyed = false;
+                }
+            }
+        }
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(map) = base.as_ref() {
+                        if map.text == field
+                            && matches!(
+                                name.text.as_str(),
+                                "credit" | "debit" | "set" | "insert" | "remove"
+                            )
+                        {
+                            saw = true;
+                            if !matches!(args.first(), Some(Expr::Caller { .. })) {
+                                all_caller_keyed = false;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    saw && all_caller_keyed
 }
 
 fn writer_authorized(model: &Model, entry: &EntryDecl, prot: &mut Prot) -> (bool, bool) {
