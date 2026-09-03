@@ -94,10 +94,6 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     Ok(())
 }
 
-/// A swap has no owner to check. The authority is that the caller paid an asset
-/// in, and the only place value can leave is back to that same caller. Minting is
-/// deliberately excluded, since creating units is never paid for by an inflow.
-
 /// Whether a value this entry moves out is an amount the caller simply named.
 ///
 /// The paid exemptions exist for a pool that pays out a price it computed from what
@@ -178,6 +174,9 @@ fn moved_amount_is_caller_chosen(entry: &EntryDecl) -> bool {
     caller_chosen
 }
 
+/// A swap has no owner to check. The authority is that the caller paid an asset
+/// in, and the only place value can leave is back to that same caller. Minting is
+/// deliberately excluded, since creating units is never paid for by an inflow.
 fn asset_outflow_is_paid_for_by_the_caller(entry: &EntryDecl) -> bool {
     let paid_in = entry.params.iter().any(crate::model::is_asset_param);
     let mut burns_its_own_row = false;
@@ -632,7 +631,7 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
             {
                 continue;
             }
-            let (authorized, sub_tainted) = writer_authorized(model, entry, field, prot);
+            let (authorized, sub_tainted) = writer_authorized(model, entry, prot);
             if !authorized {
                 protected = false;
                 break;
@@ -752,12 +751,7 @@ fn credits_caller_only_by_the_paid_amount(
     saw && all_safe
 }
 
-fn writer_authorized(
-    model: &Model,
-    entry: &EntryDecl,
-    field: &str,
-    prot: &mut Prot,
-) -> (bool, bool) {
+fn writer_authorized(model: &Model, entry: &EntryDecl, prot: &mut Prot) -> (bool, bool) {
     for param in &entry.params {
         if let Some(field) = authority_backing_field(param) {
             let (protected, tainted) = anchor_protected(model, field, prot);
