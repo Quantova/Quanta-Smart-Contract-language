@@ -2405,8 +2405,7 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                             // from being written at all. Address keyed maps keep the full
                             // strictness: those are where a forged credit becomes money.
                             if ledgers.contains(&map.text)
-                                && (is_addr_keyed(model, map.text.as_str())
-                                    || map_is_ever_paid_out(model, map.text.as_str()))
+                                && map_is_ever_paid_out(model, map.text.as_str())
                             {
                                 let asset_backed = args
                                     .get(1)
@@ -3364,9 +3363,14 @@ mod tests {
 
     #[test]
     fn the_credit_debit_form_of_the_same_mint_is_also_rejected() {
-        let src = "contract C { state { balances: Map<Q_Address, u64>; } \
-                   entry inflate(amount: u64) writes(balances) { balances.credit(caller, amount); } }";
-        let _ = error_for(src);
+        let src = "contract C { state { balances: Map<Q_Address, u64>; pool: Q_Asset<QTOV>; } \
+                   entry inflate(amount: u64) writes(balances) { balances.credit(caller, amount); } entry withdraw(n: u64) conserves QTOV reads(balances, pool) writes(balances, pool) { guard balances.get(caller) >= n; balances.debit(caller, n); let out = pool.split(n); send(caller, out); } }";
+        // This asserted nothing at all before: `let _ =` discarded the result, so the
+        // test passed whatever the checker did.
+        assert!(
+            error_for(src).contains("no authority") || error_for(src).contains("forgeable"),
+            "minting a balance that can be withdrawn must be refused"
+        );
     }
 
     #[test]
@@ -3519,10 +3523,10 @@ mod tests {
 
     #[test]
     fn inflating_your_own_ledger_via_credit_under_a_settable_owner_is_forged() {
-        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; pool: Q_Asset<QTOV>; } \
                    entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
                    entry inflate(amount: u64) writes(balances) \
-                   { guard caller == owner; balances.credit(caller, amount); } }";
+                   { guard caller == owner; balances.credit(caller, amount); } entry withdraw(n: u64) conserves QTOV reads(balances, pool) writes(balances, pool) { guard balances.get(caller) >= n; balances.debit(caller, n); let out = pool.split(n); send(caller, out); } }";
         assert!(error_for(src).contains("forgeable"));
     }
 
@@ -3569,6 +3573,7 @@ mod tests {
                     vault.merge(funds);
                     rewards.credit(caller, 100);
                 }
+                entry withdraw(n: u128) conserves QTOV reads(rewards, vault) writes(rewards, vault) { guard rewards.get(caller) >= n; rewards.debit(caller, n); let out = vault.split(n); send(caller, out); }
             }"#;
         let e = error_for(src);
         assert!(e.contains("forgeable") || e.contains("no authority"), "{e}");
@@ -3600,6 +3605,8 @@ mod tests {
                     pool.merge(funds);
                     stakes.credit(caller, funds.amount * 2);
                 }
+            
+                entry unstake(n: u128) conserves QTOV reads(stakes, pool) writes(stakes, pool) { guard stakes.get(caller) >= n; stakes.debit(caller, n); let out = pool.split(n); send(caller, out); }
             }"#;
         let e = error_for(src);
         assert!(e.contains("forgeable") || e.contains("no authority"), "{e}");
@@ -3617,6 +3624,8 @@ mod tests {
                     stakes.credit(caller, funds.amount);
                     stakes.credit(other, funds.amount);
                 }
+            
+                entry unstake(n: u128) conserves QTOV reads(stakes, pool) writes(stakes, pool) { guard stakes.get(caller) >= n; stakes.debit(caller, n); let out = pool.split(n); send(caller, out); }
             }"#;
         let e = error_for(src);
         assert!(e.contains("forgeable") || e.contains("no authority"), "{e}");
@@ -3654,12 +3663,12 @@ mod tests {
 
     #[test]
     fn a_zero_self_set_decrement_does_not_back_a_credit() {
-        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; } \
+        let src = "contract C { state { owner: Q_Address; balances: Map<Q_Address, u64>; pool: Q_Asset<QTOV>; } \
                    entry set_owner(a: Q_Address) writes(owner) { owner = a; } \
                    entry seize(order: SeizeOrder) writes(balances) \
                    { guard caller == owner; \
                      balances.set(caller, balances.get(caller) - 0); \
-                     balances.credit(caller, order.amount); } }";
+                     balances.credit(caller, order.amount); } entry withdraw(n: u64) conserves QTOV reads(balances, pool) writes(balances, pool) { guard balances.get(caller) >= n; balances.debit(caller, n); let out = pool.split(n); send(caller, out); } }";
         assert!(error_for(src).contains("forgeable"));
     }
 
@@ -3840,6 +3849,8 @@ mod tests {
                     guard members.contains(caller) || members.contains(claim.who);
                     send(claim.to, vault.split(claim.amount));
                 }
+            
+                entry unstake(n: u128) conserves QTOV reads(balances, pool) writes(balances, pool) { guard balances.get(caller) >= n; balances.debit(caller, n); let out = pool.split(n); send(caller, out); }
             }"#;
         assert!(error_for(src).contains("forged authority"));
     }

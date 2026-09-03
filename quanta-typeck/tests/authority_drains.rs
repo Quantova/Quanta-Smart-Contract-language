@@ -560,3 +560,30 @@ fn a_genuine_debit_still_backs_a_withdrawal() {
 }"#
     ));
 }
+
+#[test]
+fn a_per_caller_counter_is_not_money() {
+    // The simplest contract there is. `hits.credit(caller, 1)` is a visit counter, and
+    // nothing can ever leave through it. Treating every address keyed integer map as a
+    // ledger made this basic contract unbuildable, which is the plainest possible sign
+    // the chain could not host ordinary applications.
+    assert!(!rejected(
+        r#"contract Counter {
+  state { owner: Q_Address; hits: Map<Q_Address, u64>; total: u64; }
+  genesis { owner = deployer; }
+  entry bump() writes(hits, total) { hits.credit(caller, 1); total = total + 1; }
+}"#
+    ));
+}
+
+#[test]
+fn a_counter_that_can_be_cashed_out_is_money_again() {
+    // The same shape with a payout path is a balance, and forging it must be refused.
+    assert!(rejected(
+        r#"contract Counter2 {
+  state { hits: Map<Q_Address, u64>; pool: Q_Asset<QTOV>; }
+  entry bump() writes(hits) { hits.credit(caller, 1); }
+  entry cash(n: u64) conserves QTOV reads(hits, pool) writes(hits, pool) { guard hits.get(caller) >= n; hits.debit(caller, n); let out = pool.split(n); send(caller, out); }
+}"#
+    ));
+}
