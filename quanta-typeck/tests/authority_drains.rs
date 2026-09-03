@@ -76,3 +76,40 @@ fn membership_bought_for_one_unit_does_not_authorise_draining_the_vault() {
 }"#
     ));
 }
+
+#[test]
+fn a_zero_written_as_a_product_backs_no_authority_either() {
+    assert!(rejected(
+        r#"contract Tok {
+  asset TOK;
+  state { token: Q_Address; balances: Map<Q_Address, u64>; }
+  genesis { token = deployer; }
+  entry withdraw(n: u64) reads(token) writes(balances) { balances.debit(caller, n * 0); send_asset(token, caller, n); }
+}"#
+    ));
+}
+
+#[test]
+fn a_flag_set_to_a_literal_is_not_a_trustworthy_anchor() {
+    assert!(rejected(
+        r#"contract Drain2b {
+  asset TOK;
+  state { token: Q_Address; flags: Map<Q_Address, u64>; }
+  genesis { token = deployer; }
+  entry become_admin() writes(flags) { flags.set(caller, 1); }
+  entry drain(n: u64) reads(token, flags) { guard flags.get(caller) == 1; send_asset(token, caller, n); }
+}"#
+    ));
+}
+
+#[test]
+fn parking_a_caller_named_amount_in_state_does_not_launder_it() {
+    assert!(rejected(
+        r#"contract Launder {
+  asset TOK;
+  state { token: Q_Address; pending: u128; vault: Q_Asset<TOK>; }
+  genesis { token = deployer; }
+  entry drain(funds: Q_Asset<TOK>, n: u128) conserves TOK writes(pending, vault) { pending = n; send_asset(token, caller, pending); vault.merge(funds); }
+}"#
+    ));
+}

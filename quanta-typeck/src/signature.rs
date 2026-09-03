@@ -129,7 +129,10 @@ fn moved_amount_is_caller_chosen(entry: &EntryDecl) -> bool {
                             && matches!(args.first(), Some(Expr::Caller { .. }))
                             && args
                                 .get(1)
-                                .map(|a| taints_from_param(a, &one, &signed, &derived))
+                                .map(|a| {
+                                    !is_provably_zero(a)
+                                        && taints_from_param(a, &one, &signed, &derived)
+                                })
                                 .unwrap_or(false)
                         {
                             backed.insert(*name);
@@ -148,7 +151,11 @@ fn moved_amount_is_caller_chosen(entry: &EntryDecl) -> bool {
     if unbacked.is_empty() {
         return false;
     }
-    let derived = param_derived_locals(entry, &unbacked, &signed);
+    let mut derived = param_derived_locals(entry, &unbacked, &signed);
+    // A value parked in a state field is still the caller's number.
+    for field in tainted_state_fields(entry, &unbacked, &signed, &derived) {
+        derived.insert(field);
+    }
     let mut caller_chosen = false;
     for stmt in &entry.body {
         stmt_exprs(stmt, &mut |e| {
@@ -172,6 +179,65 @@ fn moved_amount_is_caller_chosen(entry: &EntryDecl) -> bool {
         });
     }
     caller_chosen
+}
+
+/// Whether an expression reads a row keyed by the caller, such as `pending.get(caller)`.
+fn reads_a_caller_row(expr: &Expr) -> bool {
+    let mut found = false;
+    walk(expr, &mut |e| {
+        if let Expr::Call { callee, args, .. } = e {
+            if let Expr::Field { name, .. } = callee.as_ref() {
+                if name.text == "get" && matches!(args.first(), Some(Expr::Caller { .. })) {
+                    found = true;
+                }
+            }
+        }
+    });
+    found
+}
+
+/// Whether an expression is certainly zero, so it can back nothing.
+///
+/// `debit(caller, 0)` was refused but `debit(caller, n * 0)` was not, and the second
+/// buys exactly the same authority for exactly the same nothing.
+fn is_provably_zero(expr: &Expr) -> bool {
+    match expr {
+        Expr::Int(lit) => lit
+            .text
+            .replace('_', "")
+            .parse::<u128>()
+            .map_or(false, |v| v == 0),
+        Expr::Binary {
+            op, left, right, ..
+        } => match op {
+            BinOp::Mul => is_provably_zero(left) || is_provably_zero(right),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// State fields this entry assigns from a caller named expression.
+///
+/// `pending = n; send_asset(t, caller, pending)` moved the taint out of the parameter
+/// and into state, where the parameter based check could no longer see it.
+fn tainted_state_fields(
+    entry: &EntryDecl,
+    free: &HashSet<&str>,
+    signed: &HashSet<&str>,
+    derived: &HashSet<String>,
+) -> HashSet<String> {
+    let mut out: HashSet<String> = HashSet::new();
+    for stmt in &entry.body {
+        if let Stmt::Assign { target, value, .. } = stmt {
+            if taints_from_param(value, free, signed, derived) {
+                if let Expr::Ident(id) = target {
+                    out.insert(id.text.clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 /// A swap has no owner to check. The authority is that the caller paid an asset
@@ -737,11 +803,31 @@ fn credits_caller_only_by_the_paid_amount(
                     if name.text == "debit" {
                         return;
                     }
+                    // For an anchor the value must be EARNED, not merely not named by
+                    // the caller. A literal is the purest self grant there is, so
+                    // `flags.set(caller, 1)` cannot make `flags` a trustworthy ground
+                    // for `guard flags.get(caller) == 1`. Earned means derived from an
+                    // asset the chain moved, or read out of another row of the
+                    // caller's own.
+                    let assets: HashSet<&str> = entry
+                        .params
+                        .iter()
+                        .filter(|p| crate::model::is_asset_param(p))
+                        .map(|p| p.name.text.as_str())
+                        .collect();
+                    let no_locals: HashSet<String> = HashSet::new();
+                    let earned = match args.get(1) {
+                        Some(a) => {
+                            taints_from_param(a, &assets, &signed, &no_locals)
+                                || reads_a_caller_row(a)
+                        }
+                        None => false,
+                    };
                     let caller_named = args
                         .get(1)
                         .map(|a| taints_from_param(a, &free, &signed, &derived))
                         .unwrap_or(true);
-                    if caller_named {
+                    if caller_named || !earned {
                         all_safe = false;
                     }
                 }
