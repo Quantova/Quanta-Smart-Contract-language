@@ -2002,6 +2002,14 @@ fn forged_ownership_transfer(
                         if matches!(name.text.as_str(), "set" | "insert" | "remove")
                             && is_addr_valued(model, map.text.as_str())
                         {
+                            // Writing YOUR OWN row is delegation, not seizure:
+                            // `delegate_of.set(caller, to)` nominates somebody to act
+                            // for you and touches nobody else's slot. Ignoring the key
+                            // meant no contract could record a delegate, an approval
+                            // or a payout address at all.
+                            if matches!(args.first(), Some(Expr::Caller { .. })) {
+                                return;
+                            }
                             if let Some(value) = args.get(1) {
                                 if handed(value) {
                                     forged = Some(map.text.clone());

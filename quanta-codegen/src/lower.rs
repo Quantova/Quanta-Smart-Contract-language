@@ -380,7 +380,7 @@ fn lower_call_value(
 ) -> Result<Reg, CodegenError> {
     if let Expr::Field { base, name, .. } = callee {
         match name.text.as_str() {
-            "contains" | "get" => return lower_map_read(ctx, base, args, span),
+            "contains" | "get" => return lower_map_read(ctx, base, args, span, name.text.as_str()),
             "split" => return lower_split(ctx, base, args, span),
             _ => {}
         }
@@ -397,6 +397,16 @@ fn lower_call_value(
 }
 
 fn lower_ident(ctx: &mut Ctx, name: &str, span: Span) -> Result<Reg, CodegenError> {
+    // `true` and `false` reach codegen as bare names. Without these a pause or freeze
+    // flag could not even be initialised in genesis, so no contract could ship one.
+    if name == "true" || name == "false" {
+        let d = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d,
+            imm: u64::from(name == "true"),
+        });
+        return Ok(d);
+    }
     if ctx.layout.is_wide(name) || ctx.wide_keys.contains(name) {
         return Err(CodegenError::Unsupported {
             what: format!(
@@ -659,6 +669,24 @@ fn lower_binary(
     wrapping: bool,
 ) -> Result<Reg, CodegenError> {
     if matches!(op, BinOp::Eq | BinOp::Ne) {
+        // `owner_of.get(id) == 0` asks whether the slot is EMPTY. Zero is not an
+        // address, so routing it through the address comparison refused it, and that
+        // is the natural way to check a name or a token id is unclaimed.
+        let is_zero = |e: &Expr| matches!(e, Expr::Int(n) if n.text.replace('_', "").trim_start_matches('0').is_empty());
+        for (side, other) in [(left, right), (right, left)] {
+            if is_zero(other) {
+                if let Some((name, mbase, key)) = addr_map_get(ctx, side) {
+                    let name = name.to_string();
+                    let present = lower_addr_map_presence(ctx, &name, mbase, key, side.span())?;
+                    // `present` is 1 when the row holds something. `== 0` is the
+                    // negation of that, `!= 0` is that.
+                    if matches!(op, BinOp::Eq) {
+                        logical_not(ctx, present);
+                    }
+                    return Ok(present);
+                }
+            }
+        }
         if let Some((name, mbase, key)) = addr_map_get(ctx, left) {
             let name = name.to_string();
             return lower_addr_map_eq(ctx, op, &name, mbase, key, right, left.span());
@@ -799,6 +827,13 @@ fn is_wide_expr(ctx: &Ctx, expr: &Expr) -> bool {
         Expr::Ident(id) => ctx.layout.is_wide(&id.text) || ctx.wide_keys.contains(&id.text),
         Expr::Field { base, name, .. } => {
             matches!(base.as_ref(), Expr::Ident(id) if ctx.wide_keys.contains(&format!("{}.{}", id.text, name.text)))
+        }
+        // `bal.get(k)` on a u128 valued map is a wide value. Without this arm every
+        // narrow context, and every comparison, treated it as one word and refused to
+        // lower it, so a u128 balance could not be compared or added at all.
+        Expr::Call { callee, .. } => {
+            matches!(callee.as_ref(), Expr::Field { base, name, .. }
+                if name.text == "get" && map_name_is_value_wide(ctx, base))
         }
         Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => is_wide_expr(ctx, expr),
         Expr::Unary {
@@ -3406,6 +3441,44 @@ fn addr_key_of(expr: &Expr, params: &HashSet<String>) -> Option<String> {
     }
 }
 
+/// Whether an address valued map row holds anything, as a 0 or 1 register.
+///
+/// Every word of the value is OR'd together, so a partially written row still reads as
+/// present. This is what `contains` means for an address map, and what `== 0` has to
+/// mean when the row is compared against zero.
+fn lower_addr_map_presence(
+    ctx: &mut Ctx,
+    _map_name: &str,
+    mbase: u64,
+    key_expr: &Expr,
+    span: Span,
+) -> Result<Reg, CodegenError> {
+    let key_off = map_key_source(ctx, key_expr, span)?;
+    let acc = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: acc, imm: 0 });
+    for i in 0..ADDR_WORDS {
+        compute_map_addr_word_key(ctx, mbase, key_off, i, span)?;
+        let w = ctx.regs.alloc(span)?;
+        let key = map_key_ptr(ctx, span)?;
+        ctx.b.op(Instr::SLoad { d: w, a: key });
+        ctx.regs.free(key);
+        ctx.b.op(Instr::Or {
+            d: acc,
+            a: acc,
+            b: w,
+        });
+        ctx.regs.free(w);
+    }
+    ctx.b.op(Instr::Ldi { d: SCRATCH, imm: 0 });
+    ctx.b.op(Instr::Eq {
+        d: acc,
+        a: acc,
+        b: SCRATCH,
+    });
+    logical_not(ctx, acc);
+    Ok(acc)
+}
+
 fn lower_address(ctx: &mut Ctx, expr: &Expr, span: Span) -> Result<u64, CodegenError> {
     if ctx.is_genesis {
         if let Some(name) = deploy_param_name(expr) {
@@ -3745,16 +3818,28 @@ fn id_word_offset(ctx: &mut Ctx, key_expr: &Expr, span: Span) -> Result<u64, Cod
                 }
                 Ok(ctx.args.offset_of(&key))
             }
-            _ => Err(CodegenError::Unsupported {
-                what: "a token id key that is not a parameter or a parameter field".into(),
-                span,
-            }),
+            _ => id_key_into_scratch(ctx, key_expr, span),
         },
-        _ => Err(CodegenError::Unsupported {
-            what: "a token id key that is not a parameter or a parameter field".into(),
-            span,
-        }),
+        // A key the contract computes itself, such as a sequential `next_id`, is not in
+        // the argument region. Evaluating it into a scratch word gives it an offset the
+        // key computation can read. Without this no contract could allocate its own
+        // ids, so an NFT collection could not mint.
+        _ => id_key_into_scratch(ctx, key_expr, span),
     }
+}
+
+fn id_key_into_scratch(ctx: &mut Ctx, key_expr: &Expr, span: Span) -> Result<u64, CodegenError> {
+    if is_wide_expr(ctx, key_expr) {
+        return Err(CodegenError::Unsupported {
+            what: "a u128 token id key, which would drop its high word".into(),
+            span,
+        });
+    }
+    let off = ctx.bind_scalar_local(&format!("__idkey{}", ctx.next_asset_local));
+    let v = lower_expr(ctx, key_expr, false)?;
+    store_mem_word(ctx, off, v);
+    ctx.regs.free(v);
+    Ok(off)
 }
 
 fn promote_id_key(ctx: &mut Ctx, id_off: u64, span: Span) -> Result<u64, CodegenError> {
@@ -4100,9 +4185,43 @@ fn lower_map_read(
     base: &Expr,
     args: &[Expr],
     span: Span,
+    op: &str,
 ) -> Result<Reg, CodegenError> {
     let mbase = map_base_of(ctx, base, span)?;
     if map_name_is_value_wide(ctx, base) {
+        let key_expr = one_arg(args, span)?;
+        let key_off = map_key_region(ctx, base, key_expr, span)?;
+        if op == "contains" || op == "has" {
+            // Presence on a two word value is "either word is set". Refusing this
+            // meant `contains` could not be asked of any u128 map at all.
+            let acc = ctx.regs.alloc(span)?;
+            ctx.b.op(Instr::Ldi { d: acc, imm: 0 });
+            for i in 0..2u64 {
+                if i == 0 {
+                    compute_map_key(ctx, mbase, key_off, span)?;
+                } else {
+                    compute_map_addr_word_key(ctx, mbase, key_off, i, span)?;
+                }
+                let w = ctx.regs.alloc(span)?;
+                let key = map_key_ptr(ctx, span)?;
+                ctx.b.op(Instr::SLoad { d: w, a: key });
+                ctx.regs.free(key);
+                ctx.b.op(Instr::Or {
+                    d: acc,
+                    a: acc,
+                    b: w,
+                });
+                ctx.regs.free(w);
+            }
+            ctx.b.op(Instr::Ldi { d: SCRATCH, imm: 0 });
+            ctx.b.op(Instr::Eq {
+                d: acc,
+                a: acc,
+                b: SCRATCH,
+            });
+            logical_not(ctx, acc);
+            return Ok(acc);
+        }
         return Err(CodegenError::Unsupported {
             what: "reading a u128 map value as a single word, which would drop its high word"
                 .into(),
