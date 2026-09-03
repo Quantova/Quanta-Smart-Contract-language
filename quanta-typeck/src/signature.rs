@@ -85,6 +85,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if entry_moves_ledger_value(model, entry)
         && !entry_binds_caller(model, entry, &signed)
         && !ledger_move_is_paid_for_by_the_caller(entry)
+        && !spends_an_allowance_its_owner_granted(model, entry)
     {
         return Err(no_ledger_authority_error(entry));
     }
@@ -1667,6 +1668,230 @@ fn entry_reduces_a_caller_row(entry: &EntryDecl) -> bool {
     reduces
 }
 
+/// Whether writing your own row of this map only ever authorises spending your own
+/// holdings, which is what makes an ERC20 style `approve` safe.
+///
+/// `allowance.set(caller, v)` looks like minting: `allowance` is a ledger map because
+/// `transfer_from` debits it, and the value written is a number the caller chose. It
+/// creates nothing, because every entry that spends against the allowance ALSO debits
+/// the balance of the very account the allowance was read for. An infinite allowance
+/// still moves nothing beyond what that account already holds.
+///
+/// The check is exactly that: every guard read of this map must be paired, in the same
+/// entry, with a debit of some OTHER map under the same key. A quota the caller sets
+/// and then draws against with no such debit fails it, which is the drain this has to
+/// keep refusing.
+fn writing_your_own_row_only_spends_your_own(model: &Model, field: &str) -> bool {
+    let mut saw_a_spender = false;
+    let mut all_backed = true;
+    for entry in &model.entries {
+        let mut guards: Vec<&Expr> = Vec::new();
+        for clause in &entry.clauses {
+            match clause {
+                Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => guards.push(expr),
+                _ => {}
+            }
+        }
+        for stmt in &entry.body {
+            if let Stmt::Guard { expr, .. } = stmt {
+                guards.push(expr);
+            }
+        }
+        for g in guards {
+            walk(g, &mut |e| {
+                if let Expr::Call { callee, args, .. } = e {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if let Expr::Ident(m) = base.as_ref() {
+                            if m.text == field && name.text == "get" {
+                                if let Some(k) = args.first() {
+                                    saw_a_spender = true;
+                                    if !entry_debits_another_map_under(entry, field, k) {
+                                        all_backed = false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+    saw_a_spender && all_backed
+}
+
+/// Whether the entry debits some map OTHER than `field` under exactly `key`.
+fn entry_debits_another_map_under(entry: &EntryDecl, field: &str, key: &Expr) -> bool {
+    let mut backed = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if m.text != field
+                            && name.text == "debit"
+                            && args.first().is_some_and(|k| expr_eq(k, key))
+                        {
+                            backed = true;
+                        }
+                    }
+                }
+            }
+        });
+    }
+    backed
+}
+
+/// Whether the entry debits the same map it gated on, under a key it also gated on.
+///
+/// Gating on a row and then spending that row down is not a forged authority: the
+/// value has to have been there, and it is gone afterwards. This is how a spender
+/// draws on an allowance and how any custodial ledger pays out.
+fn entry_debits_the_row_it_gated_on(entry: &EntryDecl, field: &str) -> bool {
+    let mut debited = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if m.text == field && name.text == "debit" && args.len() >= 2 {
+                            debited = true;
+                        }
+                    }
+                }
+            }
+        });
+    }
+    debited
+}
+
+/// Whether this entry is an ERC20 style `transfer_from`.
+///
+/// Three things together make it safe, and all three are required:
+///   - it CONSERVES the ledger: the same amount is debited from one row and credited
+///     to another, so nothing is created,
+///   - it is gated on a row of some other map that it also debits, so the permission
+///     is spent and cannot be replayed,
+///   - every GRANTING write to that gating map lands under the writer's own key, so
+///     the permission can only ever have been given by the account being debited.
+///
+/// Without this an ERC20 transfer_from cannot be expressed at all, and with any one of
+/// the three missing it would be a licence to move somebody else's money.
+fn spends_an_allowance_its_owner_granted(model: &Model, entry: &EntryDecl) -> bool {
+    // The map this entry debits and credits by the same amount.
+    let mut conserved: Option<String> = None;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if conserved.is_some() {
+                return;
+            }
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if name.text == "debit" {
+                            if let Some(amount) = args.get(1) {
+                                let mut credited_same = false;
+                                for st in &entry.body {
+                                    stmt_exprs(st, &mut |x| {
+                                        if let Expr::Call { callee, args, .. } = x {
+                                            if let Expr::Field { base, name, .. } = callee.as_ref()
+                                            {
+                                                if let Expr::Ident(m2) = base.as_ref() {
+                                                    if m2.text == m.text
+                                                        && name.text == "credit"
+                                                        && args
+                                                            .get(1)
+                                                            .is_some_and(|a| expr_eq(a, amount))
+                                                    {
+                                                        credited_same = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                                if credited_same {
+                                    conserved = Some(m.text.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    let Some(ledger) = conserved else {
+        return false;
+    };
+
+    // A gating map, other than the ledger, that this entry also debits and whose
+    // grants are all own keyed.
+    let mut guards: Vec<&Expr> = Vec::new();
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => guards.push(expr),
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            guards.push(expr);
+        }
+    }
+    let mut permitted = false;
+    for g in guards {
+        walk(g, &mut |e| {
+            if permitted {
+                return;
+            }
+            if let Expr::Call { callee, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if name.text == "get"
+                            && m.text != ledger
+                            && entry_debits_the_row_it_gated_on(entry, m.text.as_str())
+                            && every_grant_is_under_the_granters_own_key(model, m.text.as_str())
+                        {
+                            permitted = true;
+                        }
+                    }
+                }
+            }
+        });
+    }
+    permitted
+}
+
+/// Whether every GRANTING write to this map lands under the writing caller's own key.
+///
+/// Debits and removes only ever reduce, so they are spends rather than grants and do
+/// not make the map forgeable. What matters is that nobody can hand THEMSELVES a
+/// permission over somebody else's account.
+fn every_grant_is_under_the_granters_own_key(model: &Model, field: &str) -> bool {
+    let mut saw_grant = false;
+    let mut all_own = true;
+    for entry in &model.entries {
+        for stmt in &entry.body {
+            stmt_exprs(stmt, &mut |e| {
+                if let Expr::Call { callee, args, .. } = e {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if let Expr::Ident(m) = base.as_ref() {
+                            if m.text == field
+                                && matches!(name.text.as_str(), "set" | "insert" | "credit")
+                            {
+                                saw_grant = true;
+                                if !matches!(args.first(), Some(Expr::Caller { .. })) {
+                                    all_own = false;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+    saw_grant && all_own
+}
+
 fn entry_moves_asset(entry: &EntryDecl) -> bool {
     let mut found = false;
     for stmt in &entry.body {
@@ -2374,7 +2599,21 @@ fn forged_map_authority(
     if !entry_moves_value(model, entry) || entry_binds_caller(model, entry, signed) {
         return None;
     }
-    let gate_expr = |expr: &Expr| map_lookup_on_param(model, params, signed, derived, expr);
+    // Looking up a caller supplied key is self declared data only when somebody else
+    // could have written that row. If every write to the map lands under the WRITER's
+    // own key, then `allowance.get(owner)` is the named account's own prior statement,
+    // which is exactly how an ERC20 spender is authorised. Without this, transfer_from
+    // cannot be written at all.
+    // Looking up a caller supplied key is self declared data only when the caller gets
+    // something for free. `transfer_from(owner, ..)` guards `allowance.get(owner)` and
+    // `balances.get(owner)` and then DEBITS both of those very rows: it spends the
+    // named account down, cannot be repeated, and only succeeds if the balance was
+    // really there. Without this exemption an ERC20 transfer_from cannot be written.
+    let gate_expr = |expr: &Expr| {
+        map_lookup_on_param(model, params, signed, derived, expr)
+            .filter(|(map, _, _)| !entry_debits_the_row_it_gated_on(entry, map))
+            .map(|(_, field, span)| (field, span))
+    };
     for clause in &entry.clauses {
         if let Clause::Limits { expr, .. } | Clause::Denies { expr, .. } = clause {
             if let Some((field, span)) = gate_expr(expr) {
@@ -2743,8 +2982,20 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                     let decrement = reads && expr_has_sub(value, &sub_locals);
                                     let backed = asset_amount_backer(value, &asset_params)
                                         .is_some_and(|a| used_asset_backers.insert(a));
+                                    // Setting your OWN row of a map that only ever
+                                    // authorises spending your own balance is an ERC20
+                                    // `approve`, not a mint: an infinite allowance
+                                    // still moves nothing past what you hold. Refusing
+                                    // it made the most used function in smart
+                                    // contracts impossible to write.
+                                    let approves_own_holdings =
+                                        writing_your_own_row_only_spends_your_own(
+                                            model,
+                                            map.text.as_str(),
+                                        );
                                     if !decrement
                                         && !backed
+                                        && !approves_own_holdings
                                         && (ledgers.contains(&map.text) || reads)
                                     {
                                         moves = true;
@@ -3369,7 +3620,7 @@ fn map_lookup_on_param(
     signed: &HashSet<&str>,
     derived: &HashSet<String>,
     expr: &Expr,
-) -> Option<(String, Span)> {
+) -> Option<(String, String, Span)> {
     let mut found = None;
     walk(expr, &mut |e| {
         if found.is_some() {
@@ -3382,7 +3633,9 @@ fn map_lookup_on_param(
                         if is_addr_keyed(model, map_id.text.as_str()) {
                             for a in args {
                                 if let Some(field) = param_field(params, signed, derived, a) {
-                                    found = Some((field, *span));
+                                    // The map is what gets debited; the parameter is
+                                    // what the message names. Both are needed.
+                                    found = Some((map_id.text.clone(), field, *span));
                                 }
                             }
                         }

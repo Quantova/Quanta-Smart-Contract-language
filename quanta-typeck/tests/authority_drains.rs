@@ -587,3 +587,50 @@ fn a_counter_that_can_be_cashed_out_is_money_again() {
 }"#
     ));
 }
+
+#[test]
+fn a_full_erc20_with_approve_and_transfer_from_is_buildable() {
+    // The most used contract shape in existence. `approve` writes the caller's own
+    // allowance row and `transfer_from` spends it: both were refused, which meant the
+    // chain could not host a standard token at all.
+    assert!(!rejected(
+        r#"contract Token {
+  state { balances: Map<Q_Address, u128>; allowance: Map<Q_Address, u128>; total: u128; minter: Q_Address; }
+  genesis { minter = deployer; }
+  entry mint(to: Q_Address, amount: u128) reads(minter) writes(balances, total) { guard caller == minter; balances.credit(to, amount); total = checked(total + amount); }
+  entry transfer(to: Q_Address, amount: u128) reads(balances) writes(balances) { guard balances.get(caller) >= amount; balances.debit(caller, amount); balances.credit(to, amount); }
+  entry approve(amount: u128) writes(allowance) { allowance.set(caller, amount); }
+  entry transfer_from(owner: Q_Address, to: Q_Address, amount: u128) reads(balances, allowance) writes(balances, allowance) { guard allowance.get(owner) >= amount; guard balances.get(owner) >= amount; allowance.debit(owner, amount); balances.debit(owner, amount); balances.credit(to, amount); }
+}"#
+    ));
+}
+
+#[test]
+fn spending_a_permission_nobody_granted_is_still_refused() {
+    // The same shape with the allowance grant made writable for ANY key: now anybody
+    // can hand themselves permission over somebody else's balance.
+    assert!(rejected(
+        r#"contract Bad {
+  state { balances: Map<Q_Address, u128>; allowance: Map<Q_Address, u128>; minter: Q_Address; }
+  genesis { minter = deployer; }
+  entry mint(to: Q_Address, amount: u128) reads(minter) writes(balances) { guard caller == minter; balances.credit(to, amount); }
+  entry grant(who: Q_Address, amount: u128) writes(allowance) { allowance.set(who, amount); }
+  entry transfer_from(owner: Q_Address, to: Q_Address, amount: u128) reads(balances, allowance) writes(balances, allowance) { guard allowance.get(owner) >= amount; guard balances.get(owner) >= amount; allowance.debit(owner, amount); balances.debit(owner, amount); balances.credit(to, amount); }
+}"#
+    ));
+}
+
+#[test]
+fn a_transfer_from_that_does_not_conserve_is_still_refused() {
+    // Debiting the owner and crediting MORE than was debited mints, whatever the
+    // permission says.
+    assert!(rejected(
+        r#"contract Bad2 {
+  state { balances: Map<Q_Address, u128>; allowance: Map<Q_Address, u128>; minter: Q_Address; }
+  genesis { minter = deployer; }
+  entry mint(to: Q_Address, amount: u128) reads(minter) writes(balances) { guard caller == minter; balances.credit(to, amount); }
+  entry approve(amount: u128) writes(allowance) { allowance.set(caller, amount); }
+  entry transfer_from(owner: Q_Address, to: Q_Address, amount: u128) reads(balances, allowance) writes(balances, allowance) { guard allowance.get(owner) >= amount; guard balances.get(owner) >= amount; allowance.debit(owner, amount); balances.debit(owner, amount); balances.credit(to, amount * 2); }
+}"#
+    ));
+}
