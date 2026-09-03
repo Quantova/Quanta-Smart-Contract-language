@@ -225,27 +225,6 @@ fn reads_a_caller_row(model: &Model, expr: &Expr) -> bool {
     found
 }
 
-/// Whether an expression is certainly zero, so it can back nothing.
-///
-/// `debit(caller, 0)` was refused but `debit(caller, n * 0)` was not, and the second
-/// buys exactly the same authority for exactly the same nothing.
-fn is_provably_zero(expr: &Expr) -> bool {
-    match expr {
-        Expr::Int(lit) => lit
-            .text
-            .replace('_', "")
-            .parse::<u128>()
-            .map_or(false, |v| v == 0),
-        Expr::Binary {
-            op, left, right, ..
-        } => match op {
-            BinOp::Mul => is_provably_zero(left) || is_provably_zero(right),
-            _ => false,
-        },
-        _ => false,
-    }
-}
-
 /// State fields this entry assigns from a caller named expression.
 ///
 /// `pending = n; send_asset(t, caller, pending)` moved the taint out of the parameter
@@ -822,32 +801,6 @@ fn entry_writes_field_under_key(entry: &EntryDecl, field: &str, key: &Expr) -> b
         });
     }
     hit
-}
-
-fn field_get_key<'a>(field: &str, e: &'a Expr) -> Option<&'a Expr> {
-    if let Expr::Call { callee, args, .. } = e {
-        if let Expr::Field { base, name, .. } = callee.as_ref() {
-            if let Expr::Ident(m) = base.as_ref() {
-                if m.text == field && name.text == "get" {
-                    return args.first();
-                }
-            }
-        }
-    }
-    None
-}
-
-fn field_contains_key<'a>(field: &str, e: &'a Expr) -> Option<&'a Expr> {
-    if let Expr::Call { callee, args, .. } = e {
-        if let Expr::Field { base, name, .. } = callee.as_ref() {
-            if let Expr::Ident(m) = base.as_ref() {
-                if m.text == field && matches!(name.text.as_str(), "contains" | "has") {
-                    return args.first();
-                }
-            }
-        }
-    }
-    None
 }
 
 /// Whether debiting the caller by `e` really costs them at least `param`.
