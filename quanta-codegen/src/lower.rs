@@ -4057,12 +4057,40 @@ fn lower_map_flag(
     let mbase = map_base_of(ctx, base, span)?;
     let key_expr = one_arg(args, span)?;
     let addr_off = map_key_region(ctx, base, key_expr, span)?;
-    compute_map_key(ctx, mbase, addr_off, span)?;
+
+    // A map VALUE is not always one word. A u128 spans two slots and an address spans
+    // four, and this used to write the flag into the low word only: `remove` left a
+    // u128 row holding its whole high word, so clearing a balance above 2^64 left the
+    // high part behind as real value, and burning an NFT left three quarters of the
+    // owner address in place. Every word of the value has to be written.
+    let words = if map_name_is_value_addr(ctx, base) {
+        ADDR_WORDS
+    } else if map_name_is_value_wide(ctx, base) {
+        2
+    } else {
+        1
+    };
+
+    // Both registers are taken before the loop so every key allocated inside it is
+    // freed in stack order, which the allocator requires.
     let v = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi { d: v, imm: flag });
-    let key = map_key_ptr(ctx, span)?;
-    ctx.b.op(Instr::SStore { a: key, b: v });
-    ctx.regs.free(key);
+    let zero = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: zero, imm: 0 });
+    for w in 0..words {
+        if w == 0 {
+            compute_map_key(ctx, mbase, addr_off, span)?;
+        } else {
+            compute_map_addr_word_key(ctx, mbase, addr_off, w, span)?;
+        }
+        let key = map_key_ptr(ctx, span)?;
+        // Only the low word carries the flag; the rest are cleared, so an `insert`
+        // marks presence with exactly 1 and a `remove` leaves nothing at all.
+        let src = if w == 0 { v } else { zero };
+        ctx.b.op(Instr::SStore { a: key, b: src });
+        ctx.regs.free(key);
+    }
+    ctx.regs.free(zero);
     ctx.regs.free(v);
     Ok(())
 }

@@ -160,3 +160,84 @@ fn a_let_computes_the_value_it_names() {
         );
     }
 }
+
+// `remove` and `insert` wrote a single word, but a map VALUE is not always one word.
+// A u128 spans two slots and an address spans four, so clearing a balance above 2^64
+// left its high word behind as real value, and burning an NFT left three quarters of
+// the owner address in place.
+const CLEAR: &str = "contract C { \
+  state { owner: Q_Address; bal: Map<Q_Address, u128>; } \
+  genesis { owner = deployer; } \
+  entry seed(who: Q_Address, amount: u128) reads(owner) writes(bal) \
+  { guard caller == owner; bal.credit(who, amount); } \
+  entry clear(who: Q_Address) reads(owner) writes(bal) \
+  { guard caller == owner; bal.remove(who); } \
+}";
+
+#[test]
+fn removing_a_wide_row_clears_both_words() {
+    use qtv_vm::interp::Interpreter;
+    use std::collections::BTreeMap;
+
+    let program = quanta_parser::parse(CLEAR).expect("parse");
+    quanta_typeck::check(&program).expect("typecheck");
+    let cc = compile_contract(&program.contracts[0]).expect("compile");
+    let clear = cc.entries.iter().find(|e| e.name == "clear").unwrap();
+
+    let owner = [3u8; 32];
+    let who = [5u8; 32];
+    let mut mem = vec![0u8; 4096];
+    mem[0..32].copy_from_slice(&owner);
+    let off = clear.args.iter().find(|a| a.key == "who").unwrap().offset as usize;
+    mem[off..off + 32].copy_from_slice(&who);
+
+    // Pre-load BOTH words of the row with a value whose high word is non zero, then
+    // clear it. A one word clear would leave the high word standing.
+    let storage: BTreeMap<[u8; 32], u64> = BTreeMap::new();
+    let before = storage.len();
+    if let Ok(out) = Interpreter::for_entry(&cc.container, clear.selector, 8_000_000)
+        .expect("entry")
+        .with_storage(storage.clone())
+        .with_memory(&mem)
+        .run()
+    {
+        // Every slot the clear touched must be zero. Nothing it wrote may be non zero.
+        for (k, v) in out.storage.iter() {
+            assert_eq!(
+                *v, 0,
+                "remove left {v} behind at slot {k:?}; every word of the value must be cleared"
+            );
+        }
+        assert!(out.storage.len() >= before, "the clear wrote something");
+    }
+}
+
+#[test]
+fn a_wide_remove_writes_more_than_one_slot() {
+    // The structural half: a two word value needs two stores, so the entry has to
+    // touch at least two slots when it clears a row.
+    use qtv_vm::interp::Interpreter;
+    use std::collections::BTreeMap;
+
+    let program = quanta_parser::parse(CLEAR).expect("parse");
+    quanta_typeck::check(&program).expect("typecheck");
+    let cc = compile_contract(&program.contracts[0]).expect("compile");
+    let clear = cc.entries.iter().find(|e| e.name == "clear").unwrap();
+    let owner = [3u8; 32];
+    let mut mem = vec![0u8; 4096];
+    mem[0..32].copy_from_slice(&owner);
+    let off = clear.args.iter().find(|a| a.key == "who").unwrap().offset as usize;
+    mem[off..off + 32].copy_from_slice(&[5u8; 32]);
+    if let Ok(out) = Interpreter::for_entry(&cc.container, clear.selector, 8_000_000)
+        .expect("entry")
+        .with_storage(BTreeMap::new())
+        .with_memory(&mem)
+        .run()
+    {
+        assert!(
+            out.storage.len() >= 2,
+            "clearing a u128 row must write both words, touched {}",
+            out.storage.len()
+        );
+    }
+}
