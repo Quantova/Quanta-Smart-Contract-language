@@ -1178,8 +1178,14 @@ fn outflow_is_bounded_by_an_entitlement(model: &Model, entry: &EntryDecl) -> boo
             exprs.push(expr);
         }
     }
+    let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
     let mut bounded = false;
     for expr in exprs {
+        // A comparison under a negation means the opposite of what it reads, so a
+        // guard demanding the amount EXCEED the entitlement counted as a bound.
+        if expr_contains_negation(expr) {
+            continue;
+        }
         walk(expr, &mut |e| {
             if bounded {
                 return;
@@ -1198,6 +1204,17 @@ fn outflow_is_bounded_by_an_entitlement(model: &Model, entry: &EntryDecl) -> boo
                 _ => return,
             };
             if !mentions_any_name(small, &leaving) {
+                return;
+            }
+            // A term the caller types into the transaction bounds nothing:
+            // `collateral.get(caller) * factor` is whatever `factor` they pass.
+            if mentions_any_name(
+                large,
+                &params
+                    .iter()
+                    .map(|p| (*p).to_string())
+                    .collect::<HashSet<String>>(),
+            ) {
                 return;
             }
             if !bound_is_trustworthy(model, large) {
@@ -1293,7 +1310,14 @@ fn bound_is_trustworthy(model: &Model, e: &Expr) -> bool {
                             && model.state.contains_key(m.text.as_str())
                         {
                             saw_state = true;
-                            if !authority_anchor_protected(model, m.text.as_str()) {
+                            // `authority_anchor_protected` answers WHO may write the
+                            // map, never WHAT they may write into it. A quota an
+                            // authorised member sets on their own row to any number
+                            // they please is protected by that test and bounds nothing
+                            // at all, which is exactly what this rule must exclude.
+                            if !authority_anchor_protected(model, m.text.as_str())
+                                || caller_sets_their_own_row(model, m.text.as_str())
+                            {
                                 trustworthy = false;
                             }
                         }
@@ -1303,7 +1327,12 @@ fn bound_is_trustworthy(model: &Model, e: &Expr) -> bool {
             Expr::Ident(id) => {
                 if model.state.contains_key(id.text.as_str()) {
                     saw_state = true;
-                    if !authority_anchor_protected(model, id.text.as_str()) {
+                    // Same two questions as a map row: who may write it, and what may
+                    // they write. A ceiling any member sets to any number bounds
+                    // nothing, whether it is held in a map or in a plain scalar.
+                    if !authority_anchor_protected(model, id.text.as_str())
+                        || caller_sets_their_own_row(model, id.text.as_str())
+                    {
                         trustworthy = false;
                     }
                 }
@@ -1314,7 +1343,12 @@ fn bound_is_trustworthy(model: &Model, e: &Expr) -> bool {
                 if name.text == "amount" {
                     if let Expr::Ident(m) = base.as_ref() {
                         if model.state.contains_key(m.text.as_str()) {
+                            // `amount <= pool.amount` is the most natural sanity check
+                            // a developer writes, and it says "you may take everything
+                            // in the pool". Nobody can inflate it by asking, but it is
+                            // the total of everybody's money, not this caller's share.
                             saw_state = true;
+                            trustworthy = false;
                         }
                     }
                 }
@@ -1419,6 +1453,92 @@ fn credit_cancels_the_debit(entry: &EntryDecl, field: &str, param: &str) -> bool
         });
     }
     credited
+}
+
+/// Whether any entry lets the caller put a number of their own choosing into their
+/// own row of this map.
+///
+/// This is the difference between "who may write it" and "what may be written".
+/// A collateral row credited by an asset amount the chain really moved is an
+/// entitlement; a quota the caller sets to whatever they like is a wish.
+fn caller_sets_their_own_row(model: &Model, field: &str) -> bool {
+    for entry in &model.entries {
+        let free: HashSet<&str> = entry
+            .params
+            .iter()
+            .filter(|p| !crate::model::is_asset_param(p))
+            .map(|p| p.name.text.as_str())
+            .collect();
+        if free.is_empty() {
+            continue;
+        }
+        let signed: HashSet<&str> = HashSet::new();
+        let derived = param_derived_locals(entry, &free, &signed);
+        let mut settable = false;
+        for stmt in &entry.body {
+            // A scalar the caller assigns from a parameter is the same wish written
+            // without a map: `entry set_cap(v) { guard members.get(caller) > 0;
+            // cap = v; }` then bounding an outflow by `cap`.
+            if let Stmt::Assign { target, value, .. } = stmt {
+                if let Expr::Ident(id) = target {
+                    if id.text == field && taints_from_param(value, &free, &signed, &derived) {
+                        let mut accumulates = false;
+                        walk(value, &mut |x| {
+                            if let Expr::Ident(v) = x {
+                                if v.text == id.text {
+                                    accumulates = true;
+                                }
+                            }
+                        });
+                        // `spent_today = spent_today + amount` accrues usage, it does
+                        // not set a ceiling, so it is not a self chosen bound.
+                        if !accumulates {
+                            settable = true;
+                        }
+                    }
+                }
+            }
+            stmt_exprs(stmt, &mut |e| {
+                if let Expr::Call { callee, args, .. } = e {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if let Expr::Ident(m) = base.as_ref() {
+                            if m.text == field
+                                && matches!(name.text.as_str(), "set" | "insert" | "credit")
+                                && matches!(args.first(), Some(Expr::Caller { .. }))
+                                && args
+                                    .get(1)
+                                    .is_some_and(|v| taints_from_param(v, &free, &signed, &derived))
+                            {
+                                settable = true;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        if settable {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether the expression contains a negation anywhere, which inverts the meaning of
+/// every comparison beneath it.
+fn expr_contains_negation(e: &Expr) -> bool {
+    let mut found = false;
+    walk(e, &mut |x| {
+        if matches!(
+            x,
+            Expr::Unary {
+                op: UnaryOp::Not,
+                ..
+            }
+        ) {
+            found = true;
+        }
+    });
+    found
 }
 
 fn entry_moves_asset(entry: &EntryDecl) -> bool {

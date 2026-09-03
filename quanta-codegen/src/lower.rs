@@ -968,6 +968,22 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
             });
             Ok((lo, hi))
         }
+        // `bal.get(k)` where the map holds a u128. The wide WRITE path stores the low
+        // word at the map key and the high word at word index 1, so the read is the
+        // same two loads in the same order. Without this every u128 map was write
+        // only, which put an ERC20 balance, an AMM reserve and a lending collateral
+        // row out of reach of the language entirely.
+        Expr::Call { callee, args, span } => {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if name.text == "get" && map_name_is_value_wide(ctx, base) {
+                    return load_wide_map_value(ctx, base, args, *span);
+                }
+            }
+            let lo = lower_expr(ctx, expr, wrapping)?;
+            let hi = ctx.regs.alloc(expr.span())?;
+            ctx.b.op(Instr::Ldi { d: hi, imm: 0 });
+            Ok((lo, hi))
+        }
         Expr::Ident(id) if ctx.layout.is_wide(&id.text) => {
             let slot = ctx.layout.slot(&id.text).expect("a wide field has a slot");
             let hi_slot = ctx
@@ -3905,6 +3921,39 @@ fn lower_map_credit(
     ctx.regs.free(cur);
     ctx.regs.free(value);
     Ok(())
+}
+
+/// Load both words of a u128 map value.
+///
+/// Mirrors `lower_map_credit_wide` exactly: the low word lives at the map key and the
+/// high word at word index 1. Reading has to use the same two slots in the same order
+/// or the halves come back mismatched.
+fn load_wide_map_value(
+    ctx: &mut Ctx,
+    base: &Expr,
+    args: &[Expr],
+    span: Span,
+) -> Result<(Reg, Reg), CodegenError> {
+    let mbase = map_base_of(ctx, base, span)?;
+    let key_expr = one_arg(args, span)?;
+    let key_off = map_key_region(ctx, base, key_expr, span)?;
+
+    compute_map_key(ctx, mbase, key_off, span)?;
+    let lo = ctx.regs.alloc(span)?;
+    {
+        let key = map_key_ptr(ctx, span)?;
+        ctx.b.op(Instr::SLoad { d: lo, a: key });
+        ctx.regs.free(key);
+    }
+
+    compute_map_addr_word_key(ctx, mbase, key_off, 1, span)?;
+    let hi = ctx.regs.alloc(span)?;
+    {
+        let key = map_key_ptr(ctx, span)?;
+        ctx.b.op(Instr::SLoad { d: hi, a: key });
+        ctx.regs.free(key);
+    }
+    Ok((lo, hi))
 }
 
 fn map_name_is_value_wide(ctx: &Ctx, base: &Expr) -> bool {
