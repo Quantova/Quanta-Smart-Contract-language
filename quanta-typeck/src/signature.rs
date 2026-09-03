@@ -86,6 +86,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         && !entry_binds_caller(model, entry, &signed)
         && !ledger_move_is_paid_for_by_the_caller(model, entry)
         && !spends_an_allowance_its_owner_granted(model, entry)
+        && !foreign_rows_are_paid_for_at_par(entry)
     {
         return Err(no_ledger_authority_error(entry));
     }
@@ -2041,6 +2042,111 @@ fn credits_only_what_was_paid_in(model: &Model, entry: &EntryDecl, field: &str) 
     saw && all_paid
 }
 
+/// Whether every write this entry makes to the field reduces it.
+///
+/// Reducing a row cannot forge authority: a smaller balance passes fewer gates, not
+/// more. Whether the reduction is JUSTIFIED is a separate question, answered by the
+/// rules that govern the entry doing it.
+fn only_reduces_the_field(entry: &EntryDecl, field: &str) -> bool {
+    let mut saw = false;
+    let mut all_reduce = true;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if m.text != field {
+                            return;
+                        }
+                        match name.text.as_str() {
+                            "debit" | "remove" => saw = true,
+                            "credit" | "set" | "insert" => {
+                                saw = true;
+                                // A set that subtracts from the same row is a
+                                // reduction written out; anything else is not.
+                                let reduces = args.get(1).is_some_and(|v| {
+                                    let mut sub = false;
+                                    walk(v, &mut |x| {
+                                        if matches!(x, Expr::Binary { op: BinOp::Sub, .. }) {
+                                            sub = true;
+                                        }
+                                    });
+                                    sub && name.text != "credit"
+                                });
+                                if !reduces {
+                                    all_reduce = false;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        });
+    }
+    saw && all_reduce
+}
+
+/// Whether every foreign row this entry touches is paid for, at par, by an asset the
+/// caller handed over in the same call.
+///
+/// This is a forced sale, and it is what liquidation is: the caller pays the debt and
+/// takes the collateral that secured it, one for one. Nobody profits, so nothing is
+/// drained. A debit of somebody else's row for a number the caller merely NAMED is a
+/// different thing entirely and stays refused, because then the caller pays nothing.
+fn foreign_rows_are_paid_for_at_par(entry: &EntryDecl) -> bool {
+    let assets: HashSet<&str> = entry
+        .params
+        .iter()
+        .filter(|p| crate::model::is_asset_param(p))
+        .map(|p| p.name.text.as_str())
+        .collect();
+    if assets.is_empty() {
+        return false;
+    }
+    let mut saw_foreign = false;
+    let mut all_paid = true;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if !matches!(base.as_ref(), Expr::Ident(_)) {
+                        return;
+                    }
+                    if !matches!(name.text.as_str(), "credit" | "debit" | "set" | "insert") {
+                        return;
+                    }
+                    // Only rows that are NOT the caller's own are in question.
+                    if matches!(args.first(), Some(Expr::Caller { .. })) {
+                        // Crediting yourself still has to be paid for.
+                        if name.text == "credit"
+                            && !args
+                                .get(1)
+                                .is_some_and(|v| asset_amount_backer(v, &assets).is_some())
+                        {
+                            all_paid = false;
+                        }
+                        return;
+                    }
+                    saw_foreign = true;
+                    // A set or insert on a foreign row is not a priced move at all.
+                    if matches!(name.text.as_str(), "set" | "insert") {
+                        all_paid = false;
+                        return;
+                    }
+                    if !args
+                        .get(1)
+                        .is_some_and(|v| asset_amount_backer(v, &assets).is_some())
+                    {
+                        all_paid = false;
+                    }
+                }
+            }
+        });
+    }
+    saw_foreign && all_paid
+}
+
 fn entry_moves_asset(entry: &EntryDecl) -> bool {
     let mut found = false;
     for stmt in &entry.body {
@@ -2450,6 +2556,14 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
             // made a marketplace, an auction refund, an escrow release and a royalty
             // split all impossible, since each pays a third party who collects later.
             if credits_only_what_was_paid_in(model, entry, field) {
+                continue;
+            }
+            // A writer that only ever REDUCES the field cannot forge it. A debit makes
+            // every `field.get(x) >= n` gate harder to pass, never easier, so it can
+            // take value away but it cannot manufacture authority. Treating a debit as
+            // poisoning the anchor made liquidation, slashing and any clawback
+            // impossible to write beside the gate they protect.
+            if only_reduces_the_field(entry, field) {
                 continue;
             }
             let (authorized, sub_tainted) = writer_authorized(model, entry, prot);

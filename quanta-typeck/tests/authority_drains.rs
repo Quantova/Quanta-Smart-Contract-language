@@ -748,3 +748,58 @@ fn crediting_with_no_inflow_at_all_is_still_refused() {
 }"#
     ));
 }
+
+#[test]
+fn a_liquidation_that_repays_the_debt_is_buildable() {
+    // A forced sale at par: the caller pays the debt and takes the collateral that
+    // secured it, one for one. Nobody profits, so nothing is drained.
+    assert!(!rejected(
+        r#"contract Lend {
+  state { pool: Q_Asset<QTOV>; collateral: Map<Q_Address, u128>; debt: Map<Q_Address, u128>; bounty: Map<Q_Address, u128>; }
+  entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, collateral) { guard funds.amount > 0; collateral.credit(caller, funds.amount); pool.merge(funds); }
+  entry borrow(amount: u128) conserves QTOV reads(collateral, debt, pool) writes(pool, debt) { guard amount > 0; guard collateral.get(caller) >= (debt.get(caller) + amount) * 2; guard pool.amount >= amount; debt.credit(caller, amount); send(caller, pool.split(amount)); }
+  entry liquidate(who: Q_Address, funds: Q_Asset<QTOV>) conserves QTOV reads(collateral, debt) writes(collateral, debt, bounty, pool) { guard collateral.get(who) < debt.get(who) * 2; guard funds.amount <= debt.get(who); debt.debit(who, funds.amount); collateral.debit(who, funds.amount); bounty.credit(caller, funds.amount); pool.merge(funds); }
+  entry take_bounty(n: u128) conserves QTOV reads(bounty) writes(bounty, pool) { guard bounty.get(caller) >= n; bounty.debit(caller, n); send(caller, pool.split(n)); }
+}"#
+    ));
+}
+
+#[test]
+fn seizing_a_row_without_paying_for_it_is_still_refused() {
+    // The same liquidation with no inflow: the caller names a number and takes
+    // somebody else's collateral for nothing.
+    assert!(rejected(
+        r#"contract Bad {
+  state { pool: Q_Asset<QTOV>; collateral: Map<Q_Address, u128>; debt: Map<Q_Address, u128>; bounty: Map<Q_Address, u128>; }
+  entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, collateral) { guard funds.amount > 0; collateral.credit(caller, funds.amount); pool.merge(funds); }
+  entry liquidate(who: Q_Address, n: u128) reads(collateral, debt) writes(collateral, debt, bounty) { guard debt.get(who) >= n; debt.debit(who, n); collateral.debit(who, n); bounty.credit(caller, n); }
+  entry take_bounty(n: u128) conserves QTOV reads(bounty) writes(bounty, pool) { guard bounty.get(caller) >= n; bounty.debit(caller, n); send(caller, pool.split(n)); }
+}"#
+    ));
+}
+
+#[test]
+fn a_staking_pool_with_owner_granted_rewards_is_buildable() {
+    assert!(!rejected(
+        r#"contract Staking {
+  state { owner: Q_Address; staked: Map<Q_Address, u128>; rewards: Map<Q_Address, u128>; pool: Q_Asset<QTOV>; }
+  genesis { owner = deployer; }
+  entry stake(funds: Q_Asset<QTOV>) conserves QTOV writes(staked, pool) { guard funds.amount > 0; staked.credit(caller, funds.amount); pool.merge(funds); }
+  entry accrue(order: RewardOrder signed by owner) writes(rewards) { rewards.credit(order.who, order.amount); }
+  entry unstake(n: u128) conserves QTOV reads(staked) writes(staked, pool) { guard staked.get(caller) >= n; staked.debit(caller, n); send(caller, pool.split(n)); }
+  entry claim(n: u128) conserves QTOV reads(rewards) writes(rewards, pool) { guard rewards.get(caller) >= n; rewards.debit(caller, n); send(caller, pool.split(n)); }
+}"#
+    ));
+}
+
+#[test]
+fn a_crowdfund_with_refunds_is_buildable() {
+    assert!(!rejected(
+        r#"contract Crowdfund {
+  state { owner: Q_Address; goal: u128; raised: u128; contributed: Map<Q_Address, u128>; pool: Q_Asset<QTOV>; }
+  genesis { owner = deployer; goal = 1000000; raised = 0; }
+  entry back(funds: Q_Asset<QTOV>) conserves QTOV writes(contributed, raised, pool) { guard funds.amount > 0; contributed.credit(caller, funds.amount); raised = checked(raised + funds.amount); pool.merge(funds); }
+  entry refund(n: u128) conserves QTOV reads(contributed, raised, goal) writes(contributed, pool) { guard raised < goal; guard contributed.get(caller) >= n; contributed.debit(caller, n); send(caller, pool.split(n)); }
+}"#
+    ));
+}
