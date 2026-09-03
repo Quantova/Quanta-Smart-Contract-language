@@ -87,6 +87,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         && !ledger_move_is_paid_for_by_the_caller(model, entry)
         && !spends_an_allowance_its_owner_granted(model, entry)
         && !foreign_rows_are_paid_for_at_par(entry)
+        && !credits_drawn_from_an_inflow_only_total(model, entry)
     {
         return Err(no_ledger_authority_error(entry));
     }
@@ -2147,6 +2148,119 @@ fn foreign_rows_are_paid_for_at_par(entry: &EntryDecl) -> bool {
     saw_foreign && all_paid
 }
 
+/// State scalars that can only ever have grown from value the chain really moved in.
+///
+/// `treasury = checked(treasury + funds.amount)` accumulates an asset amount and
+/// nothing else. Such a total is a faithful record of what the contract holds, so
+/// drawing it down is spending real value rather than inventing it.
+fn inflow_only_totals(model: &Model) -> HashSet<String> {
+    let mut candidate: HashSet<String> = HashSet::new();
+    let mut disqualified: HashSet<String> = HashSet::new();
+    for entry in &model.entries {
+        let assets: HashSet<&str> = entry
+            .params
+            .iter()
+            .filter(|p| crate::model::is_asset_param(p))
+            .map(|p| p.name.text.as_str())
+            .collect();
+        for stmt in &entry.body {
+            let Stmt::Assign {
+                target, op, value, ..
+            } = stmt
+            else {
+                continue;
+            };
+            let Expr::Ident(id) = target else { continue };
+            // Does the assigned value grow the total, and by how much?
+            let mut grows_by_asset = false;
+            let mut shrinks = matches!(op, AssignOp::Sub);
+            walk(value, &mut |x| {
+                if asset_amount_backer(x, &assets).is_some() {
+                    grows_by_asset = true;
+                }
+                if matches!(x, Expr::Binary { op: BinOp::Sub, .. }) {
+                    shrinks = true;
+                }
+            });
+            if shrinks {
+                // A decrement is spending, not growth, and does not disqualify.
+                continue;
+            }
+            if grows_by_asset {
+                candidate.insert(id.text.clone());
+            } else {
+                disqualified.insert(id.text.clone());
+            }
+        }
+    }
+    candidate.retain(|f| !disqualified.contains(f));
+    candidate
+}
+
+/// Whether every credit this entry makes is matched by drawing down a total that only
+/// ever grew from real inflows.
+///
+/// This is a treasury paying out what it was given: members fund it, a vote commits an
+/// amount, the beneficiary collects later. The value arrived in an earlier call, so
+/// there is no inflow in THIS one, and requiring one made every deferred payout, grant
+/// and governance execution impossible to express.
+fn credits_drawn_from_an_inflow_only_total(model: &Model, entry: &EntryDecl) -> bool {
+    let totals = inflow_only_totals(model);
+    if totals.is_empty() {
+        return false;
+    }
+    // What this entry draws down, and by what expression.
+    let mut drawn: Vec<&Expr> = Vec::new();
+    for stmt in &entry.body {
+        if let Stmt::Assign {
+            target, op, value, ..
+        } = stmt
+        {
+            if let Expr::Ident(id) = target {
+                if !totals.contains(id.text.as_str()) {
+                    continue;
+                }
+                if matches!(op, AssignOp::Sub) {
+                    drawn.push(value);
+                } else if let Expr::Binary {
+                    op: BinOp::Sub,
+                    right,
+                    ..
+                } = value
+                {
+                    drawn.push(right);
+                }
+            }
+        }
+    }
+    if drawn.is_empty() {
+        return false;
+    }
+    // And every credit must be for exactly one of those amounts.
+    let mut saw = false;
+    let mut all_drawn = true;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if matches!(base.as_ref(), Expr::Ident(_))
+                        && matches!(name.text.as_str(), "credit" | "set" | "insert")
+                    {
+                        saw = true;
+                        if !args
+                            .get(1)
+                            .is_some_and(|v| drawn.iter().any(|d| expr_eq(d, v)))
+                        {
+                            all_drawn = false;
+                        }
+                    }
+                }
+            }
+        });
+    }
+    saw && all_drawn
+}
+
 fn entry_moves_asset(entry: &EntryDecl) -> bool {
     let mut found = false;
     for stmt in &entry.body {
@@ -2556,6 +2670,12 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
             // made a marketplace, an auction refund, an escrow release and a royalty
             // split all impossible, since each pays a third party who collects later.
             if credits_only_what_was_paid_in(model, entry, field) {
+                continue;
+            }
+            // A credit drawn down from a total that only ever grew from real inflows is
+            // a treasury paying out what it was given. It cannot exceed what arrived,
+            // so the map it credits stays a faithful record.
+            if credits_drawn_from_an_inflow_only_total(model, entry) {
                 continue;
             }
             // A writer that only ever REDUCES the field cannot forge it. A debit makes

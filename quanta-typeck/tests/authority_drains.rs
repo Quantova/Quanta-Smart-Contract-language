@@ -803,3 +803,38 @@ fn a_crowdfund_with_refunds_is_buildable() {
 }"#
     ));
 }
+
+#[test]
+fn a_treasury_that_accounts_for_what_it_commits_is_buildable() {
+    // Members fund the treasury, a vote commits an amount, the beneficiary collects
+    // later. The value arrived in an EARLIER call, so there is no inflow in this one,
+    // and demanding one made every deferred payout, grant and governance execution
+    // impossible to express.
+    assert!(!rejected(
+        r#"contract Dao {
+  state { power: Map<Q_Address, u128>; votes: Map<u64, u128>; voted: Map<Q_Address, u64>; payout: Map<u64, u128>; beneficiary: Map<u64, Q_Address>; owed: Map<Q_Address, u128>; treasury: u128; vault: Q_Asset<QTOV>; }
+  genesis { treasury = 0; }
+  entry join(funds: Q_Asset<QTOV>) conserves QTOV writes(power, vault, treasury) { guard funds.amount > 0; power.credit(caller, funds.amount); treasury = checked(treasury + funds.amount); vault.merge(funds); }
+  entry propose(id: u64, amount: u128, to: Q_Address) reads(power, payout) writes(payout, beneficiary) { guard power.get(caller) > 0; guard payout.get(id) == 0; payout.set(id, amount); beneficiary.set(id, to); }
+  entry vote(id: u64) reads(power, voted) writes(votes, voted) { guard voted.get(caller) == 0; votes.credit(id, power.get(caller)); voted.set(caller, 1); }
+  entry execute(id: u64) reads(votes, payout, beneficiary, treasury) writes(owed, payout, treasury) { guard votes.get(id) > 0; guard payout.get(id) > 0; guard treasury >= payout.get(id); treasury = treasury - payout.get(id); owed.credit(beneficiary.get(id), payout.get(id)); payout.remove(id); }
+  entry collect(n: u128) conserves QTOV reads(owed) writes(owed, vault) { guard owed.get(caller) >= n; owed.debit(caller, n); send(caller, vault.split(n)); }
+}"#
+    ));
+}
+
+#[test]
+fn a_treasury_that_commits_more_than_it_holds_is_still_refused() {
+    // The same governance without the treasury accounting: `execute` credits a
+    // beneficiary out of nothing, so the contract can promise more than it was given.
+    assert!(rejected(
+        r#"contract BadDao {
+  state { power: Map<Q_Address, u128>; votes: Map<u64, u128>; voted: Map<Q_Address, u64>; payout: Map<u64, u128>; beneficiary: Map<u64, Q_Address>; owed: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }
+  entry join(funds: Q_Asset<QTOV>) conserves QTOV writes(power, vault) { guard funds.amount > 0; power.credit(caller, funds.amount); vault.merge(funds); }
+  entry propose(id: u64, amount: u128, to: Q_Address) reads(power, payout) writes(payout, beneficiary) { guard power.get(caller) > 0; guard payout.get(id) == 0; payout.set(id, amount); beneficiary.set(id, to); }
+  entry vote(id: u64) reads(power, voted) writes(votes, voted) { guard voted.get(caller) == 0; votes.credit(id, power.get(caller)); voted.set(caller, 1); }
+  entry execute(id: u64) reads(votes, payout, beneficiary) writes(owed, payout) { guard votes.get(id) > 0; guard payout.get(id) > 0; owed.credit(beneficiary.get(id), payout.get(id)); payout.remove(id); }
+  entry collect(n: u128) conserves QTOV reads(owed) writes(owed, vault) { guard owed.get(caller) >= n; owed.debit(caller, n); send(caller, vault.split(n)); }
+}"#
+    ));
+}
