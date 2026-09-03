@@ -534,6 +534,227 @@ fn map_is_read_as_caller_authority(model: &Model, field: &str) -> bool {
     false
 }
 
+/// Whether a map's value is ever spent, paid out or moved as an amount.
+///
+/// The rule that a caller keyed write of an amount is minting only makes sense for a
+/// map that is actually a balance. A schedule, a timestamp, a tier or a counter is
+/// address keyed and integer valued too, and writing one for another account moves no
+/// value at all. Requiring a map to be paid out somewhere before that rule applies is
+/// what keeps an honest vesting or subscription contract compiling.
+fn map_is_ever_paid_out(model: &Model, field: &str) -> bool {
+    let reads_field = |e: &Expr| {
+        let mut hit = false;
+        walk(e, &mut |x| {
+            if let Expr::Call { callee, .. } = x {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if m.text == field
+                            && matches!(name.text.as_str(), "get" | "contains" | "has")
+                        {
+                            hit = true;
+                        }
+                    }
+                }
+            }
+        });
+        hit
+    };
+    for entry in &model.entries {
+        let mut found = false;
+        for stmt in &entry.body {
+            stmt_exprs(stmt, &mut |e| {
+                if found {
+                    return;
+                }
+                if let Expr::Call { callee, args, .. } = e {
+                    match callee.as_ref() {
+                        // The amount handed to a transfer.
+                        Expr::Ident(id) if id.text == "send_asset" || id.text == "mint_asset" => {
+                            if args.get(2).is_some_and(reads_field) {
+                                found = true;
+                            }
+                        }
+                        Expr::Ident(id) if id.text == "send" => {
+                            if args.get(1).is_some_and(reads_field) {
+                                found = true;
+                            }
+                        }
+                        // Debited, or used as the amount moved on some other ledger.
+                        Expr::Field { base, name, .. } => {
+                            if let Expr::Ident(m) = base.as_ref() {
+                                // Either this map is debited, or its value is the amount
+                                // moved on some other ledger. Both mean it pays out.
+                                if (m.text == field && name.text == "debit")
+                                    || (matches!(name.text.as_str(), "credit" | "debit")
+                                        && args.get(1).is_some_and(reads_field))
+                                {
+                                    found = true;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        }
+        if found {
+            return true;
+        }
+    }
+    false
+}
+
+/// Scalar state fields that only ever hold an amount the chain really moved in.
+///
+/// `high = funds.amount` in an auction records a bid the contract is holding, so
+/// refunding `high` to the previous leader pays out money that is already in the
+/// vault. Treating that read as unbacked is what stopped every refund shaped
+/// contract from compiling. The rule is deliberately exact: the assignment has to be
+/// the asset amount itself, with no arithmetic, so nothing can inflate it.
+fn asset_backed_scalars(model: &Model) -> HashSet<String> {
+    let mut candidate: HashSet<String> = HashSet::new();
+    let mut disqualified: HashSet<String> = HashSet::new();
+    for entry in &model.entries {
+        let asset_params: HashSet<&str> = entry
+            .params
+            .iter()
+            .filter(|p| p.ty.name.text == "Q_Asset")
+            .map(|p| p.name.text.as_str())
+            .collect();
+        for stmt in &entry.body {
+            if let Stmt::Assign { target, value, .. } = stmt {
+                if let Expr::Ident(id) = target {
+                    if asset_amount_backer(value, &asset_params).is_some() {
+                        candidate.insert(id.text.clone());
+                    } else {
+                        disqualified.insert(id.text.clone());
+                    }
+                }
+            }
+        }
+    }
+    candidate.retain(|f| !disqualified.contains(f));
+    candidate
+}
+
+/// A writer that can only ever fill a slot that was empty, and never clear one.
+///
+/// `guard start.get(who) == 0; start.set(who, now)` is write once: it cannot touch a
+/// row somebody already holds, so it cannot forge anyone else's authority and the map
+/// stays a sound anchor. Without this, every write once shape is unbuildable, which
+/// rules out vesting, subscriptions, one shot registration and commit reveal.
+fn writes_field_only_into_an_empty_slot(entry: &EntryDecl, field: &str) -> bool {
+    let mut guards: Vec<&Expr> = Vec::new();
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => guards.push(expr),
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            guards.push(expr);
+        }
+    }
+    // Whether some guard proves this exact key is empty. Scanned per write rather than
+    // collected up front, so no borrow has to outlive the walk.
+    let proves_empty = |key: &Expr| {
+        let mut found = false;
+        for expr in &guards {
+            walk(expr, &mut |e| {
+                if found {
+                    return;
+                }
+                match e {
+                    Expr::Binary {
+                        op: BinOp::Eq,
+                        left,
+                        right,
+                        ..
+                    } => {
+                        for (a, b) in [(left, right), (right, left)] {
+                            if matches!(b.as_ref(), Expr::Int(n) if n.text == "0") {
+                                if let Some(k) = field_get_key(field, a) {
+                                    if expr_eq(k, key) {
+                                        found = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Expr::Unary {
+                        op: UnaryOp::Not,
+                        expr,
+                        ..
+                    } => {
+                        if let Some(k) = field_contains_key(field, expr) {
+                            if expr_eq(k, key) {
+                                found = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            });
+        }
+        found
+    };
+    let mut saw = false;
+    let mut all_proven = true;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if m.text != field {
+                            return;
+                        }
+                        // Clearing a slot would let it be claimed again, so it is not
+                        // write once however carefully the fill is guarded.
+                        if name.text == "remove" {
+                            all_proven = false;
+                            return;
+                        }
+                        if matches!(name.text.as_str(), "set" | "insert" | "credit" | "debit") {
+                            saw = true;
+                            if !args.first().is_some_and(&proves_empty) {
+                                all_proven = false;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    saw && all_proven
+}
+
+fn field_get_key<'a>(field: &str, e: &'a Expr) -> Option<&'a Expr> {
+    if let Expr::Call { callee, args, .. } = e {
+        if let Expr::Field { base, name, .. } = callee.as_ref() {
+            if let Expr::Ident(m) = base.as_ref() {
+                if m.text == field && name.text == "get" {
+                    return args.first();
+                }
+            }
+        }
+    }
+    None
+}
+
+fn field_contains_key<'a>(field: &str, e: &'a Expr) -> Option<&'a Expr> {
+    if let Expr::Call { callee, args, .. } = e {
+        if let Expr::Field { base, name, .. } = callee.as_ref() {
+            if let Expr::Ident(m) = base.as_ref() {
+                if m.text == field && matches!(name.text.as_str(), "contains" | "has") {
+                    return args.first();
+                }
+            }
+        }
+    }
+    None
+}
+
 fn entry_moves_asset(entry: &EntryDecl) -> bool {
     let mut found = false;
     for stmt in &entry.body {
@@ -914,6 +1135,11 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
             if writes_field_only_under_the_caller_key(entry, field)
                 && credits_caller_only_by_the_paid_amount(model, entry, field, prot)
             {
+                continue;
+            }
+            // A write that can only fill an empty slot cannot overwrite anyone else's
+            // row, so it leaves the map usable as an anchor.
+            if writes_field_only_into_an_empty_slot(entry, field) {
                 continue;
             }
             let (authorized, sub_tainted) = writer_authorized(model, entry, prot);
@@ -1403,6 +1629,11 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
         .map(|p| p.name.text.as_str())
         .collect();
     let mut spends = self_spend_amounts(&ledgers, entry, &reads_of, &sub_locals);
+    let backed_scalars = asset_backed_scalars(model);
+    let backs = |value: &Expr| match value {
+        Expr::Ident(id) => backed_scalars.contains(id.text.as_str()),
+        _ => false,
+    };
     let mut used_asset_backers: HashSet<&str> = HashSet::new();
     let mut pool_locals: HashMap<&str, (&str, Option<&Expr>)> = HashMap::new();
     let asset_param_name: Option<&str> = entry
@@ -1488,11 +1719,21 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                     }
                     Expr::Field { base, name, .. } if name.text == "credit" => {
                         if let Expr::Ident(map) = base.as_ref() {
-                            if ledgers.contains(&map.text) {
+                            // A tally keyed by a proposal or an item id, that nothing
+                            // ever debits or pays out, is a counter and not a per account
+                            // balance. Crediting one moves no value, so requiring it to be
+                            // backed only stops vote counts, reputation and statistics
+                            // from being written at all. Address keyed maps keep the full
+                            // strictness: those are where a forged credit becomes money.
+                            if ledgers.contains(&map.text)
+                                && (is_addr_keyed(model, map.text.as_str())
+                                    || map_is_ever_paid_out(model, map.text.as_str()))
+                            {
                                 let asset_backed = args
                                     .get(1)
                                     .and_then(|v| asset_amount_backer(v, &asset_params))
-                                    .is_some_and(|a| used_asset_backers.insert(a));
+                                    .is_some_and(|a| used_asset_backers.insert(a))
+                                    || args.get(1).is_some_and(&backs);
                                 let spend_backed = !asset_backed
                                     && args.get(1).is_some_and(|v| {
                                         match spends.iter().position(|s| expr_eq(s, v)) {
@@ -1521,9 +1762,21 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                 if ledgers.contains(&map.text) {
                                     moves = true;
                                 }
+                                // A write that can only fill an EMPTY slot, on a map
+                                // nothing ever debits or pays out, is a schedule or a
+                                // registration, not a balance: it cannot overwrite what
+                                // anyone holds and no value can ever leave through it.
+                                // Both halves are required. Write once alone would still
+                                // let a fresh account mint into its own empty row and
+                                // withdraw it, and never paid out alone would still let
+                                // an existing row be overwritten.
+                                let schedule_write =
+                                    writes_field_only_into_an_empty_slot(entry, map.text.as_str())
+                                        && !map_is_ever_paid_out(model, map.text.as_str());
                                 if matches!(name.text.as_str(), "set" | "insert")
                                     && is_addr_keyed(model, map.text.as_str())
                                     && is_amount_valued(model, map.text.as_str())
+                                    && !schedule_write
                                 {
                                     let caller_chosen_key = args.first().is_some_and(|k| {
                                         param_field(&all_params, &signed_params, &derived_params, k)
@@ -2135,12 +2388,28 @@ fn caller_membership_present(model: &Model, expr: &Expr) -> bool {
     };
     let lookup_left = is_caller_membership(model, left);
     match (op, lookup_left) {
-        (BinOp::Ge, true) | (BinOp::Le, false) => is_positive_int(threshold),
-        (BinOp::Gt, true) | (BinOp::Lt, false) => is_nonnegative_int(threshold),
+        // The threshold used to have to be a positive literal, so a guard comparing a
+        // caller's own row against a COMPUTED amount was not recognised as binding the
+        // caller at all. That is the shape of every collateral check, every tiered
+        // limit and every partial withdrawal, so lending, credit and fee bearing
+        // withdrawals were unbuildable. A computed threshold is safe to accept here
+        // because the amount side is policed separately: an outflow of a caller named
+        // amount that is not debited from the caller's own row is refused by
+        // `authority_is_membership_only`, whatever the guard compares against.
+        (BinOp::Ge, true) | (BinOp::Le, false) => {
+            is_positive_int(threshold) || !is_int_literal(threshold)
+        }
+        (BinOp::Gt, true) | (BinOp::Lt, false) => {
+            is_nonnegative_int(threshold) || !is_int_literal(threshold)
+        }
         (BinOp::Ne, _) => is_zero_int(threshold),
         (BinOp::Eq, _) => is_positive_int(threshold),
         _ => false,
     }
+}
+
+fn is_int_literal(expr: &Expr) -> bool {
+    matches!(expr, Expr::Int(_))
 }
 
 fn is_caller(expr: &Expr) -> bool {
