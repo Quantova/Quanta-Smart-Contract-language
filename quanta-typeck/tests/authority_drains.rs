@@ -374,3 +374,159 @@ fn an_owner_signed_allocation_with_a_real_debit_still_compiles() {
 }"#
     ));
 }
+
+#[test]
+fn a_denies_clause_excluding_one_account_is_not_an_office() {
+    // `denies caller == treasury` rejects the treasury and grants nobody anything, so
+    // it must not switch the membership rule off.
+    assert!(rejected(
+        r#"contract Club {
+  asset TOK;
+  state { treasury: Q_Address; token: Q_Address; members: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
+  genesis { treasury = deployer; token = deployer; }
+  entry join() writes(members) { members.set(caller, 1); }
+  entry payout(amount: u128) reads(token, members, treasury) denies caller == treasury { guard members.get(caller) > 0; send_asset(token, caller, amount); }
+}"#
+    ));
+}
+
+#[test]
+fn the_canonical_owner_only_clause_still_compiles() {
+    // `denies caller != owner` REQUIRES caller == owner. Reading it with the wrong
+    // polarity made the standard owner only clause unbuildable.
+    assert!(!rejected(
+        r#"contract Payroll {
+  asset TOK;
+  state { owner: Q_Address; token: Q_Address; vault: Q_Asset<TOK>; }
+  genesis { owner = deployer; token = deployer; }
+  entry pay(to: Q_Address, amount: u128) reads(token, owner) denies caller != owner { send_asset(token, to, amount); }
+}"#
+    ));
+}
+
+#[test]
+fn an_owner_check_written_with_a_negation_still_compiles() {
+    assert!(!rejected(
+        r#"contract Payroll2 {
+  asset TOK;
+  state { owner: Q_Address; token: Q_Address; vault: Q_Asset<TOK>; }
+  genesis { owner = deployer; token = deployer; }
+  entry pay(to: Q_Address, amount: u128) reads(token, owner) { guard !(caller != owner); send_asset(token, to, amount); }
+}"#
+    ));
+}
+
+#[test]
+fn declaring_an_asset_parameter_is_not_payment_without_a_floor() {
+    // `join(fee)` with no floor is satisfied by paying nothing, so the writer is still
+    // self grantable and must not protect an ownership handover.
+    assert!(rejected(
+        r#"contract Reg {
+  asset TOK;
+  state { token: Q_Address; members: Map<Q_Address, u64>; owner_of: Map<Q_Address, Q_Address>; vault: Q_Asset<TOK>; }
+  genesis { token = deployer; }
+  entry join(fee: Q_Asset<TOK>) conserves TOK writes(members, vault) { members.set(caller, 1); vault.merge(fee); }
+  entry hand(label: Q_Address, to: Q_Address) reads(members) writes(owner_of) { guard members.get(caller) > 0; owner_of.set(label, to); }
+}"#
+    ));
+}
+
+#[test]
+fn a_guard_that_gates_nothing_does_not_protect_an_anchor() {
+    assert!(rejected(
+        r#"contract Reg2 {
+  state { members: Map<Q_Address, u64>; owner_of: Map<Q_Address, Q_Address>; }
+  entry join() writes(members) { guard 1 > 0; members.set(caller, 1); }
+  entry hand(label: Q_Address, to: Q_Address) reads(members) writes(owner_of) { guard members.get(caller) > 0; owner_of.set(label, to); }
+}"#
+    ));
+}
+
+#[test]
+fn a_write_once_self_join_is_still_a_self_grant() {
+    // Write once stops you taking somebody else's slot. It does not stop you taking
+    // your own, so a caller keyed write once join is a self grant with a limit of one.
+    assert!(rejected(
+        r#"contract Base {
+  state { members: Map<Q_Address, u64>; owner_of: Map<Q_Address, Q_Address>; }
+  entry join() reads(members) writes(members) { guard members.get(caller) == 0; members.set(caller, 1); }
+  entry transfer_name(label: Q_Address, to: Q_Address) reads(members) writes(owner_of) { guard members.get(caller) > 0; owner_of.set(label, to); }
+}"#
+    ));
+}
+
+#[test]
+fn adding_a_constant_to_a_read_does_not_earn_an_anchor() {
+    // `seen.get(caller) + 1` is one for everybody when `seen` holds nothing, so the
+    // read is decoration and the literal is the whole grant.
+    assert!(rejected(
+        r#"contract Loyalty {
+  state { ranks: Map<Q_Address, u64>; seen: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+  entry fund(payment: Q_Asset<QTOV>) conserves QTOV writes(vault) { vault.merge(payment); }
+  entry touch() writes(seen) { seen.set(caller, 0); }
+  entry enroll() reads(seen) writes(ranks) { ranks.set(caller, seen.get(caller) + 1); }
+  entry claim() conserves QTOV reads(ranks, vault) writes(vault) { guard ranks.get(caller) >= 1; let out = vault.split(1000); send(caller, out); }
+}"#
+    ));
+}
+
+#[test]
+fn wrapping_arithmetic_never_backs_an_amount() {
+    // `wrapping(n + (0 - n))` is zero. Add is only monotonic over trapping arithmetic.
+    assert!(rejected(
+        r#"contract W {
+  asset TOK;
+  state { token: Q_Address; credits: Map<Q_Address, u128>; vault: Q_Asset<TOK>; }
+  genesis { token = deployer; }
+  entry take(n: u128) reads(token) writes(credits) { credits.debit(caller, wrapping(n + (0 - n))); send_asset(token, caller, n); }
+}"#
+    ));
+}
+
+#[test]
+fn over_collateralised_lending_is_buildable() {
+    // The bound is stated as a guard against collateral the caller cannot write, and
+    // it accounts for the debt already outstanding. Refusing this made lending, and
+    // every other entitlement shaped contract, impossible to express.
+    assert!(!rejected(
+        r#"contract Lend {
+  state { pool: Q_Asset<QTOV>; collateral: Map<Q_Address, u128>; debt: Map<Q_Address, u128>; }
+  entry borrow(amount: u128) conserves QTOV reads(collateral, debt, pool) writes(pool, debt) { guard amount > 0; guard collateral.get(caller) >= (debt.get(caller) + amount) * 2; guard pool.amount >= amount; debt.credit(caller, amount); let out = pool.split(amount); send(caller, out); }
+}"#
+    ));
+}
+
+#[test]
+fn vesting_against_an_allocation_is_buildable() {
+    assert!(!rejected(
+        r#"contract Vest {
+  state { pool: Q_Asset<QTOV>; allocation: Map<Q_Address, u128>; claimed: Map<Q_Address, u128>; }
+  entry claim(amount: u128) conserves QTOV reads(allocation, claimed, pool) writes(pool, claimed) limits claimed.get(caller) + amount <= allocation.get(caller) { guard amount > 0; guard pool.amount >= amount; claimed.credit(caller, amount); let out = pool.split(amount); send(caller, out); }
+}"#
+    ));
+}
+
+#[test]
+fn a_priced_redemption_is_buildable() {
+    // The multiplier is a configured price held in state, not a literal. Demanding a
+    // literal made every priced purchase and every rate based charge unbuildable.
+    assert!(!rejected(
+        r#"contract Loyalty2 {
+  state { pool: Q_Asset<QTOV>; points: Map<Q_Address, u128>; points_per_coin: u128; }
+  genesis { points_per_coin = 250; }
+  entry redeem(coins: u128) conserves QTOV reads(points, points_per_coin, pool) writes(points, pool) { guard coins > 0; guard points.get(caller) >= coins * points_per_coin; guard pool.amount >= coins; points.debit(caller, coins * points_per_coin); let out = pool.split(coins); send(caller, out); }
+}"#
+    ));
+}
+
+#[test]
+fn a_delegated_office_with_a_spend_cap_is_buildable() {
+    assert!(!rejected(
+        r#"contract Treasury {
+  state { treasury: Q_Asset<QTOV>; managers: Map<Q_Address, u64>; owner: Q_Address; spent_today: u128; daily_cap: u128; }
+  genesis { owner = deployer; daily_cap = 1000000; }
+  entry appoint(order: Appoint signed by owner) writes(managers) { managers.set(order.who, 1); }
+  entry pay_invoice(to: Q_Address, amount: u128) conserves QTOV reads(managers, treasury) writes(treasury, spent_today) limits spent_today + amount <= daily_cap { guard managers.get(caller) > 0; guard treasury.amount >= amount; spent_today += amount; let out = treasury.split(amount); send(to, out); }
+}"#
+    ));
+}

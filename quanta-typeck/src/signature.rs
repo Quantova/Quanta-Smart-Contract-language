@@ -101,6 +101,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         && authority_is_membership_only(model, entry, &signed)
         && (moved_amount_is_caller_chosen(entry)
             || outflow_amount_is_a_self_written_row(model, entry))
+        && !outflow_is_bounded_by_an_entitlement(model, entry)
     {
         return Err(unbacked_membership_error(entry));
     }
@@ -432,25 +433,34 @@ fn authority_is_membership_only(model: &Model, entry: &EntryDecl, signed: &HashS
         return false;
     }
     let mut caller_keyed = false;
-    let mut guards = Vec::new();
+    // A `denies` clause states when to REJECT, so its sense is inverted and it cannot
+    // share a list with guards and `limits`. Mixing them made `denies caller ==
+    // treasury`, which merely excludes one account and grants nothing, read as an
+    // office and switch this whole rule off; and made `denies caller != owner`, the
+    // canonical owner only clause, read as no office at all.
+    let mut required: Vec<&Expr> = Vec::new();
+    let mut denied: Vec<&Expr> = Vec::new();
     for clause in &entry.clauses {
         match clause {
-            Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => guards.push(expr),
+            Clause::Limits { expr, .. } => required.push(expr),
+            Clause::Denies { expr, .. } => denied.push(expr),
             _ => {}
         }
     }
     for stmt in &entry.body {
         if let Stmt::Guard { expr, .. } = stmt {
-            guards.push(expr);
+            required.push(expr);
         }
     }
-    for expr in guards {
-        // An equality binding `caller` to a stored address is an office, not a
-        // membership, and it is judged by the anchor rules instead. A DENIAL such as
-        // `caller != treasury` is not an office: it excludes one account and grants
-        // nothing, so letting it switch this rule off meant one throwaway sanity
-        // guard reopened the whole drain.
-        if office_equality(model, expr) {
+    for expr in required.iter().chain(denied.iter()) {
+        let is_office = if denied.iter().any(|d| std::ptr::eq(*d, *expr)) {
+            // The entry proceeds when the denial does NOT hold, so the office test
+            // applies to the negation.
+            denied_office(model, expr)
+        } else {
+            office_equality(model, expr)
+        };
+        if is_office {
             return false;
         }
         walk(expr, &mut |e| {
@@ -507,6 +517,12 @@ fn office_equality(model: &Model, expr: &Expr) -> bool {
                     && (state_addr_ident(model, left).is_some()
                         || map_value_addr(model, left).is_some()))
         }
+        // `guard !(caller != owner)` is the same office written the long way round.
+        Expr::Unary {
+            op: UnaryOp::Not,
+            expr,
+            ..
+        } => denied_office(model, expr),
         _ => false,
     }
 }
@@ -741,6 +757,16 @@ fn writes_field_only_into_an_empty_slot(model: &Model, entry: &EntryDecl, field:
                         }
                         if matches!(name.text.as_str(), "set" | "insert" | "credit" | "debit") {
                             saw = true;
+                            // Write once says nobody can take a slot somebody else
+                            // holds. It says nothing about granting yourself one: with
+                            // the key `caller`, every caller can still write their own
+                            // row exactly once, which is a self grant with a limit of
+                            // one, not an authority. Those writes are judged by the
+                            // value rule instead, which refuses a literal.
+                            if matches!(args.first(), Some(Expr::Caller { .. })) {
+                                all_proven = false;
+                                return;
+                            }
                             if !args.first().is_some_and(&proves_empty) {
                                 all_proven = false;
                             }
@@ -824,16 +850,22 @@ fn debit_covers_the_parameter(e: &Expr, param: &str) -> bool {
             (debit_covers_the_parameter(left, param) && literal_at_least_one(right))
                 || (debit_covers_the_parameter(right, param) && literal_at_least_one(left))
         }
-        // Adding anything only ever costs more.
+        // Adding only ever costs more, and only under TRAPPING arithmetic. Both
+        // operands have to be examined: `wrapping(n + (0 - n))` is zero, and letting
+        // one side alone satisfy the rule re-admitted the exact shape the whitelist
+        // was written to block.
         Expr::Binary {
             op: BinOp::Add,
             left,
             right,
             ..
-        } => debit_covers_the_parameter(left, param) || debit_covers_the_parameter(right, param),
-        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
-            debit_covers_the_parameter(expr, param)
+        } => {
+            (debit_covers_the_parameter(left, param) && non_negative(right))
+                || (debit_covers_the_parameter(right, param) && non_negative(left))
         }
+        Expr::Checked { expr, .. } => debit_covers_the_parameter(expr, param),
+        // `Wrapping` is deliberately absent: wrapping arithmetic can carry any
+        // expression to zero, so nothing inside it can be said to cover anything.
         // Subtraction, division, remainder and shifts can all reach zero while still
         // mentioning the parameter, which is exactly how the fold was defeated.
         _ => false,
@@ -866,16 +898,25 @@ fn anchor_writable_without_authority(model: &Model, field: &str) -> bool {
             .filter(|p| p.signed_by.is_some())
             .map(|p| p.name.text.as_str())
             .collect();
-        let paid = entry.params.iter().any(crate::model::is_asset_param);
+        // Declaring an asset parameter is not payment. `entry join(fee: Q_Asset<TOK>)`
+        // with no floor is satisfied by paying nothing, and the writer still looked
+        // authorised. A guard must also gate WHO may write rather than merely exist:
+        // `guard 1 > 0` satisfied the old presence test and made a self grantable map
+        // look protected, which is the whole shape this predicate exists to catch.
+        let paid = entry
+            .params
+            .iter()
+            .filter(|p| crate::model::is_asset_param(p))
+            .any(|p| entry_requires_a_positive_amount(entry, p.name.text.as_str()));
         let quorum = entry.params.iter().any(is_quorum_param);
         let bound = entry_binds_caller(model, entry, &signed);
-        let mut guarded = false;
-        for stmt in &entry.body {
-            if let Stmt::Guard { .. } = stmt {
-                guarded = true;
-            }
-        }
-        if !bound && !paid && !quorum && signed.is_empty() && !guarded {
+        // An entry whose authority is a HOLDER check on the very map it writes cannot
+        // self grant: it requires you to already hold the slot. This is the canonical
+        // registry transfer, and asking `entry_binds_caller` about it recurses back
+        // through this same map, so it has to be recognised directly or every honest
+        // registry reads as writable by anyone.
+        let holds_the_slot = entry_guards_on_holding(model, entry, field);
+        if !bound && !paid && !quorum && signed.is_empty() && !holds_the_slot {
             return true;
         }
     }
@@ -928,6 +969,415 @@ fn outflow_amount_is_a_self_written_row(model: &Model, entry: &EntryDecl) -> boo
         });
     }
     found
+}
+
+/// Whether DENYING this condition binds the caller to an office.
+///
+/// A `denies` clause fires when its condition holds, so the entry proceeds under the
+/// negation. `denies caller != owner` therefore requires `caller == owner` and is a
+/// real office; `denies caller == treasury` merely excludes one account and grants
+/// nothing. De Morgan flips the connectives with the comparison.
+fn denied_office(model: &Model, expr: &Expr) -> bool {
+    match expr {
+        // !(A && B) is !A || !B, so both halves must be offices.
+        Expr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+            ..
+        } => denied_office(model, left) && denied_office(model, right),
+        // !(A || B) is !A && !B, so either half is enough.
+        Expr::Binary {
+            op: BinOp::Or,
+            left,
+            right,
+            ..
+        } => denied_office(model, left) || denied_office(model, right),
+        // !(caller != X) is caller == X.
+        Expr::Binary {
+            op: BinOp::Ne,
+            left,
+            right,
+            ..
+        } => {
+            (is_caller(left)
+                && (state_addr_ident(model, right).is_some()
+                    || map_value_addr(model, right).is_some()))
+                || (is_caller(right)
+                    && (state_addr_ident(model, left).is_some()
+                        || map_value_addr(model, left).is_some()))
+        }
+        Expr::Unary {
+            op: UnaryOp::Not,
+            expr,
+            ..
+        } => office_equality(model, expr),
+        _ => false,
+    }
+}
+
+/// Whether an expression cannot make a sum smaller.
+///
+/// Only literals and plain reads qualify. A subtraction can carry a sum downward
+/// under wrapping arithmetic, so `n + (0 - n)` must not count as covering `n`.
+fn non_negative(e: &Expr) -> bool {
+    match e {
+        Expr::Int(_) | Expr::Ident(_) | Expr::Field { .. } => true,
+        Expr::Call { callee, .. } => {
+            matches!(callee.as_ref(), Expr::Field { name, .. } if name.text == "get")
+        }
+        Expr::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        }
+        | Expr::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+            ..
+        } => non_negative(left) && non_negative(right),
+        Expr::Checked { expr, .. } => non_negative(expr),
+        _ => false,
+    }
+}
+
+/// Whether the entry refuses a zero amount for this asset parameter.
+///
+/// An asset parameter with no floor is satisfied by paying nothing, so treating its
+/// mere presence as payment let an entry that costs the caller nothing look paid for.
+fn entry_requires_a_positive_amount(entry: &EntryDecl, param: &str) -> bool {
+    let mut required = false;
+    let mut exprs: Vec<&Expr> = Vec::new();
+    for clause in &entry.clauses {
+        if let Clause::Limits { expr, .. } = clause {
+            exprs.push(expr);
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            exprs.push(expr);
+        }
+    }
+    // Any bound the caller must clear counts, whether it is a literal or a computed
+    // price: `payment.amount >= base * years` is a real charge. What does not count is
+    // a bound of literal zero, which every payment satisfies, and no bound at all.
+    let real_bound = |b: &Expr| match b {
+        Expr::Int(n) => n.text.parse::<u128>().map(|v| v >= 1).unwrap_or(false),
+        _ => true,
+    };
+    for expr in exprs {
+        walk(expr, &mut |e| {
+            if let Expr::Binary {
+                op, left, right, ..
+            } = e
+            {
+                let amount_left = is_asset_amount_expr(left, param);
+                let amount_right = is_asset_amount_expr(right, param);
+                match op {
+                    // amount > 0, amount >= 1
+                    // amount > anything is always a real floor, since the smallest
+                    // thing it can exceed is zero.
+                    BinOp::Gt if amount_left => required = true,
+                    BinOp::Ge if amount_left && real_bound(right) => required = true,
+                    BinOp::Lt if amount_right => required = true,
+                    BinOp::Le if amount_right && real_bound(left) => required = true,
+                    _ => {}
+                }
+            }
+        });
+    }
+    required
+}
+
+/// Whether the entry requires the caller to already hold a row of this very map.
+///
+/// `guard owner_of.get(label) == caller` before writing `owner_of` is a handover by
+/// the current holder. It cannot forge anything, because passing it means already
+/// owning the slot, and it is the shape every registry transfer takes.
+fn entry_guards_on_holding(model: &Model, entry: &EntryDecl, field: &str) -> bool {
+    let mut exprs: Vec<&Expr> = Vec::new();
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => exprs.push(expr),
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            exprs.push(expr);
+        }
+    }
+    let mut holds = false;
+    for expr in exprs {
+        walk(expr, &mut |e| {
+            if let Expr::Binary {
+                op: BinOp::Eq,
+                left,
+                right,
+                ..
+            } = e
+            {
+                for (a, b) in [(left, right), (right, left)] {
+                    if is_caller(b) {
+                        if let Some(m) = map_value_addr(model, a) {
+                            if m == field {
+                                holds = true;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    holds
+}
+
+/// Whether a guard or `limits` clause bounds what leaves against state the caller
+/// cannot simply write for themselves.
+///
+/// This is the rule that matters, and the one the earlier shapes kept missing. They
+/// asked "is there a `debit(caller, <this parameter>)` somewhere", which is one way to
+/// establish an entitlement and not the only one. Every real contract of this kind
+/// states a bound instead:
+///
+///   lending    `guard collateral.get(caller) >= (debt.get(caller) + amount) * 2`
+///   vesting    `limits claimed.get(caller) + amount <= allocation.get(caller)`
+///   payroll    `limits spent_today + amount <= daily_cap`
+///   redemption `points.debit(caller, amount * points_per_coin)`
+///
+/// Refusing all of these made lending, vesting, payroll and loyalty redemption
+/// unbuildable, while catching nothing a bound would not also catch. What makes a
+/// bound real is the side it is measured against: it has to read state the caller
+/// cannot grant themselves, which is exactly `authority_anchor_protected`.
+fn outflow_is_bounded_by_an_entitlement(model: &Model, entry: &EntryDecl) -> bool {
+    // The names that actually leave. A bound on something else bounds nothing.
+    let leaving = names_in_outflow_amounts(entry);
+    if leaving.is_empty() {
+        return false;
+    }
+    let mut exprs: Vec<&Expr> = Vec::new();
+    for clause in &entry.clauses {
+        if let Clause::Limits { expr, .. } = clause {
+            exprs.push(expr);
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            exprs.push(expr);
+        }
+    }
+    let mut bounded = false;
+    for expr in exprs {
+        walk(expr, &mut |e| {
+            if bounded {
+                return;
+            }
+            let Expr::Binary {
+                op, left, right, ..
+            } = e
+            else {
+                return;
+            };
+            // The amount must sit on the SMALL side of the comparison, and the other
+            // side must be state the caller cannot write.
+            let (small, large) = match op {
+                BinOp::Le | BinOp::Lt => (left.as_ref(), right.as_ref()),
+                BinOp::Ge | BinOp::Gt => (right.as_ref(), left.as_ref()),
+                _ => return,
+            };
+            if !mentions_any_name(small, &leaving) {
+                return;
+            }
+            if !bound_is_trustworthy(model, large) {
+                return;
+            }
+            // A bound that ignores what this entry is accumulating is a PER CALL
+            // bound, and the call can be made again. `guard collateral.get(caller) >=
+            // amount * 2` while crediting a separate `borrowed` row lets the same
+            // collateral be drawn against forever. Whatever the entry adds to must
+            // appear in the bound, which is what makes it cumulative.
+            let accrued = accumulating_state(entry);
+            if !accrued.is_empty() {
+                let names = std::iter::once(large)
+                    .chain(std::iter::once(small))
+                    .collect::<Vec<_>>();
+                let mut counted = false;
+                for part in names {
+                    walk(part, &mut |x| {
+                        if let Expr::Ident(id) = x {
+                            if accrued.contains(id.text.as_str()) {
+                                counted = true;
+                            }
+                        }
+                    });
+                }
+                if !counted {
+                    return;
+                }
+            }
+            bounded = true;
+        });
+    }
+    bounded
+}
+
+/// Names that appear inside an amount this entry hands to a transfer or a pool split.
+///
+/// Owned strings rather than borrowed expressions, because the statement walker only
+/// lends each node for the length of the callback.
+fn names_in_outflow_amounts(entry: &EntryDecl) -> HashSet<String> {
+    let mut out: HashSet<String> = HashSet::new();
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                let amount = match callee.as_ref() {
+                    Expr::Ident(id) if id.text == "send_asset" || id.text == "mint_asset" => {
+                        args.get(2)
+                    }
+                    Expr::Ident(id) if id.text == "send" => args.get(1),
+                    Expr::Field { name, .. } if name.text == "split" => args.first(),
+                    _ => None,
+                };
+                if let Some(a) = amount {
+                    walk(a, &mut |x| {
+                        if let Expr::Ident(id) = x {
+                            out.insert(id.text.clone());
+                        }
+                    });
+                }
+            }
+        });
+    }
+    out
+}
+
+/// Whether the expression mentions any of these names.
+fn mentions_any_name(e: &Expr, names: &HashSet<String>) -> bool {
+    let mut hit = false;
+    walk(e, &mut |x| {
+        if let Expr::Ident(id) = x {
+            if names.contains(id.text.as_str()) {
+                hit = true;
+            }
+        }
+    });
+    hit
+}
+
+/// Whether a bounding term is state the caller cannot grant themselves.
+///
+/// A literal or a protected field or map read is trustworthy. A read of a map any
+/// caller can write to their own row is not: bounding an outflow by a number you
+/// wrote yourself bounds nothing at all.
+fn bound_is_trustworthy(model: &Model, e: &Expr) -> bool {
+    let mut trustworthy = true;
+    let mut saw_state = false;
+    walk(e, &mut |x| {
+        match x {
+            Expr::Call { callee, .. } => {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if matches!(name.text.as_str(), "get" | "contains" | "has")
+                            && model.state.contains_key(m.text.as_str())
+                        {
+                            saw_state = true;
+                            if !authority_anchor_protected(model, m.text.as_str()) {
+                                trustworthy = false;
+                            }
+                        }
+                    }
+                }
+            }
+            Expr::Ident(id) => {
+                if model.state.contains_key(id.text.as_str()) {
+                    saw_state = true;
+                    if !authority_anchor_protected(model, id.text.as_str()) {
+                        trustworthy = false;
+                    }
+                }
+                // A pool balance read such as `pool.amount` is the contract's own
+                // holding and nobody can inflate it by asking.
+            }
+            Expr::Field { base, name, .. } => {
+                if name.text == "amount" {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if model.state.contains_key(m.text.as_str()) {
+                            saw_state = true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    });
+    saw_state && trustworthy
+}
+
+/// State this entry ADDS to, which any bound has to take account of.
+///
+/// A debt row, a claimed counter or a daily spend total records usage that persists
+/// after the call. A bound that does not mention it is a per call bound, and the call
+/// can simply be made again.
+fn accumulating_state(entry: &EntryDecl) -> HashSet<String> {
+    let mut out: HashSet<String> = HashSet::new();
+    for stmt in &entry.body {
+        // `spent_today += amount`
+        if let Stmt::Assign { target, value, .. } = stmt {
+            if let Expr::Ident(id) = target {
+                let mut self_ref = false;
+                walk(value, &mut |x| {
+                    if let Expr::Ident(v) = x {
+                        if v.text == id.text {
+                            self_ref = true;
+                        }
+                    }
+                });
+                if self_ref {
+                    out.insert(id.text.clone());
+                }
+            }
+        }
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if name.text == "credit"
+                            && matches!(args.first(), Some(Expr::Caller { .. }))
+                        {
+                            out.insert(m.text.clone());
+                        }
+                    }
+                }
+            }
+        });
+    }
+    out
+}
+
+/// Whether the expression adds a non zero constant, giving it a floor nobody earned.
+///
+/// An anchor value has to come from something the caller actually has. A sum with a
+/// literal in it clears any `> 0` gate on its own, whatever the rest of the
+/// expression reads, so the read contributes nothing to the authority.
+fn adds_a_constant_floor(e: &Expr) -> bool {
+    match e {
+        Expr::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        } => {
+            let literal_at_least_one = |x: &Expr| matches!(x, Expr::Int(n) if n.text.parse::<u128>().map(|v| v >= 1).unwrap_or(false));
+            literal_at_least_one(left)
+                || literal_at_least_one(right)
+                || adds_a_constant_floor(left)
+                || adds_a_constant_floor(right)
+        }
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => adds_a_constant_floor(expr),
+        _ => false,
+    }
 }
 
 fn entry_moves_asset(entry: &EntryDecl) -> bool {
@@ -1446,8 +1896,13 @@ fn credits_caller_only_by_the_paid_amount(
                     let no_locals: HashSet<String> = HashSet::new();
                     let earned = match args.get(1) {
                         Some(a) => {
-                            taints_from_param(a, &assets, &signed, &no_locals)
-                                || reads_a_caller_row(model, a)
+                            // Adding a constant manufactures value from nothing:
+                            // `ranks.set(caller, seen.get(caller) + 1)` is 1 for
+                            // everybody when `seen` holds nothing, so the read is
+                            // decoration and the literal is the whole grant.
+                            !adds_a_constant_floor(a)
+                                && (taints_from_param(a, &assets, &signed, &no_locals)
+                                    || reads_a_caller_row(model, a))
                         }
                         None => false,
                     };
@@ -2418,6 +2873,14 @@ fn caller_necessary(model: &Model, expr: &Expr) -> bool {
             right,
             ..
         } => caller_necessary(model, left) && caller_necessary(model, right),
+        // `guard !(caller != owner)` is an owner check written the long way round, and
+        // is exactly what a `denies caller != owner` clause means, so it is judged the
+        // same way rather than falling through as no binding at all.
+        Expr::Unary {
+            op: UnaryOp::Not,
+            expr,
+            ..
+        } => caller_necessary_denied(model, expr),
         _ => caller_constrains(model, expr),
     }
 }
