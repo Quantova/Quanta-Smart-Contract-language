@@ -149,6 +149,16 @@ fn moved_amount_is_caller_chosen(entry: &EntryDecl) -> bool {
                                 })
                                 .unwrap_or(false)
                         {
+                            // A debit the same entry gives straight back costs nothing.
+                            // `bal.credit(caller, n); bal.debit(caller, n)` leaves the
+                            // row byte identical and the asset still leaves.
+                            if let Expr::Field { base, .. } = callee.as_ref() {
+                                if let Expr::Ident(map) = base.as_ref() {
+                                    if credit_cancels_the_debit(entry, map.text.as_str(), name) {
+                                        return;
+                                    }
+                                }
+                            }
                             backed.insert(*name);
                         }
                     }
@@ -1378,6 +1388,37 @@ fn adds_a_constant_floor(e: &Expr) -> bool {
         Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => adds_a_constant_floor(expr),
         _ => false,
     }
+}
+
+/// Whether the same entry credits the caller's row of this map by the same parameter
+/// it debits, leaving the row unchanged.
+///
+/// The backing scan looks for one debit and stops. It never asks what else happens to
+/// the row, so a credit of the same amount in the same entry cancels the cost while
+/// the asset still leaves. The row is byte identical before and after, so nothing on
+/// chain records that value was ever given up for it.
+fn credit_cancels_the_debit(entry: &EntryDecl, field: &str, param: &str) -> bool {
+    let mut credited = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if m.text == field
+                            && name.text == "credit"
+                            && matches!(args.first(), Some(Expr::Caller { .. }))
+                            && args
+                                .get(1)
+                                .is_some_and(|a| debit_covers_the_parameter(a, param))
+                        {
+                            credited = true;
+                        }
+                    }
+                }
+            }
+        });
+    }
+    credited
 }
 
 fn entry_moves_asset(entry: &EntryDecl) -> bool {

@@ -530,3 +530,33 @@ fn a_delegated_office_with_a_spend_cap_is_buildable() {
 }"#
     ));
 }
+
+#[test]
+fn a_credit_that_cancels_the_debit_backs_nothing() {
+    // `bal.credit(caller, n); bal.debit(caller, n)` leaves the row byte identical and
+    // the asset still leaves, so nothing on chain records value given up for it.
+    assert!(rejected(
+        r#"contract Club {
+  asset TOK;
+  state { token: Q_Address; bal: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
+  genesis { token = deployer; }
+  entry deposit(funds: Q_Asset<TOK>) conserves TOK writes(bal, vault) { guard funds.amount > 0; bal.credit(caller, funds.amount); vault.merge(funds); }
+  entry withdraw(n: u64) reads(token, bal) writes(bal) { guard bal.get(caller) > 0; guard n > 0; bal.credit(caller, n); bal.debit(caller, n); send_asset(token, caller, n); }
+}"#
+    ));
+}
+
+#[test]
+fn a_genuine_debit_still_backs_a_withdrawal() {
+    // The same contract without the cancelling credit is the honest shape and must
+    // keep working.
+    assert!(!rejected(
+        r#"contract Club2 {
+  asset TOK;
+  state { token: Q_Address; bal: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
+  genesis { token = deployer; }
+  entry deposit(funds: Q_Asset<TOK>) conserves TOK writes(bal, vault) { guard funds.amount > 0; bal.credit(caller, funds.amount); vault.merge(funds); }
+  entry withdraw(n: u64) reads(token, bal) writes(bal) { guard bal.get(caller) >= n; guard n > 0; bal.debit(caller, n); send_asset(token, caller, n); }
+}"#
+    ));
+}
