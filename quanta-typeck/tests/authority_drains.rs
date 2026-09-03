@@ -634,3 +634,65 @@ fn a_transfer_from_that_does_not_conserve_is_still_refused() {
 }"#
     ));
 }
+
+#[test]
+fn a_multisig_that_consumes_its_proposal_is_buildable() {
+    // The caller names WHICH proposal to execute, not how much it pays. The figure was
+    // written by an authorised entry and the row is cleared on the way out, so it
+    // cannot be executed twice. Treating the key as the amount made a multisig, a
+    // governance execution, an auction settle and an order fill all unwritable.
+    assert!(!rejected(
+        r#"contract MultiSig {
+  state { admin: Q_Address; is_owner: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; tx_amount: Map<Q_Id, u128>; }
+  genesis { admin = deployer; }
+  entry add_owner(order: OwnerOrder signed by admin) writes(is_owner) { is_owner.set(order.who, 1); }
+  entry submit(id: Q_Id, amount: u128) reads(is_owner) writes(tx_amount) { guard is_owner.get(caller) == 1; tx_amount.set(id, amount); }
+  entry execute(id: Q_Id) conserves QTOV reads(is_owner, tx_amount) writes(vault, tx_amount) { guard is_owner.get(caller) == 1; guard tx_amount.get(id) > 0; let out = vault.split(tx_amount.get(id)); tx_amount.remove(id); send(caller, out); }
+}"#
+    ));
+}
+
+#[test]
+fn a_proposal_that_is_never_consumed_is_still_refused() {
+    // The same multisig without the `remove` can be executed for the same id over and
+    // over until the vault is empty.
+    assert!(rejected(
+        r#"contract Bad {
+  state { admin: Q_Address; is_owner: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; tx_amount: Map<Q_Id, u128>; }
+  genesis { admin = deployer; }
+  entry add_owner(order: OwnerOrder signed by admin) writes(is_owner) { is_owner.set(order.who, 1); }
+  entry submit(id: Q_Id, amount: u128) reads(is_owner) writes(tx_amount) { guard is_owner.get(caller) == 1; tx_amount.set(id, amount); }
+  entry execute(id: Q_Id) conserves QTOV reads(is_owner, tx_amount) writes(vault) { guard is_owner.get(caller) == 1; let out = vault.split(tx_amount.get(id)); send(caller, out); }
+}"#
+    ));
+}
+
+#[test]
+fn a_pause_flag_beside_a_bound_does_not_destroy_it() {
+    // `guard !paused && n <= allocation.get(caller)` must keep its bound. Skipping any
+    // guard that contained a negation threw the bound away with the flag, and a pause
+    // switch is in every serious contract.
+    assert!(!rejected(
+        r#"contract S {
+  state { owner: Q_Address; pool: Q_Asset<QTOV>; members: Map<Q_Address, u64>; allocation: Map<Q_Address, u128>; paused: bool; }
+  genesis { owner = deployer; paused = false; }
+  entry join(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, members) { guard funds.amount > 0; members.credit(caller, funds.amount); pool.merge(funds); }
+  entry set_allocation(who: Q_Address, amount: u128) reads(owner) writes(allocation) { guard caller == owner; allocation.set(who, amount); }
+  entry claim(n: u128) conserves QTOV reads(members, allocation, paused) writes(pool, allocation) { guard members.get(caller) > 0; guard !paused && n <= allocation.get(caller); allocation.debit(caller, n); send(caller, pool.split(n)); }
+}"#
+    ));
+}
+
+#[test]
+fn an_allocation_that_is_never_reduced_is_still_refused() {
+    // The same shape without the debit lets one member claim their allocation forever.
+    assert!(rejected(
+        r#"contract Bad2 {
+  state { owner: Q_Address; pool: Q_Asset<QTOV>; members: Map<Q_Address, u64>; allocation: Map<Q_Address, u128>; }
+  genesis { owner = deployer; }
+  entry join(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, members) { guard funds.amount > 0; members.credit(caller, funds.amount); pool.merge(funds); }
+  entry set_allocation(who: Q_Address, amount: u128) reads(owner) writes(allocation) { guard caller == owner; allocation.set(who, amount); }
+  entry claim(n: u128) conserves QTOV reads(members, allocation) writes(pool) { guard members.get(caller) > 0; guard n <= allocation.get(caller); send(caller, pool.split(n)); }
+}"#
+    ));
+}

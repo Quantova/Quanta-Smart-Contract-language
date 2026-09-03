@@ -84,14 +84,14 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     }
     if entry_moves_ledger_value(model, entry)
         && !entry_binds_caller(model, entry, &signed)
-        && !ledger_move_is_paid_for_by_the_caller(entry)
+        && !ledger_move_is_paid_for_by_the_caller(model, entry)
         && !spends_an_allowance_its_owner_granted(model, entry)
     {
         return Err(no_ledger_authority_error(entry));
     }
     if entry_moves_asset(entry)
         && !entry_binds_caller(model, entry, &signed)
-        && !asset_outflow_is_paid_for_by_the_caller(entry)
+        && !asset_outflow_is_paid_for_by_the_caller(model, entry)
     {
         return Err(no_asset_authority_error(entry));
     }
@@ -100,7 +100,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     // withdrawal while the same shape over `send_asset` was refused.
     if (entry_moves_asset(entry) || entry_moves_ledger_value(model, entry))
         && authority_is_membership_only(model, entry, &signed)
-        && (moved_amount_is_caller_chosen(entry)
+        && (moved_amount_is_caller_chosen(model, entry)
             || outflow_amount_is_a_self_written_row(model, entry))
         && !outflow_is_bounded_by_an_entitlement(model, entry)
     {
@@ -116,7 +116,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
 /// caller whatever number the caller passed in. The asset parameter is excluded from
 /// the taint set because the chain really did move that asset, so `funds.amount` is a
 /// fact rather than a caller claim, while a plain `n: u64` is only a request.
-fn moved_amount_is_caller_chosen(entry: &EntryDecl) -> bool {
+fn moved_amount_is_caller_chosen(model: &Model, entry: &EntryDecl) -> bool {
     let free: Vec<&str> = entry
         .params
         .iter()
@@ -197,7 +197,15 @@ fn moved_amount_is_caller_chosen(entry: &EntryDecl) -> bool {
                     _ => None,
                 };
                 if let Some(a) = amount {
-                    if taints_from_param(a, &unbacked, &signed, &derived) {
+                    // Naming WHICH stored amount to move is not naming the amount.
+                    // `send(caller, vault.split(tx_amount.get(id)))` lets the caller
+                    // pick a proposal; the figure itself was written by an authorised
+                    // entry. Treating the KEY as the value made a multisig execute, a
+                    // DAO execution, an auction settle and an order fill all
+                    // impossible to write.
+                    if !amount_is_a_trusted_state_read(model, entry, a)
+                        && taints_from_param(a, &unbacked, &signed, &derived)
+                    {
                         caller_chosen = true;
                     }
                 }
@@ -263,7 +271,7 @@ fn tainted_state_fields(
 /// A swap has no owner to check. The authority is that the caller paid an asset
 /// in, and the only place value can leave is back to that same caller. Minting is
 /// deliberately excluded, since creating units is never paid for by an inflow.
-fn asset_outflow_is_paid_for_by_the_caller(entry: &EntryDecl) -> bool {
+fn asset_outflow_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> bool {
     let paid_in = entry.params.iter().any(crate::model::is_asset_param);
     let mut burns_its_own_row = false;
     for stmt in &entry.body {
@@ -283,7 +291,7 @@ fn asset_outflow_is_paid_for_by_the_caller(entry: &EntryDecl) -> bool {
     if !paid_in && !burns_its_own_row {
         return false;
     }
-    if moved_amount_is_caller_chosen(entry) {
+    if moved_amount_is_caller_chosen(model, entry) {
         return false;
     }
     let mut sends_only_to_caller = true;
@@ -311,8 +319,8 @@ fn asset_outflow_is_paid_for_by_the_caller(entry: &EntryDecl) -> bool {
 /// The caller paid an asset in and every ledger row this entry touches is under
 /// the caller's own key, so it can neither credit itself from nothing nor reach
 /// anybody else's row. This is what a pool does when it books what you provided.
-fn ledger_move_is_paid_for_by_the_caller(entry: &EntryDecl) -> bool {
-    if moved_amount_is_caller_chosen(entry) {
+fn ledger_move_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> bool {
+    if moved_amount_is_caller_chosen(model, entry) {
         return false;
     }
     if !entry.params.iter().any(crate::model::is_asset_param) {
@@ -1194,14 +1202,17 @@ fn outflow_is_bounded_by_an_entitlement(model: &Model, entry: &EntryDecl) -> boo
     }
     let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
     let mut bounded = false;
+    // Only the conjuncts that MUST hold can bound anything. Descending through `&&`
+    // is safe because every side of it holds; a `!` inverts what it wraps and a `||`
+    // need not hold at all, so neither is entered. Skipping a whole guard because it
+    // contained a negation anywhere was far too coarse: `guard !paused && n <=
+    // allocation.get(caller)` threw away a perfectly good bound because a pause flag
+    // sat beside it, and a pause flag is in every serious contract.
+    let mut musts: Vec<&Expr> = Vec::new();
     for expr in exprs {
-        // A comparison under a negation means the opposite of what it reads, so a
-        // guard demanding the amount EXCEED the entitlement counted as a bound. A
-        // comparison inside a DISJUNCTION need not hold at all: `bound || amount > 0`
-        // is satisfied by the second half and disarms the first.
-        if expr_contains_negation(expr) || expr_contains_disjunction(expr) {
-            continue;
-        }
+        collect_conjuncts(expr, &mut musts);
+    }
+    for expr in musts {
         walk(expr, &mut |e| {
             if bounded {
                 return;
@@ -1601,36 +1612,6 @@ fn caller_sets_their_own_row(model: &Model, field: &str) -> bool {
     false
 }
 
-/// Whether the expression contains a negation anywhere, which inverts the meaning of
-/// every comparison beneath it.
-fn expr_contains_negation(e: &Expr) -> bool {
-    let mut found = false;
-    walk(e, &mut |x| {
-        if matches!(
-            x,
-            Expr::Unary {
-                op: UnaryOp::Not,
-                ..
-            }
-        ) {
-            found = true;
-        }
-    });
-    found
-}
-
-/// Whether the expression contains a disjunction, which means no branch of it has to
-/// hold on its own. A bound inside one bounds nothing.
-fn expr_contains_disjunction(e: &Expr) -> bool {
-    let mut found = false;
-    walk(e, &mut |x| {
-        if matches!(x, Expr::Binary { op: BinOp::Or, .. }) {
-            found = true;
-        }
-    });
-    found
-}
-
 /// Whether the entry reduces a row of the caller's own, which is what makes a bound
 /// spend down rather than merely be consulted.
 fn entry_reduces_a_caller_row(entry: &EntryDecl) -> bool {
@@ -1890,6 +1871,119 @@ fn every_grant_is_under_the_granters_own_key(model: &Model, field: &str) -> bool
         }
     }
     saw_grant && all_own
+}
+
+/// The parts of a condition that all have to hold.
+///
+/// Descends through `&&` only. A `!` inverts its operand and a `||` is satisfied by
+/// either side, so neither can contribute something that must be true.
+fn collect_conjuncts<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+    match e {
+        Expr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+            ..
+        } => {
+            collect_conjuncts(left, out);
+            collect_conjuncts(right, out);
+        }
+        Expr::Binary { op: BinOp::Or, .. }
+        | Expr::Unary {
+            op: UnaryOp::Not, ..
+        } => {}
+        other => out.push(other),
+    }
+}
+
+/// Whether the amount leaving is read straight out of state the caller cannot set.
+///
+/// The parameter in `tx_amount.get(id)` selects a row; it is not the number. What
+/// matters is whether the row's contents could have been chosen by this caller, which
+/// is the same question `bound_is_trustworthy` asks of a bound.
+fn amount_is_a_trusted_state_read(model: &Model, entry: &EntryDecl, amount: &Expr) -> bool {
+    // `let out = vault.split(tx_amount.get(id)); send(caller, out);` hands `out` to the
+    // transfer, so the amount has to be followed back to what it was bound from.
+    if let Expr::Ident(id) = amount {
+        for stmt in &entry.body {
+            if let Stmt::Let { name, value, .. } = stmt {
+                if name.text == id.text {
+                    // A split carries its amount as the first argument.
+                    if let Expr::Call { callee, args, .. } = value {
+                        if let Expr::Field { name: m, .. } = callee.as_ref() {
+                            if m.text == "split" {
+                                if let Some(inner) = args.first() {
+                                    return amount_is_a_trusted_state_read(model, entry, inner);
+                                }
+                            }
+                        }
+                    }
+                    return amount_is_a_trusted_state_read(model, entry, value);
+                }
+            }
+        }
+        return false;
+    }
+    let Expr::Call { callee, .. } = amount else {
+        return false;
+    };
+    let Expr::Field { base, name, .. } = callee.as_ref() else {
+        return false;
+    };
+    if name.text != "get" {
+        return false;
+    }
+    let Expr::Ident(m) = base.as_ref() else {
+        return false;
+    };
+    model.state.contains_key(m.text.as_str())
+        && authority_anchor_protected(model, m.text.as_str())
+        && !caller_sets_their_own_row(model, m.text.as_str())
+        // And the row must be CONSUMED here. A stored figure the entry leaves in place
+        // can be drawn again on the next call, so a proposal that is never cleared
+        // empties the vault one execution at a time.
+        && entry_consumes_the_row(entry, m.text.as_str())
+}
+
+/// Whether the entry clears or reduces a row of this map, so the same figure cannot be
+/// drawn twice.
+fn entry_consumes_the_row(entry: &EntryDecl, field: &str) -> bool {
+    let mut consumed = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if m.text != field {
+                            return;
+                        }
+                        if matches!(name.text.as_str(), "remove" | "debit") {
+                            consumed = true;
+                        }
+                        // `m.set(k, m.get(k) - n)` is the same consumption written out.
+                        if matches!(name.text.as_str(), "set" | "insert") {
+                            if let Some(v) = args.get(1) {
+                                let mut subtracts = false;
+                                let mut zeroed = false;
+                                walk(v, &mut |x| {
+                                    if matches!(x, Expr::Binary { op: BinOp::Sub, .. }) {
+                                        subtracts = true;
+                                    }
+                                    if matches!(x, Expr::Int(n) if n.text.replace('_', "") == "0") {
+                                        zeroed = true;
+                                    }
+                                });
+                                if subtracts || zeroed {
+                                    consumed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    consumed
 }
 
 fn entry_moves_asset(entry: &EntryDecl) -> bool {
