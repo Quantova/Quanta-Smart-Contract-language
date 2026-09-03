@@ -589,10 +589,10 @@ fn a_counter_that_can_be_cashed_out_is_money_again() {
 }
 
 #[test]
-fn a_full_erc20_with_approve_and_transfer_from_is_buildable() {
-    // The most used contract shape in existence. `approve` writes the caller's own
-    // allowance row and `transfer_from` spends it: both were refused, which meant the
-    // chain could not host a standard token at all.
+fn a_token_with_approve_and_transfer_from_is_buildable() {
+    // A token that lets a holder authorise a spender. `approve` writes the caller's
+    // own allowance row and `transfer_from` spends it: both were refused, which meant
+    // the chain could not host a token with delegated spending at all.
     assert!(!rejected(
         r#"contract Token {
   state { balances: Map<Q_Address, u128>; allowance: Map<Q_Address, u128>; total: u128; minter: Q_Address; }

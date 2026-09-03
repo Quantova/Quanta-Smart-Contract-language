@@ -1035,7 +1035,7 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
         // `bal.get(k)` where the map holds a u128. The wide WRITE path stores the low
         // word at the map key and the high word at word index 1, so the read is the
         // same two loads in the same order. Without this every u128 map was write
-        // only, which put an ERC20 balance, an AMM reserve and a lending collateral
+        // only, which put a token balance, a pool reserve and a lending collateral
         // row out of reach of the language entirely.
         Expr::Call { callee, args, span } => {
             if let Expr::Field { base, name, .. } = callee.as_ref() {

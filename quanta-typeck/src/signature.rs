@@ -1669,7 +1669,7 @@ fn entry_reduces_a_caller_row(entry: &EntryDecl) -> bool {
 }
 
 /// Whether writing your own row of this map only ever authorises spending your own
-/// holdings, which is what makes an ERC20 style `approve` safe.
+/// holdings, which is what makes an allowance grant safe.
 ///
 /// `allowance.set(caller, v)` looks like minting: `allowance` is a ledger map because
 /// `transfer_from` debits it, and the value written is a number the caller chose. It
@@ -1764,7 +1764,7 @@ fn entry_debits_the_row_it_gated_on(entry: &EntryDecl, field: &str) -> bool {
     debited
 }
 
-/// Whether this entry is an ERC20 style `transfer_from`.
+/// Whether this entry spends an allowance on behalf of the account it debits.
 ///
 /// Three things together make it safe, and all three are required:
 ///   - it CONSERVES the ledger: the same amount is debited from one row and credited
@@ -1774,7 +1774,7 @@ fn entry_debits_the_row_it_gated_on(entry: &EntryDecl, field: &str) -> bool {
 ///   - every GRANTING write to that gating map lands under the writer's own key, so
 ///     the permission can only ever have been given by the account being debited.
 ///
-/// Without this an ERC20 transfer_from cannot be expressed at all, and with any one of
+/// Without this a delegated spend cannot be expressed at all, and with any one of
 /// the three missing it would be a licence to move somebody else's money.
 fn spends_an_allowance_its_owner_granted(model: &Model, entry: &EntryDecl) -> bool {
     // The map this entry debits and credits by the same amount.
@@ -2610,13 +2610,13 @@ fn forged_map_authority(
     // Looking up a caller supplied key is self declared data only when somebody else
     // could have written that row. If every write to the map lands under the WRITER's
     // own key, then `allowance.get(owner)` is the named account's own prior statement,
-    // which is exactly how an ERC20 spender is authorised. Without this, transfer_from
+    // which is exactly how a delegated spender is authorised. Without this the spend
     // cannot be written at all.
     // Looking up a caller supplied key is self declared data only when the caller gets
     // something for free. `transfer_from(owner, ..)` guards `allowance.get(owner)` and
     // `balances.get(owner)` and then DEBITS both of those very rows: it spends the
     // named account down, cannot be repeated, and only succeeds if the balance was
-    // really there. Without this exemption an ERC20 transfer_from cannot be written.
+    // really there. Without this exemption a delegated spend cannot be written.
     let gate_expr = |expr: &Expr| {
         map_lookup_on_param(model, params, signed, derived, expr)
             .filter(|(map, _, _)| !entry_debits_the_row_it_gated_on(entry, map))
@@ -2991,11 +2991,11 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                     let backed = asset_amount_backer(value, &asset_params)
                                         .is_some_and(|a| used_asset_backers.insert(a));
                                     // Setting your OWN row of a map that only ever
-                                    // authorises spending your own balance is an ERC20
-                                    // `approve`, not a mint: an infinite allowance
-                                    // still moves nothing past what you hold. Refusing
-                                    // it made the most used function in smart
-                                    // contracts impossible to write.
+                                    // authorises spending your own balance is an
+                                    // allowance grant, not a mint: an unlimited
+                                    // allowance still moves nothing past what you
+                                    // hold. Refusing it made delegated spending
+                                    // impossible to express.
                                     let approves_own_holdings =
                                         writing_your_own_row_only_spends_your_own(
                                             model,

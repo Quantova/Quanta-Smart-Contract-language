@@ -32,7 +32,7 @@ fn a_u128_field_credited_to_a_wide_map_is_recorded_at_full_width() {
 }
 
 // A u128 map value used to be WRITE ONLY: the credit path stored both words but any
-// read refused to lower. That put an ERC20 balance, an AMM reserve and a lending
+// read refused to lower. That put a token balance, a pool reserve and a lending
 // collateral row out of reach of the language, so a whole class of ordinary
 // applications could not be written at all.
 const ROUNDTRIP: &str = "contract R { \
