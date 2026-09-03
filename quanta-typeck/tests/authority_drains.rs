@@ -696,3 +696,55 @@ fn an_allocation_that_is_never_reduced_is_still_refused() {
 }"#
     ));
 }
+
+#[test]
+fn a_marketplace_can_pay_the_seller_and_let_them_collect() {
+    // The buyer pays and the seller's credit rises by exactly what arrived. Refusing
+    // that as a forged anchor made a marketplace, an escrow release and a royalty
+    // split all impossible, because each pays somebody who collects later.
+    assert!(!rejected(
+        r#"contract Market {
+  state { listing_price: Map<Q_Id, u128>; listing_seller: Map<Q_Id, Q_Address>; proceeds: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }
+  entry list(id: Q_Id, price: u128) reads(listing_seller) writes(listing_price, listing_seller) { guard listing_seller.get(id) == 0; listing_price.set(id, price); listing_seller.set(id, caller); }
+  entry buy(id: Q_Id, funds: Q_Asset<QTOV>) conserves QTOV reads(listing_price, listing_seller) writes(proceeds, vault, listing_price, listing_seller) { guard funds.amount >= listing_price.get(id); proceeds.credit(listing_seller.get(id), funds.amount); listing_price.remove(id); listing_seller.remove(id); vault.merge(funds); }
+  entry withdraw(n: u128) conserves QTOV reads(proceeds) writes(proceeds, vault) { guard proceeds.get(caller) >= n; proceeds.debit(caller, n); send(caller, vault.split(n)); }
+}"#
+    ));
+}
+
+#[test]
+fn an_auction_can_refund_the_outbid_leader() {
+    // The refund is the PREVIOUS high, which the vault is still holding, so the credit
+    // is backed by an inflow that already happened.
+    assert!(!rejected(
+        r#"contract Auction {
+  state { high: u128; leader: Q_Address; refunds: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }
+  entry bid(funds: Q_Asset<QTOV>) conserves QTOV reads(high, leader) writes(high, leader, refunds, vault) { guard funds.amount > high; refunds.credit(leader, high); high = funds.amount; leader = caller; vault.merge(funds); }
+  entry reclaim(n: u128) conserves QTOV reads(refunds) writes(refunds, vault) { guard refunds.get(caller) >= n; refunds.debit(caller, n); send(caller, vault.split(n)); }
+}"#
+    ));
+}
+
+#[test]
+fn crediting_a_third_party_more_than_arrived_is_still_refused() {
+    // The credit has to be the inflow, not a number beside it.
+    assert!(rejected(
+        r#"contract Bad {
+  state { proceeds: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }
+  entry pay(who: Q_Address, n: u128, funds: Q_Asset<QTOV>) conserves QTOV writes(proceeds, vault) { proceeds.credit(who, n); vault.merge(funds); }
+  entry withdraw(n: u128) conserves QTOV reads(proceeds) writes(proceeds, vault) { guard proceeds.get(caller) >= n; proceeds.debit(caller, n); send(caller, vault.split(n)); }
+}"#
+    ));
+}
+
+#[test]
+fn crediting_with_no_inflow_at_all_is_still_refused() {
+    assert!(rejected(
+        r#"contract Bad2 {
+  state { proceeds: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }
+  entry fund(funds: Q_Asset<QTOV>) conserves QTOV writes(vault) { vault.merge(funds); }
+  entry book(who: Q_Address, n: u128) writes(proceeds) { proceeds.credit(who, n); }
+  entry withdraw(n: u128) conserves QTOV reads(proceeds) writes(proceeds, vault) { guard proceeds.get(caller) >= n; proceeds.debit(caller, n); send(caller, vault.split(n)); }
+}"#
+    ));
+}

@@ -1986,6 +1986,61 @@ fn entry_consumes_the_row(entry: &EntryDecl, field: &str) -> bool {
     consumed
 }
 
+/// Whether every write this entry makes to the field is a credit of an amount the
+/// chain actually moved in.
+///
+/// `proceeds.credit(seller_of.get(id), funds.amount)` books what the buyer just paid
+/// against the seller's name. Nothing is created: the same asset arrived in the same
+/// call. A credit of a caller named number, or of anything not tied to the inflow, is
+/// not this and stays refused.
+fn credits_only_what_was_paid_in(model: &Model, entry: &EntryDecl, field: &str) -> bool {
+    let assets: HashSet<&str> = entry
+        .params
+        .iter()
+        .filter(|p| crate::model::is_asset_param(p))
+        .map(|p| p.name.text.as_str())
+        .collect();
+    if assets.is_empty() {
+        return false;
+    }
+    let backed_scalars = asset_backed_scalars(model);
+    let mut saw = false;
+    let mut all_paid = true;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if m.text != field {
+                            return;
+                        }
+                        if matches!(name.text.as_str(), "set" | "insert" | "remove") {
+                            saw = true;
+                            all_paid = false;
+                            return;
+                        }
+                        if name.text == "credit" {
+                            saw = true;
+                            // Either the inflow itself, or a scalar that only ever
+                            // holds an inflow. An auction refunds the outbid leader
+                            // the PREVIOUS high, which the vault is still holding.
+                            let backed = args.get(1).is_some_and(|v| {
+                                asset_amount_backer(v, &assets).is_some()
+                                    || matches!(v, Expr::Ident(id)
+                                        if backed_scalars.contains(id.text.as_str()))
+                            });
+                            if !backed {
+                                all_paid = false;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    saw && all_paid
+}
+
 fn entry_moves_asset(entry: &EntryDecl) -> bool {
     let mut found = false;
     for stmt in &entry.body {
@@ -2387,6 +2442,14 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
             // A write that can only fill an empty slot cannot overwrite anyone else's
             // row, so it leaves the map usable as an anchor.
             if writes_field_only_into_an_empty_slot(model, entry, field) {
+                continue;
+            }
+            // Crediting somebody by exactly the asset that just came in is a PULL
+            // PAYMENT: the payer gave up that value and the payee can now draw it. It
+            // forges nothing, because the credit cannot exceed the inflow. Refusing it
+            // made a marketplace, an auction refund, an escrow release and a royalty
+            // split all impossible, since each pays a third party who collects later.
+            if credits_only_what_was_paid_in(model, entry, field) {
                 continue;
             }
             let (authorized, sub_tainted) = writer_authorized(model, entry, prot);
