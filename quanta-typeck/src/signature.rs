@@ -76,6 +76,9 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if let Some(err) = forged_signed_authority(model, entry) {
         return Err(err);
     }
+    if let Some(err) = unconditional_self_claim(model, entry) {
+        return Err(err);
+    }
     if let Some(err) = forged_ownership_transfer(model, entry, &signed) {
         return Err(err);
     }
@@ -90,6 +93,12 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         && !asset_outflow_is_paid_for_by_the_caller(entry)
     {
         return Err(no_asset_authority_error(entry));
+    }
+    if entry_moves_asset(entry)
+        && authority_is_membership_only(model, entry, &signed)
+        && moved_amount_is_caller_chosen(entry)
+    {
+        return Err(unbacked_membership_error(entry));
     }
     Ok(())
 }
@@ -322,6 +331,209 @@ fn ledger_move_is_paid_for_by_the_caller(entry: &EntryDecl) -> bool {
     saw && all_caller_keyed
 }
 
+/// A first claim must prove the slot was free.
+///
+/// `owner_of.set(label, caller)` under a caller supplied key is how every registry
+/// takes ownership, and it is only sound if something already established that
+/// nobody else holds `label`. An honest registry guards the slot it is about to
+/// take, `guard expiry_of.get(label) == 0 || now >= expiry_of.get(label) + grace`.
+/// With no such guard the same call seizes a name somebody else is using, and
+/// every later `owner_of.get(label) == caller` gate reads a row the attacker just
+/// wrote, so the anchor is forgeable no matter how carefully it is checked.
+fn unconditional_self_claim(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
+    let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
+    let mut claimed: Option<(String, String)> = None;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if claimed.is_some() {
+                return;
+            }
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(map) = base.as_ref() {
+                        if matches!(name.text.as_str(), "set" | "insert")
+                            && is_addr_valued(model, map.text.as_str())
+                            && matches!(args.get(1), Some(Expr::Caller { .. }))
+                        {
+                            if let Some(Expr::Ident(k)) = args.first() {
+                                if params.contains(k.text.as_str()) {
+                                    claimed = Some((map.text.clone(), k.text.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    let (map, key) = claimed?;
+    // Any guard that reads state under the same key is enough. Deciding whether it
+    // is the RIGHT condition is the author's business; the point is that the slot
+    // was consulted at all before being taken.
+    let mut conditioned = false;
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            walk(expr, &mut |e| {
+                if let Expr::Call { callee, args, .. } = e {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if let Expr::Ident(m) = base.as_ref() {
+                            if matches!(name.text.as_str(), "get" | "contains" | "has")
+                                && model.state.contains_key(m.text.as_str())
+                            {
+                                if let Some(Expr::Ident(k)) = args.first() {
+                                    if k.text == key {
+                                        conditioned = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    }
+    if conditioned {
+        return None;
+    }
+    // An unguarded self claim only matters if the map is later trusted as authority.
+    // A registry nobody gates on is just data, and refusing it would put a limit on
+    // contracts that harm no one.
+    if !map_is_read_as_caller_authority(model, &map) {
+        return None;
+    }
+    Some(TypeError::new(
+        format!(
+            "this entry `{}` writes `caller` into `{}` under a key it was given without first \
+             checking whether that key is already held, so anyone can take a slot somebody else \
+             owns and any later `{}.get(...) == caller` check reads a row they forged; guard the \
+             slot before claiming it",
+            entry.name.text, map, map
+        ),
+        entry.name.span,
+    ))
+}
+
+/// Whether the only thing standing between the caller and the asset is membership.
+///
+/// `guard members.get(caller) > 0` proves WHO is calling, never HOW MUCH they may
+/// take. An owner equality is different: `owner == caller` names one account, so
+/// what it authorises is bounded by who holds the office. A threshold read of a
+/// caller keyed row is open to anyone who has ever paid anything, so on its own it
+/// authorises an identity, not an amount.
+fn authority_is_membership_only(model: &Model, entry: &EntryDecl, signed: &HashSet<&str>) -> bool {
+    if has_protected_signed_authority(model, entry) || entry.params.iter().any(is_quorum_param) {
+        return false;
+    }
+    let mut caller_keyed = false;
+    let mut guards = Vec::new();
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => guards.push(expr),
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            guards.push(expr);
+        }
+    }
+    for expr in guards {
+        // An equality binding `caller` to a stored address is an office, not a
+        // membership, and it is judged by the anchor rules instead.
+        if office_equality(model, expr) || anchor_of_denied(model, expr).is_some() {
+            return false;
+        }
+        walk(expr, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if name.text == "get"
+                            && model.state.contains_key(m.text.as_str())
+                            && matches!(args.first(), Some(Expr::Caller { .. }))
+                        {
+                            caller_keyed = true;
+                        }
+                    }
+                }
+            }
+        });
+    }
+    caller_keyed && entry_binds_caller(model, entry, signed)
+}
+
+/// `caller == owner` or `owner_of.get(k) == caller`: an equality that names one
+/// account. `anchor_of` deliberately also counts a caller keyed membership map,
+/// which is the case this has to tell apart, so it cannot be reused here.
+fn office_equality(model: &Model, expr: &Expr) -> bool {
+    match expr {
+        Expr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+            ..
+        }
+        | Expr::Binary {
+            op: BinOp::Or,
+            left,
+            right,
+            ..
+        } => office_equality(model, left) || office_equality(model, right),
+        Expr::Binary {
+            op: BinOp::Eq,
+            left,
+            right,
+            ..
+        } => {
+            (is_caller(left)
+                && (state_addr_ident(model, right).is_some()
+                    || map_value_addr(model, right).is_some()))
+                || (is_caller(right)
+                    && (state_addr_ident(model, left).is_some()
+                        || map_value_addr(model, left).is_some()))
+        }
+        _ => false,
+    }
+}
+
+fn unbacked_membership_error(entry: &EntryDecl) -> TypeError {
+    TypeError::new(
+        format!(
+            "this entry `{}` sends an amount the caller named on the strength of a membership \
+             check alone: the guard proves the caller holds a row, not that they are owed this \
+             much, so anyone who has ever paid in can drain the whole holding; debit the caller's \
+             own row by the amount being sent, or compute the amount from what was paid",
+            entry.name.text
+        ),
+        entry.name.span,
+    )
+}
+
+/// Whether any entry gates on `field.get(k) == caller`, which is what turns a row
+/// of `field` into authority rather than data.
+fn map_is_read_as_caller_authority(model: &Model, field: &str) -> bool {
+    for entry in &model.entries {
+        let mut guards: Vec<&Expr> = Vec::new();
+        for clause in &entry.clauses {
+            match clause {
+                Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => guards.push(expr),
+                _ => {}
+            }
+        }
+        for stmt in &entry.body {
+            if let Stmt::Guard { expr, .. } = stmt {
+                guards.push(expr);
+            }
+        }
+        for expr in guards {
+            if anchor_of(model, expr) == Some(field) || anchor_of_denied(model, expr) == Some(field)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn entry_moves_asset(entry: &EntryDecl) -> bool {
     let mut found = false;
     for stmt in &entry.body {
@@ -395,8 +607,15 @@ fn forged_ownership_transfer(
     // Follow `let` aliases, otherwise `let a = to; owner.set(k, a)` slips past a check
     // that only recognises the parameter by its own name.
     let derived = param_derived_locals(entry, &params, &empty);
+    // Parking a parameter in a state field and reading it back is the same handover
+    // written in two statements, so the taint has to survive the round trip.
+    let parked = tainted_state_fields(entry, &params, &empty, &derived);
     let handed = |value: &Expr| match value {
-        Expr::Ident(id) => params.contains(id.text.as_str()) || derived.contains(id.text.as_str()),
+        Expr::Ident(id) => {
+            params.contains(id.text.as_str())
+                || derived.contains(id.text.as_str())
+                || parked.contains(id.text.as_str())
+        }
         Expr::Field { base, .. } => match base.as_ref() {
             Expr::Ident(id) => {
                 params.contains(id.text.as_str()) || derived.contains(id.text.as_str())

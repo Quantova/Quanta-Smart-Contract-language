@@ -69,10 +69,10 @@ fn membership_bought_for_one_unit_does_not_authorise_draining_the_vault() {
     assert!(rejected(
         r#"contract DClub {
   asset TOK;
-  state { members: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
-  genesis { }
+  state { token: Q_Address; members: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
+  genesis { token = deployer; }
   entry join(funds: Q_Asset<TOK>) conserves TOK writes(members, vault) { members.credit(caller, funds.amount); vault.merge(funds); }
-  entry payout(to: Q_Address, amount: u64) reads(members) writes(vault) { guard members.get(caller) > 0; send(to, vault.split(amount)); }
+  entry payout(to: Q_Address, amount: u64) reads(token, members) { guard members.get(caller) > 0; send_asset(token, to, amount); }
 }"#
     ));
 }
@@ -110,6 +110,38 @@ fn parking_a_caller_named_amount_in_state_does_not_launder_it() {
   state { token: Q_Address; pending: u128; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
   entry drain(funds: Q_Asset<TOK>, n: u128) conserves TOK writes(pending, vault) { pending = n; send_asset(token, caller, pending); vault.merge(funds); }
+}"#
+    ));
+}
+
+#[test]
+fn parking_an_address_in_state_does_not_launder_an_ownership_handover() {
+    assert!(rejected(
+        r#"contract Reg4 {
+  state { owner_of: Map<u64, Q_Address>; stash: Q_Address; }
+  genesis { stash = deployer; }
+  entry steal(label: u64, to: Q_Address) writes(owner_of, stash) { stash = to; owner_of.set(label, stash); }
+}"#
+    ));
+}
+
+#[test]
+fn a_first_claim_must_check_the_slot_is_free_before_taking_it() {
+    assert!(rejected(
+        r#"contract Reg3 {
+  state { owner_of: Map<u64, Q_Address>; }
+  entry claim(label: u64) writes(owner_of) { owner_of.set(label, caller); }
+  entry transfer(label: u64, to: Q_Address) reads(owner_of) writes(owner_of) { guard owner_of.get(label) == caller; owner_of.set(label, to); }
+}"#
+    ));
+}
+
+#[test]
+fn a_registry_that_guards_the_slot_before_claiming_it_still_compiles() {
+    assert!(!rejected(
+        r#"contract Reg5 {
+  state { owner_of: Map<u64, Q_Address>; taken: Map<u64, u64>; }
+  entry claim(label: u64) reads(taken) writes(owner_of, taken) { guard taken.get(label) == 0; owner_of.set(label, caller); taken.set(label, 1); }
 }"#
     ));
 }

@@ -18,7 +18,8 @@ const GAS: u64 = 8_000_000;
 
 const SRC: &str = "contract W { \
     state { owner_of: Map<Q_Address, Q_Address>; } \
-    entry claim(name: Q_Address) writes(owner_of) { \
+    entry claim(name: Q_Address) reads(owner_of) writes(owner_of) { \
+        guard !owner_of.contains(name); \
         owner_of.set(name, caller); \
         emit Claimed(name, caller); \
     } \
