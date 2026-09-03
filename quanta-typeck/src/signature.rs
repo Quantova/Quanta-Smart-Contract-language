@@ -97,6 +97,87 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
 /// A swap has no owner to check. The authority is that the caller paid an asset
 /// in, and the only place value can leave is back to that same caller. Minting is
 /// deliberately excluded, since creating units is never paid for by an inflow.
+
+/// Whether a value this entry moves out is an amount the caller simply named.
+///
+/// The paid exemptions exist for a pool that pays out a price it computed from what
+/// it was actually paid. They were never meant to cover an entry that hands the
+/// caller whatever number the caller passed in. The asset parameter is excluded from
+/// the taint set because the chain really did move that asset, so `funds.amount` is a
+/// fact rather than a caller claim, while a plain `n: u64` is only a request.
+fn moved_amount_is_caller_chosen(entry: &EntryDecl) -> bool {
+    let free: Vec<&str> = entry
+        .params
+        .iter()
+        .filter(|p| !crate::model::is_asset_param(p))
+        .map(|p| p.name.text.as_str())
+        .collect();
+    if free.is_empty() {
+        return false;
+    }
+    let signed: HashSet<&str> = HashSet::new();
+
+    // A parameter the caller names is legitimate as an amount when the caller's own
+    // row is debited by it, which is what remove_liquidity does when it burns shares
+    // for a payout. A debit of a literal, or of an unrelated map by nothing, backs
+    // nothing and is exactly the shape that bought free authority.
+    let mut backed: HashSet<&str> = HashSet::new();
+    for name in &free {
+        let one: HashSet<&str> = std::iter::once(*name).collect();
+        let derived = param_derived_locals(entry, &one, &signed);
+        for stmt in &entry.body {
+            stmt_exprs(stmt, &mut |e| {
+                if let Expr::Call { callee, args, .. } = e {
+                    if let Expr::Field { name: m, .. } = callee.as_ref() {
+                        if m.text == "debit"
+                            && matches!(args.first(), Some(Expr::Caller { .. }))
+                            && args
+                                .get(1)
+                                .map(|a| taints_from_param(a, &one, &signed, &derived))
+                                .unwrap_or(false)
+                        {
+                            backed.insert(*name);
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    let unbacked: HashSet<&str> = free
+        .iter()
+        .copied()
+        .filter(|n| !backed.contains(n))
+        .collect();
+    if unbacked.is_empty() {
+        return false;
+    }
+    let derived = param_derived_locals(entry, &unbacked, &signed);
+    let mut caller_chosen = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                let amount = match callee.as_ref() {
+                    Expr::Ident(id) if id.text == "send_asset" => args.get(2),
+                    Expr::Ident(id) if id.text == "send" => args.get(1),
+                    Expr::Field { name, .. }
+                        if matches!(name.text.as_str(), "credit" | "set" | "insert") =>
+                    {
+                        args.get(1)
+                    }
+                    _ => None,
+                };
+                if let Some(a) = amount {
+                    if taints_from_param(a, &unbacked, &signed, &derived) {
+                        caller_chosen = true;
+                    }
+                }
+            }
+        });
+    }
+    caller_chosen
+}
+
 fn asset_outflow_is_paid_for_by_the_caller(entry: &EntryDecl) -> bool {
     let paid_in = entry.params.iter().any(crate::model::is_asset_param);
     let mut burns_its_own_row = false;
@@ -115,6 +196,9 @@ fn asset_outflow_is_paid_for_by_the_caller(entry: &EntryDecl) -> bool {
         });
     }
     if !paid_in && !burns_its_own_row {
+        return false;
+    }
+    if moved_amount_is_caller_chosen(entry) {
         return false;
     }
     let mut sends_only_to_caller = true;
@@ -143,6 +227,9 @@ fn asset_outflow_is_paid_for_by_the_caller(entry: &EntryDecl) -> bool {
 /// the caller's own key, so it can neither credit itself from nothing nor reach
 /// anybody else's row. This is what a pool does when it books what you provided.
 fn ledger_move_is_paid_for_by_the_caller(entry: &EntryDecl) -> bool {
+    if moved_amount_is_caller_chosen(entry) {
+        return false;
+    }
     if !entry.params.iter().any(crate::model::is_asset_param) {
         return false;
     }
@@ -524,10 +611,13 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
     let mut tainted = false;
     for entry in &model.entries {
         if entry_writes_field(entry, field) {
-            if writes_field_only_under_the_caller_key(entry, field) {
-                continue;
-            }
-            let (authorized, sub_tainted) = writer_authorized(model, entry, prot);
+            // A write under the caller's own key was skipped here on the grounds that
+            // it cannot forge anybody else's entry. That is true for a balance row and
+            // false for a permission anchor, because the row it can forge is exactly
+            // the one a `caller` gate reads. Let writer_authorized decide instead: a
+            // caller keyed write backed by a real payment still passes, a free one
+            // does not.
+            let (authorized, sub_tainted) = writer_authorized(model, entry, field, prot);
             if !authorized {
                 protected = false;
                 break;
@@ -583,7 +673,79 @@ fn writes_field_only_under_the_caller_key(entry: &EntryDecl, field: &str) -> boo
     saw && all_caller_keyed
 }
 
-fn writer_authorized(model: &Model, entry: &EntryDecl, prot: &mut Prot) -> (bool, bool) {
+/// A write authorised by payment rather than by a gate.
+///
+/// An entry that credits the caller's own row by exactly the amount of an asset the
+/// chain actually moved cannot be used to self grant anything, because the row only
+/// grows by what was really paid. That is what a pool deposit does. A free write like
+/// `flags.set(caller, v)` is not this, so it still has to prove authority some other
+/// way.
+fn credits_caller_only_by_the_paid_amount(
+    _model: &Model,
+    entry: &EntryDecl,
+    field: &str,
+    _prot: &mut Prot,
+) -> bool {
+    // A write to this field is safe as the ground of a `caller` gate when it is keyed
+    // by the caller AND its amount is not a number the caller simply named. An amount
+    // computed from an asset the chain really moved, or from contract state, cannot be
+    // used to self grant. `flags.set(caller, v)` can, and is what this refuses.
+    let free: HashSet<&str> = entry
+        .params
+        .iter()
+        .filter(|p| !crate::model::is_asset_param(p))
+        .map(|p| p.name.text.as_str())
+        .collect();
+    let signed: HashSet<&str> = HashSet::new();
+    let derived = param_derived_locals(entry, &free, &signed);
+    let mut saw = false;
+    let mut all_safe = true;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if !matches!(base.as_ref(), Expr::Ident(id) if id.text == field) {
+                        return;
+                    }
+                    // Reads are not writes.
+                    if !matches!(
+                        name.text.as_str(),
+                        "credit" | "debit" | "set" | "insert" | "remove"
+                    ) {
+                        return;
+                    }
+                    saw = true;
+                    if !matches!(args.first(), Some(Expr::Caller { .. })) {
+                        all_safe = false;
+                        return;
+                    }
+                    // Shrinking your own row cannot grant anything.
+                    if name.text == "debit" {
+                        return;
+                    }
+                    let caller_named = args
+                        .get(1)
+                        .map(|a| taints_from_param(a, &free, &signed, &derived))
+                        .unwrap_or(true);
+                    if caller_named {
+                        all_safe = false;
+                    }
+                }
+            }
+        });
+    }
+    saw && all_safe
+}
+
+fn writer_authorized(
+    model: &Model,
+    entry: &EntryDecl,
+    field: &str,
+    prot: &mut Prot,
+) -> (bool, bool) {
+    if credits_caller_only_by_the_paid_amount(model, entry, field, prot) {
+        return (true, false);
+    }
     for param in &entry.params {
         if let Some(field) = authority_backing_field(param) {
             let (protected, tainted) = anchor_protected(model, field, prot);
