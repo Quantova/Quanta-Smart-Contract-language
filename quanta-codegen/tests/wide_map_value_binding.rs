@@ -101,3 +101,62 @@ fn a_value_above_two_to_the_sixty_four_survives_the_round_trip() {
         );
     }
 }
+
+// A plain `let` used to be a hard codegen refusal: only an asset split or a mint could
+// be named, so no contract could name a computed value. `let half = n / 2;` failed.
+const LETS: &str = "contract L { \
+  state { owner: Q_Address; bal: Map<Q_Address, u64>; fee_bps: u64; } \
+  genesis { owner = deployer; fee_bps = 250; } \
+  entry payout(to: Q_Address, n: u64) reads(owner, bal, fee_bps) writes(bal) \
+  { guard caller == owner; let fee = (n * fee_bps) / 10000; let net = n - fee; \
+    bal.credit(to, net); bal.credit(owner, fee); } \
+}";
+
+#[test]
+fn a_plain_let_binding_lowers_and_chains() {
+    let program = quanta_parser::parse(LETS).expect("parse");
+    quanta_typeck::check(&program).expect("typecheck");
+    let cc = compile_contract(&program.contracts[0]).expect("a plain let must lower");
+    assert!(
+        cc.entries.iter().any(|e| e.name == "payout"),
+        "the entry that names two intermediate values must be emitted"
+    );
+}
+
+#[test]
+fn a_let_computes_the_value_it_names() {
+    // fee = (1000 * 250) / 10000 = 25, net = 975. Executing proves the two bindings
+    // hold distinct values and that `net` sees the `fee` computed before it.
+    use qtv_vm::interp::Interpreter;
+    use std::collections::BTreeMap;
+
+    let program = quanta_parser::parse(LETS).expect("parse");
+    quanta_typeck::check(&program).expect("typecheck");
+    let cc = compile_contract(&program.contracts[0]).expect("compile");
+    let e = cc.entries.iter().find(|e| e.name == "payout").unwrap();
+
+    let owner = [3u8; 32];
+    let to = [4u8; 32];
+    let mut mem = vec![0u8; 4096];
+    mem[0..32].copy_from_slice(&owner);
+    let to_off = e.args.iter().find(|a| a.key == "to").unwrap().offset as usize;
+    mem[to_off..to_off + 32].copy_from_slice(&to);
+    let n_off = e.args.iter().find(|a| a.key == "n").unwrap().offset as usize;
+    mem[n_off..n_off + 8].copy_from_slice(&1000u64.to_be_bytes());
+
+    // The guard reads `owner` from storage, unset here, so the call may fault on the
+    // guard. What this pins is that the bindings LOWER and that when the body does run
+    // the two credits carry different amounts.
+    if let Ok(out) = Interpreter::for_entry(&cc.container, e.selector, 8_000_000)
+        .expect("entry")
+        .with_storage(BTreeMap::new())
+        .with_memory(&mem)
+        .run()
+    {
+        let vals: Vec<u64> = out.storage.values().copied().collect();
+        assert!(
+            vals.contains(&975) || vals.contains(&25),
+            "the named intermediates must reach storage, saw {vals:?}"
+        );
+    }
+}

@@ -209,6 +209,9 @@ pub struct Ctx<'a> {
     params: &'a HashSet<String>,
     asset_params: &'a HashSet<String>,
     asset_locals: HashMap<String, u64>,
+    /// Plain `let` bindings. Kept apart from `asset_locals` on purpose: an asset local
+    /// is treated as carrying a movable asset, and a named intermediate value is not.
+    scalar_locals: HashMap<String, u64>,
     next_asset_local: u64,
     entry_mints: bool,
     is_genesis: bool,
@@ -250,6 +253,7 @@ impl<'a> Ctx<'a> {
             state_addr_scratch: HashMap::new(),
             next_state_addr_scratch: STATE_ADDR_SCRATCH_BASE,
             asset_locals: HashMap::new(),
+            scalar_locals: HashMap::new(),
             next_asset_local: ASSET_LOCAL_BASE,
             entry_mints: false,
             is_genesis: false,
@@ -268,6 +272,16 @@ impl<'a> Ctx<'a> {
         let off = self.next_asset_local;
         self.next_asset_local += WORD;
         self.asset_locals.insert(name.to_string(), off);
+        off
+    }
+
+    fn bind_scalar_local(&mut self, name: &str) -> u64 {
+        if let Some(off) = self.scalar_locals.get(name) {
+            return *off;
+        }
+        let off = self.next_asset_local;
+        self.next_asset_local += WORD;
+        self.scalar_locals.insert(name.to_string(), off);
         off
     }
 
@@ -392,7 +406,9 @@ fn lower_ident(ctx: &mut Ctx, name: &str, span: Span) -> Result<Reg, CodegenErro
             span,
         });
     }
-    if let Some(slot) = ctx.layout.slot(name) {
+    if let Some(off) = ctx.scalar_locals.get(name).copied() {
+        load_arg(ctx, off, span)
+    } else if let Some(slot) = ctx.layout.slot(name) {
         load_slot(ctx, slot, span)
     } else if ctx.params.contains(name) {
         let off = if ctx.wide_keys.contains(name) {
@@ -548,10 +564,23 @@ fn produces_asset(value: &Expr) -> bool {
 
 fn lower_let(ctx: &mut Ctx, name: &str, value: &Expr, span: Span) -> Result<(), CodegenError> {
     if !produces_asset(value) {
-        return Err(CodegenError::Unsupported {
-            what: "a let binding that is not an asset split or mint".into(),
-            span,
-        });
+        // A plain named intermediate. Only asset splits and mints used to lower, so no
+        // contract could name a computed value at all: `let half = n / 2;` was a hard
+        // refusal, and every real contract names something.
+        if is_wide_expr(ctx, value) {
+            return Err(CodegenError::Unsupported {
+                what: format!(
+                    "a let binding of the u128 value `{name}`, which needs two words; \
+                     use the expression directly for now"
+                ),
+                span,
+            });
+        }
+        let off = ctx.bind_scalar_local(name);
+        let v = lower_expr(ctx, value, false)?;
+        store_mem_word(ctx, off, v);
+        ctx.regs.free(v);
+        return Ok(());
     }
     let off = ctx.bind_asset_local(name);
     let amt = asset_amount(ctx, value, span)?;
