@@ -235,3 +235,142 @@ fn an_auction_may_refund_the_previous_leader_from_state() {
 }"#
     ));
 }
+
+#[test]
+fn a_disjunct_office_does_not_switch_the_membership_rule_off() {
+    // `A || B` holds when either side does, so the membership half alone satisfies
+    // it and the office half guarantees nothing.
+    assert!(rejected(
+        r#"contract Club {
+  asset TOK;
+  state { owner: Q_Address; token: Q_Address; members: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
+  genesis { owner = deployer; token = deployer; }
+  entry payout(amount: u128) reads(token, members, owner) { guard members.get(caller) > 0 || owner == caller; send_asset(token, caller, amount); }
+}"#
+    ));
+}
+
+#[test]
+fn a_caller_inequality_does_not_switch_the_membership_rule_off() {
+    assert!(rejected(
+        r#"contract Club2 {
+  asset TOK;
+  state { treasury: Q_Address; token: Q_Address; members: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
+  genesis { treasury = deployer; token = deployer; }
+  entry payout(amount: u128) reads(token, members, treasury) { guard members.get(caller) > 0; guard caller != treasury; send_asset(token, caller, amount); }
+}"#
+    ));
+}
+
+#[test]
+fn every_zero_shape_backs_nothing_not_just_a_product() {
+    // A blacklist of zero spellings can never win. Only a form that cannot shrink
+    // below the parameter backs an amount.
+    for zero in [
+        "amount - amount",
+        "amount % 1",
+        "amount / (amount + 1)",
+        "amount >> 127",
+        "amount * 0 + 0",
+        "amount * 0",
+    ] {
+        let src = format!(
+            r#"contract Z {{
+  asset TOK;
+  state {{ token: Q_Address; credits: Map<Q_Address, u128>; vault: Q_Asset<TOK>; }}
+  genesis {{ token = deployer; }}
+  entry take(amount: u128) reads(token) writes(credits) {{ credits.debit(caller, {zero}); send_asset(token, caller, amount); }}
+}}"#
+        );
+        assert!(rejected(&src), "a debit of `{zero}` must back nothing");
+    }
+}
+
+#[test]
+fn reading_a_row_of_a_map_nobody_writes_earns_nothing() {
+    // `seen` is never written, so it is zero for everyone and the +1 hands every
+    // address a rank for free, which then passes as a protected anchor.
+    assert!(rejected(
+        r#"contract Vaultish {
+  asset TOK;
+  state { owner: Q_Address; token: Q_Address; ranks: Map<Q_Address, u64>; seen: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
+  genesis { owner = deployer; token = deployer; }
+  entry enroll() reads(seen) writes(ranks) { ranks.set(caller, seen.get(caller) + 1); }
+  entry payout(amount: u128) reads(token, ranks, owner) { guard ranks.get(caller) > 0 || owner == caller; send_asset(token, caller, amount); }
+}"#
+    ));
+}
+
+#[test]
+fn a_self_joined_membership_does_not_license_reassigning_a_registry() {
+    assert!(rejected(
+        r#"contract Reg {
+  state { owner_of: Map<Q_Address, Q_Address>; members: Map<Q_Address, u64>; }
+  entry join() writes(members) { members.set(caller, 1); }
+  entry hand(label: Q_Address, to: Q_Address) reads(members) writes(owner_of) { guard members.get(caller) > 0; owner_of.set(label, to); }
+}"#
+    ));
+}
+
+#[test]
+fn a_nested_field_still_counts_as_handing_over_a_parameter() {
+    assert!(rejected(
+        r#"contract Reg2 {
+  state { owner_of: Map<Q_Address, Q_Address>; }
+  entry hand(order: HandOrder) writes(owner_of) { owner_of.set(order.label, order.inner.to); }
+}"#
+    ));
+}
+
+#[test]
+fn a_membership_guard_does_not_license_draining_the_native_pool() {
+    // `send(caller, pool.split(n))` moves the native pool and never reaches the
+    // asset path, so the same drain was allowed in native form.
+    assert!(rejected(
+        r#"contract A1 {
+  state { pool: Q_Asset<QTOV>; stakes: Map<Q_Address, u128>; }
+  entry stake(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, stakes) { guard funds.amount > 0; pool.merge(funds); stakes.credit(caller, funds.amount); }
+  entry drain(amount: u128) conserves QTOV reads(stakes) writes(pool) { guard stakes.get(caller) > 0; let out = pool.split(amount); send(caller, out); }
+}"#
+    ));
+}
+
+#[test]
+fn an_amount_parked_in_a_self_written_row_by_another_entry_is_still_the_callers() {
+    assert!(rejected(
+        r#"contract Club3 {
+  asset TOK;
+  state { token: Q_Address; members: Map<Q_Address, u64>; request: Map<Q_Address, u128>; vault: Q_Asset<TOK>; }
+  genesis { token = deployer; }
+  entry request_payout(amount: u128) writes(request) { request.set(caller, amount); }
+  entry take() reads(members, token, request) { guard members.get(caller) > 0; send_asset(token, caller, request.get(caller)); }
+}"#
+    ));
+}
+
+#[test]
+fn a_guard_on_a_map_the_claim_never_restamps_is_not_a_check() {
+    // `banned` is never written by anybody, so the guard is true for every label
+    // forever and the name is seizable from its owner.
+    assert!(rejected(
+        r#"contract Names {
+  state { owner_of: Map<Q_Address, Q_Address>; resolved_of: Map<Q_Address, Q_Address>; banned: Map<Q_Address, u64>; }
+  entry claim(label: Q_Address) reads(banned) writes(owner_of) { guard banned.get(label) == 0; owner_of.set(label, caller); }
+  entry set_resolved(label: Q_Address, target: Q_Address) reads(owner_of) writes(resolved_of) { guard owner_of.get(label) == caller; resolved_of.set(label, target); }
+}"#
+    ));
+}
+
+#[test]
+fn an_owner_signed_allocation_with_a_real_debit_still_compiles() {
+    // The sound shape of the same contract must keep working.
+    assert!(!rejected(
+        r#"contract Payouts {
+  asset TOK;
+  state { owner: Q_Address; token: Q_Address; owed: Map<Q_Address, u128>; vault: Q_Asset<TOK>; }
+  genesis { owner = deployer; token = deployer; }
+  entry allocate(order: AllocOrder signed by owner) writes(owed) { owed.set(order.who, order.amount); }
+  entry withdraw(amount: u128) reads(owed, token) writes(owed) { guard amount > 0; guard owed.get(caller) >= amount; owed.debit(caller, amount); send_asset(token, caller, amount); }
+}"#
+    ));
+}

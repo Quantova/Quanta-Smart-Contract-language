@@ -94,9 +94,13 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     {
         return Err(no_asset_authority_error(entry));
     }
-    if entry_moves_asset(entry)
+    // `send(caller, pool.split(n))` moves the NATIVE pool and never reaches
+    // `entry_moves_asset`, so a membership guard licensed an arbitrary native
+    // withdrawal while the same shape over `send_asset` was refused.
+    if (entry_moves_asset(entry) || entry_moves_ledger_value(model, entry))
         && authority_is_membership_only(model, entry, &signed)
-        && moved_amount_is_caller_chosen(entry)
+        && (moved_amount_is_caller_chosen(entry)
+            || outflow_amount_is_a_self_written_row(model, entry))
     {
         return Err(unbacked_membership_error(entry));
     }
@@ -139,7 +143,7 @@ fn moved_amount_is_caller_chosen(entry: &EntryDecl) -> bool {
                             && args
                                 .get(1)
                                 .map(|a| {
-                                    !is_provably_zero(a)
+                                    debit_covers_the_parameter(a, name)
                                         && taints_from_param(a, &one, &signed, &derived)
                                 })
                                 .unwrap_or(false)
@@ -172,6 +176,7 @@ fn moved_amount_is_caller_chosen(entry: &EntryDecl) -> bool {
                 let amount = match callee.as_ref() {
                     Expr::Ident(id) if id.text == "send_asset" => args.get(2),
                     Expr::Ident(id) if id.text == "send" => args.get(1),
+                    Expr::Field { name, .. } if name.text == "split" => args.first(),
                     Expr::Field { name, .. }
                         if matches!(name.text.as_str(), "credit" | "set" | "insert") =>
                     {
@@ -191,13 +196,28 @@ fn moved_amount_is_caller_chosen(entry: &EntryDecl) -> bool {
 }
 
 /// Whether an expression reads a row keyed by the caller, such as `pending.get(caller)`.
-fn reads_a_caller_row(expr: &Expr) -> bool {
+/// Whether the value reads a caller row that could actually hold something.
+///
+/// A row of a map NO entry ever writes is zero for everybody forever, so reading
+/// it earns nothing: `ranks.set(caller, seen.get(caller) + 1)` against an unwritten
+/// `seen` handed every address a rank of exactly one for free, and that rank then
+/// passed as a protected authority anchor. The map has to be written somewhere
+/// before a read of it counts as having earned anything.
+fn reads_a_caller_row(model: &Model, expr: &Expr) -> bool {
     let mut found = false;
     walk(expr, &mut |e| {
         if let Expr::Call { callee, args, .. } = e {
-            if let Expr::Field { name, .. } = callee.as_ref() {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
                 if name.text == "get" && matches!(args.first(), Some(Expr::Caller { .. })) {
-                    found = true;
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if model
+                            .entries
+                            .iter()
+                            .any(|w| entry_writes_field(w, m.text.as_str()))
+                        {
+                            found = true;
+                        }
+                    }
                 }
             }
         }
@@ -377,11 +397,19 @@ fn unconditional_self_claim(model: &Model, entry: &EntryDecl) -> Option<TypeErro
                 if let Expr::Call { callee, args, .. } = e {
                     if let Expr::Field { base, name, .. } = callee.as_ref() {
                         if let Expr::Ident(m) = base.as_ref() {
+                            // The guard has to be on state this entry then RESTAMPS
+                            // under the same key. `guard banned.get(label) == 0`
+                            // against a map no entry ever writes is true for every
+                            // label forever, so it reads like a check and gates
+                            // nothing: the name is seizable from its owner and every
+                            // later `owner_of.get(label) == caller` reads a forged row.
                             if matches!(name.text.as_str(), "get" | "contains" | "has")
                                 && model.state.contains_key(m.text.as_str())
                             {
-                                if let Some(Expr::Ident(k)) = args.first() {
-                                    if k.text == key {
+                                if let Some(k @ Expr::Ident(kid)) = args.first() {
+                                    if kid.text == key
+                                        && entry_writes_field_under_key(entry, m.text.as_str(), k)
+                                    {
                                         conditioned = true;
                                     }
                                 }
@@ -439,8 +467,11 @@ fn authority_is_membership_only(model: &Model, entry: &EntryDecl, signed: &HashS
     }
     for expr in guards {
         // An equality binding `caller` to a stored address is an office, not a
-        // membership, and it is judged by the anchor rules instead.
-        if office_equality(model, expr) || anchor_of_denied(model, expr).is_some() {
+        // membership, and it is judged by the anchor rules instead. A DENIAL such as
+        // `caller != treasury` is not an office: it excludes one account and grants
+        // nothing, so letting it switch this rule off meant one throwaway sanity
+        // guard reopened the whole drain.
+        if office_equality(model, expr) {
             return false;
         }
         walk(expr, &mut |e| {
@@ -466,18 +497,24 @@ fn authority_is_membership_only(model: &Model, entry: &EntryDecl, signed: &HashS
 /// which is the case this has to tell apart, so it cannot be reused here.
 fn office_equality(model: &Model, expr: &Expr) -> bool {
     match expr {
+        // A conjunction holds only if BOTH sides hold, so one office conjunct is
+        // enough to bind the caller. A DISJUNCTION holds if EITHER side does, so it
+        // only guarantees an office when both sides are offices. Treating them the
+        // same let `members.get(caller) > 0 || owner == caller` count as an office
+        // while a bare membership satisfied it, which switched the membership rule
+        // off and handed the vault to any member.
         Expr::Binary {
             op: BinOp::And,
             left,
             right,
             ..
-        }
-        | Expr::Binary {
+        } => office_equality(model, left) || office_equality(model, right),
+        Expr::Binary {
             op: BinOp::Or,
             left,
             right,
             ..
-        } => office_equality(model, left) || office_equality(model, right),
+        } => office_equality(model, left) && office_equality(model, right),
         Expr::Binary {
             op: BinOp::Eq,
             left,
@@ -643,7 +680,7 @@ fn asset_backed_scalars(model: &Model) -> HashSet<String> {
 /// row somebody already holds, so it cannot forge anyone else's authority and the map
 /// stays a sound anchor. Without this, every write once shape is unbuildable, which
 /// rules out vesting, subscriptions, one shot registration and commit reveal.
-fn writes_field_only_into_an_empty_slot(entry: &EntryDecl, field: &str) -> bool {
+fn writes_field_only_into_an_empty_slot(model: &Model, entry: &EntryDecl, field: &str) -> bool {
     let mut guards: Vec<&Expr> = Vec::new();
     for clause in &entry.clauses {
         match clause {
@@ -656,8 +693,11 @@ fn writes_field_only_into_an_empty_slot(entry: &EntryDecl, field: &str) -> bool 
             guards.push(expr);
         }
     }
-    // Whether some guard proves this exact key is empty. Scanned per write rather than
-    // collected up front, so no borrow has to outlive the walk.
+    // Whether some guard proves this exact key is free. A registry proves it through
+    // a SIBLING map keyed the same way, `guard expiry_of.get(label) == 0`, not
+    // through the owner map itself, so any state map counts. To stop that becoming a
+    // loophole the entry must also WRITE that sibling under the same key, which is
+    // what makes the guard false on every later call and the claim genuinely one shot.
     let proves_empty = |key: &Expr| {
         let mut found = false;
         for expr in &guards {
@@ -665,6 +705,11 @@ fn writes_field_only_into_an_empty_slot(entry: &EntryDecl, field: &str) -> bool 
                 if found {
                     return;
                 }
+                let probe = |m: &str, k: &Expr| {
+                    expr_eq(k, key)
+                        && model.state.contains_key(m)
+                        && entry_writes_field_under_key(entry, m, key)
+                };
                 match e {
                     Expr::Binary {
                         op: BinOp::Eq,
@@ -672,10 +717,10 @@ fn writes_field_only_into_an_empty_slot(entry: &EntryDecl, field: &str) -> bool 
                         right,
                         ..
                     } => {
-                        for (a, b) in [(left, right), (right, left)] {
-                            if matches!(b.as_ref(), Expr::Int(n) if n.text == "0") {
-                                if let Some(k) = field_get_key(field, a) {
-                                    if expr_eq(k, key) {
+                        for (x, y) in [(left, right), (right, left)] {
+                            if matches!(y.as_ref(), Expr::Int(n) if n.text == "0") {
+                                if let Some((m, k)) = any_map_get(x) {
+                                    if probe(m, k) {
                                         found = true;
                                     }
                                 }
@@ -687,8 +732,8 @@ fn writes_field_only_into_an_empty_slot(entry: &EntryDecl, field: &str) -> bool 
                         expr,
                         ..
                     } => {
-                        if let Some(k) = field_contains_key(field, expr) {
-                            if expr_eq(k, key) {
+                        if let Some((m, k)) = any_map_contains(expr) {
+                            if probe(m, k) {
                                 found = true;
                             }
                         }
@@ -729,6 +774,56 @@ fn writes_field_only_into_an_empty_slot(entry: &EntryDecl, field: &str) -> bool 
     saw && all_proven
 }
 
+/// `<map>.get(k)` for any map, returning the map name and the key.
+fn any_map_get(e: &Expr) -> Option<(&str, &Expr)> {
+    if let Expr::Call { callee, args, .. } = e {
+        if let Expr::Field { base, name, .. } = callee.as_ref() {
+            if let Expr::Ident(m) = base.as_ref() {
+                if name.text == "get" {
+                    return args.first().map(|k| (m.text.as_str(), k));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn any_map_contains(e: &Expr) -> Option<(&str, &Expr)> {
+    if let Expr::Call { callee, args, .. } = e {
+        if let Expr::Field { base, name, .. } = callee.as_ref() {
+            if let Expr::Ident(m) = base.as_ref() {
+                if matches!(name.text.as_str(), "contains" | "has") {
+                    return args.first().map(|k| (m.text.as_str(), k));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Whether the entry writes `field` under exactly `key`, which is what turns a
+/// sibling emptiness guard into a one shot claim rather than a decoration.
+fn entry_writes_field_under_key(entry: &EntryDecl, field: &str, key: &Expr) -> bool {
+    let mut hit = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if m.text == field
+                            && matches!(name.text.as_str(), "set" | "insert" | "credit")
+                            && args.first().is_some_and(|k| expr_eq(k, key))
+                        {
+                            hit = true;
+                        }
+                    }
+                }
+            }
+        });
+    }
+    hit
+}
+
 fn field_get_key<'a>(field: &str, e: &'a Expr) -> Option<&'a Expr> {
     if let Expr::Call { callee, args, .. } = e {
         if let Expr::Field { base, name, .. } = callee.as_ref() {
@@ -753,6 +848,133 @@ fn field_contains_key<'a>(field: &str, e: &'a Expr) -> Option<&'a Expr> {
         }
     }
     None
+}
+
+/// Whether debiting the caller by `e` really costs them at least `param`.
+///
+/// This is a WHITELIST on purpose. The previous rule asked whether an expression
+/// was provably zero, and a blacklist of zero shapes can never win: `n * 0` was
+/// caught, then `n - n`, `n % 1`, `n / (n + 1)`, `n >> 127` and `n * 0 + 0` all
+/// walked straight through. Only a form that cannot shrink below the parameter
+/// backs an amount, so anything not named here backs nothing.
+fn debit_covers_the_parameter(e: &Expr, param: &str) -> bool {
+    match e {
+        // The parameter itself, or a local that is exactly it.
+        Expr::Ident(id) => id.text == param,
+        // Scaling UP by a literal of at least one, either operand order.
+        Expr::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+            ..
+        } => {
+            (debit_covers_the_parameter(left, param) && literal_at_least_one(right))
+                || (debit_covers_the_parameter(right, param) && literal_at_least_one(left))
+        }
+        // Adding anything only ever costs more.
+        Expr::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        } => debit_covers_the_parameter(left, param) || debit_covers_the_parameter(right, param),
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            debit_covers_the_parameter(expr, param)
+        }
+        // Subtraction, division, remainder and shifts can all reach zero while still
+        // mentioning the parameter, which is exactly how the fold was defeated.
+        _ => false,
+    }
+}
+
+fn literal_at_least_one(e: &Expr) -> bool {
+    match e {
+        Expr::Int(n) => n.text.parse::<u128>().map(|v| v >= 1).unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// Whether some entry can write this anchor while carrying no authority at all.
+///
+/// This is the precise shape of a forged ownership check: `entry join() {
+/// members.set(caller, 1); }` moves no value so it needs no authority of its own,
+/// and then `guard members.get(caller) > 0` licenses reassigning every slot in the
+/// registry. Requiring the anchor to be fully protected instead is too strong: an
+/// expiry gated Dutch auction re-claim is authorised by payment and time, not by a
+/// caller binding, and demanding protection would make a real registry unbuildable.
+fn anchor_writable_without_authority(model: &Model, field: &str) -> bool {
+    for entry in &model.entries {
+        if !entry_writes_field(entry, field) {
+            continue;
+        }
+        let signed: HashSet<&str> = entry
+            .params
+            .iter()
+            .filter(|p| p.signed_by.is_some())
+            .map(|p| p.name.text.as_str())
+            .collect();
+        let paid = entry.params.iter().any(crate::model::is_asset_param);
+        let quorum = entry.params.iter().any(is_quorum_param);
+        let bound = entry_binds_caller(model, entry, &signed);
+        let mut guarded = false;
+        for stmt in &entry.body {
+            if let Stmt::Guard { .. } = stmt {
+                guarded = true;
+            }
+        }
+        if !bound && !paid && !quorum && signed.is_empty() && !guarded {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether the amount leaving is read out of a caller row the caller can set.
+///
+/// `request_payout(n) { request.set(caller, n); }` then `take() { send_asset(token,
+/// caller, request.get(caller)); }` launders a caller chosen number across two
+/// entries, so no single entry ever shows a free parameter reaching a transfer and
+/// the within entry taint sees nothing. If the map the amount is read from is not a
+/// protected anchor, the number in it is still whatever the caller last wrote.
+fn outflow_amount_is_a_self_written_row(model: &Model, entry: &EntryDecl) -> bool {
+    let mut found = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if found {
+                return;
+            }
+            if let Expr::Call { callee, args, .. } = e {
+                let amount = match callee.as_ref() {
+                    Expr::Ident(id) if id.text == "send_asset" || id.text == "mint_asset" => {
+                        args.get(2)
+                    }
+                    Expr::Ident(id) if id.text == "send" => args.get(1),
+                    Expr::Field { name, .. } if name.text == "split" => args.first(),
+                    _ => None,
+                };
+                let Some(a) = amount else { return };
+                walk(a, &mut |x| {
+                    if found {
+                        return;
+                    }
+                    if let Expr::Call { callee, args, .. } = x {
+                        if let Expr::Field { base, name, .. } = callee.as_ref() {
+                            if let Expr::Ident(m) = base.as_ref() {
+                                if name.text == "get"
+                                    && matches!(args.first(), Some(Expr::Caller { .. }))
+                                    && model.state.contains_key(m.text.as_str())
+                                    && !authority_anchor_protected(model, m.text.as_str())
+                                {
+                                    found = true;
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    }
+    found
 }
 
 fn entry_moves_asset(entry: &EntryDecl) -> bool {
@@ -815,8 +1037,16 @@ fn forged_ownership_transfer(
             // `owner_of.get(label) == caller`, is a real ownership check. Whether that
             // anchor is itself forgeable is judged separately by forged_caller_anchor,
             // so requiring protection here would reject an honest claim check too.
-            if anchor_of(model, expr).is_some() {
-                bound_to_caller = true;
+            // The anchor must be PROTECTED, not merely present. `anchor_of` also
+            // returns membership maps, so a `members` map any caller writes to
+            // itself counted as a real ownership check: join once, then reassign
+            // every name in the registry. Every other consumer of `anchor_of` in
+            // this file pairs it with `authority_anchor_protected`; this one did
+            // not, and that was the whole hole.
+            if let Some(a) = anchor_of(model, expr) {
+                if !anchor_writable_without_authority(model, a) {
+                    bound_to_caller = true;
+                }
             }
         }
     }
@@ -831,19 +1061,19 @@ fn forged_ownership_transfer(
     // Parking a parameter in a state field and reading it back is the same handover
     // written in two statements, so the taint has to survive the round trip.
     let parked = tainted_state_fields(entry, &params, &empty, &derived);
-    let handed = |value: &Expr| match value {
-        Expr::Ident(id) => {
-            params.contains(id.text.as_str())
-                || derived.contains(id.text.as_str())
-                || parked.contains(id.text.as_str())
+    // Follow a field chain of ANY depth to its root. Matching only one level meant
+    // `owner_of.set(order.label, order.inner.to)` was not seen as handing over a
+    // parameter, so nesting the address one struct deeper reassigned every slot.
+    fn root_ident(e: &Expr) -> Option<&str> {
+        match e {
+            Expr::Ident(id) => Some(id.text.as_str()),
+            Expr::Field { base, .. } => root_ident(base),
+            _ => None,
         }
-        Expr::Field { base, .. } => match base.as_ref() {
-            Expr::Ident(id) => {
-                params.contains(id.text.as_str()) || derived.contains(id.text.as_str())
-            }
-            _ => false,
-        },
-        _ => false,
+    }
+    let handed = |value: &Expr| {
+        root_ident(value)
+            .is_some_and(|r| params.contains(r) || derived.contains(r) || parked.contains(r))
     };
     let mut forged: Option<String> = None;
     for stmt in &entry.body {
@@ -1139,7 +1369,7 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
             }
             // A write that can only fill an empty slot cannot overwrite anyone else's
             // row, so it leaves the map usable as an anchor.
-            if writes_field_only_into_an_empty_slot(entry, field) {
+            if writes_field_only_into_an_empty_slot(model, entry, field) {
                 continue;
             }
             let (authorized, sub_tainted) = writer_authorized(model, entry, prot);
@@ -1206,7 +1436,7 @@ fn writes_field_only_under_the_caller_key(entry: &EntryDecl, field: &str) -> boo
 /// `flags.set(caller, v)` is not this, so it still has to prove authority some other
 /// way.
 fn credits_caller_only_by_the_paid_amount(
-    _model: &Model,
+    model: &Model,
     entry: &EntryDecl,
     field: &str,
     _prot: &mut Prot,
@@ -1264,7 +1494,7 @@ fn credits_caller_only_by_the_paid_amount(
                     let earned = match args.get(1) {
                         Some(a) => {
                             taints_from_param(a, &assets, &signed, &no_locals)
-                                || reads_a_caller_row(a)
+                                || reads_a_caller_row(model, a)
                         }
                         None => false,
                     };
@@ -1771,8 +2001,11 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                 // withdraw it, and never paid out alone would still let
                                 // an existing row be overwritten.
                                 let schedule_write =
-                                    writes_field_only_into_an_empty_slot(entry, map.text.as_str())
-                                        && !map_is_ever_paid_out(model, map.text.as_str());
+                                    writes_field_only_into_an_empty_slot(
+                                        model,
+                                        entry,
+                                        map.text.as_str(),
+                                    ) && !map_is_ever_paid_out(model, map.text.as_str());
                                 if matches!(name.text.as_str(), "set" | "insert")
                                     && is_addr_keyed(model, map.text.as_str())
                                     && is_amount_valued(model, map.text.as_str())
@@ -3223,6 +3456,24 @@ mod tests {
 
     #[test]
     fn a_caller_membership_value_check_is_real_authority() {
+        // Membership is real authority for GATING, and it still is: the amount here
+        // is debited from the caller's own row, so belonging decides who may act and
+        // the row decides how much.
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { allowed: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry payout(order: Order) conserves QTOV writes(vault, allowed)
+                { guard allowed.get(caller) >= 1; guard allowed.contains(order.to);
+                  allowed.debit(caller, order.amount);
+                  send(order.to, vault.split(order.amount)); }
+            }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn a_caller_membership_does_not_authorise_an_arbitrary_amount() {
+        // The same entry without the debit lets any one member name any number and
+        // empty the vault. Belonging is an identity, never an entitlement.
         let src = r#"import { Q_Asset } from "quantova/primitives";
             contract C {
                 state { allowed: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
@@ -3230,7 +3481,10 @@ mod tests {
                 { guard allowed.get(caller) >= 1; guard allowed.contains(order.to);
                   send(order.to, vault.split(order.amount)); }
             }"#;
-        ok(src);
+        assert!(
+            error_for(src).contains("membership"),
+            "a membership drain must be refused"
+        );
     }
 
     #[test]
