@@ -306,24 +306,36 @@ fn forged_ownership_transfer(
     if entry_binds_caller(model, entry, signed) || has_protected_signed_authority(model, entry) {
         return None;
     }
-    let mut guarded_on_caller = false;
+    // A guard that merely MENTIONS `caller` used to switch this check off entirely,
+    // so `guard caller != someone` was enough to hand ownership to a parameter. Only
+    // a guard that actually binds `caller` to a protected anchor counts, which is
+    // what `owner_of.get(label) == caller` does and an inequality does not.
+    let mut bound_to_caller = false;
     for stmt in &entry.body {
-        if matches!(stmt, Stmt::Guard { .. }) {
-            stmt_exprs(stmt, &mut |e| {
-                if matches!(e, Expr::Caller { .. }) {
-                    guarded_on_caller = true;
-                }
-            });
+        if let Stmt::Guard { expr, .. } = stmt {
+            // An equality that binds `caller` to a state address, such as
+            // `owner_of.get(label) == caller`, is a real ownership check. Whether that
+            // anchor is itself forgeable is judged separately by forged_caller_anchor,
+            // so requiring protection here would reject an honest claim check too.
+            if anchor_of(model, expr).is_some() {
+                bound_to_caller = true;
+            }
         }
     }
-    if guarded_on_caller {
+    if bound_to_caller {
         return None;
     }
     let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
+    let empty: HashSet<&str> = HashSet::new();
+    // Follow `let` aliases, otherwise `let a = to; owner.set(k, a)` slips past a check
+    // that only recognises the parameter by its own name.
+    let derived = param_derived_locals(entry, &params, &empty);
     let handed = |value: &Expr| match value {
-        Expr::Ident(id) => params.contains(id.text.as_str()),
+        Expr::Ident(id) => params.contains(id.text.as_str()) || derived.contains(id.text.as_str()),
         Expr::Field { base, .. } => match base.as_ref() {
-            Expr::Ident(id) => params.contains(id.text.as_str()),
+            Expr::Ident(id) => {
+                params.contains(id.text.as_str()) || derived.contains(id.text.as_str())
+            }
             _ => false,
         },
         _ => false,
@@ -337,7 +349,7 @@ fn forged_ownership_transfer(
             if let Expr::Call { callee, args, .. } = e {
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
                     if let Expr::Ident(map) = base.as_ref() {
-                        if matches!(name.text.as_str(), "set" | "insert")
+                        if matches!(name.text.as_str(), "set" | "insert" | "remove")
                             && is_addr_valued(model, map.text.as_str())
                         {
                             if let Some(value) = args.get(1) {
@@ -611,12 +623,15 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
     let mut tainted = false;
     for entry in &model.entries {
         if entry_writes_field(entry, field) {
-            // A write under the caller's own key was skipped here on the grounds that
-            // it cannot forge anybody else's entry. That is true for a balance row and
-            // false for a permission anchor, because the row it can forge is exactly
-            // the one a `caller` gate reads. Let writer_authorized decide instead: a
-            // caller keyed write backed by a real payment still passes, a free one
-            // does not.
+            // A write under the caller's own key is only harmless if the VALUE it
+            // writes is not one the caller simply named. `shares.credit(caller, priced)`
+            // cannot forge authority, `flags.set(caller, v)` can, because the row it
+            // forges is exactly the one a `caller` gate reads.
+            if writes_field_only_under_the_caller_key(entry, field)
+                && credits_caller_only_by_the_paid_amount(model, entry, field, prot)
+            {
+                continue;
+            }
             let (authorized, sub_tainted) = writer_authorized(model, entry, field, prot);
             if !authorized {
                 protected = false;
@@ -743,9 +758,6 @@ fn writer_authorized(
     field: &str,
     prot: &mut Prot,
 ) -> (bool, bool) {
-    if credits_caller_only_by_the_paid_amount(model, entry, field, prot) {
-        return (true, false);
-    }
     for param in &entry.params {
         if let Some(field) = authority_backing_field(param) {
             let (protected, tainted) = anchor_protected(model, field, prot);
