@@ -3,7 +3,7 @@
 
 use crate::error::TypeError;
 use crate::model::{asset_inner, is_quorum_param, Model};
-use quanta_ast::{BinOp, Clause, EntryDecl, Expr, GenericArg, Param, Stmt, UnaryOp};
+use quanta_ast::{AssignOp, BinOp, Clause, EntryDecl, Expr, GenericArg, Param, Stmt, UnaryOp};
 use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
 
@@ -477,7 +477,10 @@ fn authority_is_membership_only(model: &Model, entry: &EntryDecl, signed: &HashS
             if let Expr::Call { callee, args, .. } = e {
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
                     if let Expr::Ident(m) = base.as_ref() {
-                        if name.text == "get"
+                        // `.contains(caller)` and `.has(caller)` are the same
+                        // membership question as `.get(caller)`, and spelling it either
+                        // of the other two ways turned this whole rule off.
+                        if matches!(name.text.as_str(), "get" | "contains" | "has")
                             && model.state.contains_key(m.text.as_str())
                             && matches!(args.first(), Some(Expr::Caller { .. }))
                         {
@@ -884,7 +887,12 @@ fn debit_covers_the_parameter(e: &Expr, param: &str) -> bool {
 
 fn literal_at_least_one(e: &Expr) -> bool {
     match e {
-        Expr::Int(n) => n.text.parse::<u128>().map(|v| v >= 1).unwrap_or(false),
+        Expr::Int(n) => n
+            .text
+            .replace('_', "")
+            .parse::<u128>()
+            .map(|v| v >= 1)
+            .unwrap_or(false),
         _ => false,
     }
 }
@@ -1074,7 +1082,12 @@ fn entry_requires_a_positive_amount(entry: &EntryDecl, param: &str) -> bool {
     // price: `payment.amount >= base * years` is a real charge. What does not count is
     // a bound of literal zero, which every payment satisfies, and no bound at all.
     let real_bound = |b: &Expr| match b {
-        Expr::Int(n) => n.text.parse::<u128>().map(|v| v >= 1).unwrap_or(false),
+        Expr::Int(n) => n
+            .text
+            .replace('_', "")
+            .parse::<u128>()
+            .map(|v| v >= 1)
+            .unwrap_or(false),
         _ => true,
     };
     for expr in exprs {
@@ -1182,8 +1195,10 @@ fn outflow_is_bounded_by_an_entitlement(model: &Model, entry: &EntryDecl) -> boo
     let mut bounded = false;
     for expr in exprs {
         // A comparison under a negation means the opposite of what it reads, so a
-        // guard demanding the amount EXCEED the entitlement counted as a bound.
-        if expr_contains_negation(expr) {
+        // guard demanding the amount EXCEED the entitlement counted as a bound. A
+        // comparison inside a DISJUNCTION need not hold at all: `bound || amount > 0`
+        // is satisfied by the second half and disarms the first.
+        if expr_contains_negation(expr) || expr_contains_disjunction(expr) {
             continue;
         }
         walk(expr, &mut |e| {
@@ -1225,7 +1240,15 @@ fn outflow_is_bounded_by_an_entitlement(model: &Model, entry: &EntryDecl) -> boo
             // amount * 2` while crediting a separate `borrowed` row lets the same
             // collateral be drawn against forever. Whatever the entry adds to must
             // appear in the bound, which is what makes it cumulative.
+            // An entry that records NOTHING has a per call bound, and the call can
+            // simply be made again: `guard collateral.get(caller) >= amount` then
+            // sending `amount`, with the collateral untouched, drains the pool one
+            // call at a time. A withdrawal has to either reduce the entitlement it
+            // spends or accrue against it.
             let accrued = accumulating_state(entry);
+            if accrued.is_empty() && !entry_reduces_a_caller_row(entry) {
+                return;
+            }
             if !accrued.is_empty() {
                 let names = std::iter::once(large)
                     .chain(std::iter::once(small))
@@ -1367,9 +1390,15 @@ fn bound_is_trustworthy(model: &Model, e: &Expr) -> bool {
 fn accumulating_state(entry: &EntryDecl) -> HashSet<String> {
     let mut out: HashSet<String> = HashSet::new();
     for stmt in &entry.body {
-        // `spent_today += amount`
-        if let Stmt::Assign { target, value, .. } = stmt {
+        // `spent_today += amount` is `Assign { op: Add, value: amount }`: the target
+        // does NOT appear in the value, so looking for a self reference missed the
+        // idiomatic spelling entirely. A compound assignment is accrual by definition.
+        if let Stmt::Assign {
+            target, op, value, ..
+        } = stmt
+        {
             if let Expr::Ident(id) = target {
+                let compound = matches!(op, AssignOp::Add | AssignOp::Sub);
                 let mut self_ref = false;
                 walk(value, &mut |x| {
                     if let Expr::Ident(v) = x {
@@ -1378,7 +1407,7 @@ fn accumulating_state(entry: &EntryDecl) -> HashSet<String> {
                         }
                     }
                 });
-                if self_ref {
+                if compound || self_ref {
                     out.insert(id.text.clone());
                 }
             }
@@ -1387,8 +1416,29 @@ fn accumulating_state(entry: &EntryDecl) -> HashSet<String> {
             if let Expr::Call { callee, args, .. } = e {
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
                     if let Expr::Ident(m) = base.as_ref() {
-                        if name.text == "credit"
-                            && matches!(args.first(), Some(Expr::Caller { .. }))
+                        // `credit` is one spelling of accrual. `set(caller, get(caller)
+                        // + n)` is the same accounting written out, and the rule has to
+                        // see both or the idiomatic form escapes the cumulative check.
+                        if matches!(args.first(), Some(Expr::Caller { .. }))
+                            && (name.text == "credit"
+                                || (matches!(name.text.as_str(), "set" | "insert")
+                                    && args.get(1).is_some_and(|v| {
+                                        let mut reads_self = false;
+                                        walk(v, &mut |x| {
+                                            if let Expr::Call { callee, .. } = x {
+                                                if let Expr::Field { base, name, .. } =
+                                                    callee.as_ref()
+                                                {
+                                                    if let Expr::Ident(mm) = base.as_ref() {
+                                                        if mm.text == m.text && name.text == "get" {
+                                                            reads_self = true;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        });
+                                        reads_self
+                                    })))
                         {
                             out.insert(m.text.clone());
                         }
@@ -1413,12 +1463,32 @@ fn adds_a_constant_floor(e: &Expr) -> bool {
             right,
             ..
         } => {
-            let literal_at_least_one = |x: &Expr| matches!(x, Expr::Int(n) if n.text.parse::<u128>().map(|v| v >= 1).unwrap_or(false));
+            let literal_at_least_one = |x: &Expr| matches!(x, Expr::Int(n) if n.text.replace('_', "").parse::<u128>().map(|v| v >= 1).unwrap_or(false));
             literal_at_least_one(left)
                 || literal_at_least_one(right)
                 || adds_a_constant_floor(left)
                 || adds_a_constant_floor(right)
         }
+        // A constant can hide behind any arithmetic: `+ (1000000 - 1)` still lands a
+        // floor of 999999 on the value. Recursing only through Add missed all of it.
+        Expr::Binary {
+            op: BinOp::Sub,
+            left,
+            right,
+            ..
+        }
+        | Expr::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+            ..
+        }
+        | Expr::Binary {
+            op: BinOp::Div,
+            left,
+            right,
+            ..
+        } => adds_a_constant_floor(left) || adds_a_constant_floor(right),
         Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => adds_a_constant_floor(expr),
         _ => false,
     }
@@ -1479,9 +1549,15 @@ fn caller_sets_their_own_row(model: &Model, field: &str) -> bool {
             // A scalar the caller assigns from a parameter is the same wish written
             // without a map: `entry set_cap(v) { guard members.get(caller) > 0;
             // cap = v; }` then bounding an outflow by `cap`.
-            if let Stmt::Assign { target, value, .. } = stmt {
+            if let Stmt::Assign {
+                target, op, value, ..
+            } = stmt
+            {
                 if let Expr::Ident(id) = target {
-                    if id.text == field && taints_from_param(value, &free, &signed, &derived) {
+                    if id.text == field
+                        && matches!(op, AssignOp::Set)
+                        && taints_from_param(value, &free, &signed, &derived)
+                    {
                         let mut accumulates = false;
                         walk(value, &mut |x| {
                             if let Expr::Ident(v) = x {
@@ -1490,8 +1566,9 @@ fn caller_sets_their_own_row(model: &Model, field: &str) -> bool {
                                 }
                             }
                         });
-                        // `spent_today = spent_today + amount` accrues usage, it does
-                        // not set a ceiling, so it is not a self chosen bound.
+                        // `spent_today = spent_today + amount` accrues usage, and a
+                        // compound `+=` is accrual too. Neither sets a ceiling, so
+                        // neither is a self chosen bound.
                         if !accumulates {
                             settable = true;
                         }
@@ -1539,6 +1616,55 @@ fn expr_contains_negation(e: &Expr) -> bool {
         }
     });
     found
+}
+
+/// Whether the expression contains a disjunction, which means no branch of it has to
+/// hold on its own. A bound inside one bounds nothing.
+fn expr_contains_disjunction(e: &Expr) -> bool {
+    let mut found = false;
+    walk(e, &mut |x| {
+        if matches!(x, Expr::Binary { op: BinOp::Or, .. }) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// Whether the entry reduces a row of the caller's own, which is what makes a bound
+/// spend down rather than merely be consulted.
+fn entry_reduces_a_caller_row(entry: &EntryDecl) -> bool {
+    let mut reduces = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if matches!(base.as_ref(), Expr::Ident(_))
+                        && matches!(args.first(), Some(Expr::Caller { .. }))
+                    {
+                        if name.text == "debit" {
+                            reduces = true;
+                        }
+                        // `bal.set(caller, bal.get(caller) - n)` is the same reduction
+                        // written out.
+                        if matches!(name.text.as_str(), "set" | "insert") {
+                            if let Some(v) = args.get(1) {
+                                let mut subtracts = false;
+                                walk(v, &mut |x| {
+                                    if matches!(x, Expr::Binary { op: BinOp::Sub, .. }) {
+                                        subtracts = true;
+                                    }
+                                });
+                                if subtracts {
+                                    reduces = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    reduces
 }
 
 fn entry_moves_asset(entry: &EntryDecl) -> bool {
@@ -3991,6 +4117,26 @@ mod tests {
 
     #[test]
     fn a_genuine_caller_membership_check_is_real_authority() {
+        // Membership is real authority for GATING, and it still is: the amount here
+        // is debited from the caller's own row, so belonging decides who may act and
+        // the row decides how much.
+        let src = r#"import { Q_Asset } from "quantova/primitives";
+            contract C {
+                state { members: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
+                entry withdraw(claim: Claim) conserves QTOV writes(vault, members) {
+                    guard members.contains(caller);
+                    members.debit(caller, claim.amount);
+                    send(claim.to, vault.split(claim.amount));
+                }
+            }"#;
+        ok(src);
+    }
+
+    #[test]
+    fn spelling_membership_with_contains_does_not_licence_an_arbitrary_amount() {
+        // `.contains(caller)` is the same membership question as `.get(caller) > 0`,
+        // and spelling it the other way used to switch the whole rule off, so any one
+        // member could send any amount anywhere.
         let src = r#"import { Q_Asset } from "quantova/primitives";
             contract C {
                 state { members: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
@@ -3999,7 +4145,10 @@ mod tests {
                     send(claim.to, vault.split(claim.amount));
                 }
             }"#;
-        ok(src);
+        assert!(
+            error_for(src).contains("membership"),
+            "a membership drain must be refused however the check is spelled"
+        );
     }
 
     #[test]
