@@ -31,10 +31,8 @@ fn a_u128_field_credited_to_a_wide_map_is_recorded_at_full_width() {
     );
 }
 
-// A u128 map value used to be WRITE ONLY: the credit path stored both words but any
-// read refused to lower. That put a token balance, a pool reserve and a lending
-// collateral row out of reach of the language, so a whole class of ordinary
-// applications could not be written at all.
+// A u128 map value must read back as well as write, so a token balance, a pool
+// reserve and a collateral row can all be expressed.
 const ROUNDTRIP: &str = "contract R { \
   state { owner: Q_Address; bal: Map<Q_Address, u128>; mirror: Map<Q_Address, u128>; } \
   genesis { owner = deployer; } \
@@ -102,8 +100,7 @@ fn a_value_above_two_to_the_sixty_four_survives_the_round_trip() {
     }
 }
 
-// A plain `let` used to be a hard codegen refusal: only an asset split or a mint could
-// be named, so no contract could name a computed value. `let half = n / 2;` failed.
+// A plain `let` names a computed scalar, not only an asset split or a mint.
 const LETS: &str = "contract L { \
   state { owner: Q_Address; bal: Map<Q_Address, u64>; fee_bps: u64; } \
   genesis { owner = deployer; fee_bps = 250; } \

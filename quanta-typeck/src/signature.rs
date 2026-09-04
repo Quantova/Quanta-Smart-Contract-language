@@ -855,11 +855,9 @@ fn entry_writes_field_under_key(entry: &EntryDecl, field: &str, key: &Expr) -> b
 
 /// Whether debiting the caller by `e` really costs them at least `param`.
 ///
-/// This is a WHITELIST on purpose. The previous rule asked whether an expression
-/// was provably zero, and a blacklist of zero shapes can never win: `n * 0` was
-/// caught, then `n - n`, `n % 1`, `n / (n + 1)`, `n >> 127` and `n * 0 + 0` all
-/// walked straight through. Only a form that cannot shrink below the parameter
-/// backs an amount, so anything not named here backs nothing.
+/// A WHITELIST on purpose: a blacklist of shapes that reach zero can never be
+/// complete. Only a form that cannot shrink below the parameter backs an amount, so
+/// anything not named here backs nothing.
 fn debit_covers_the_parameter(e: &Expr, param: &str) -> bool {
     match e {
         // The parameter itself, or a local that is exactly it.
