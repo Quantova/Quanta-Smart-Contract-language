@@ -14,6 +14,7 @@ contract Staking {
     conserves QTOV
     writes(pool, stakes, total_staked)
   {
+    guard in_asset == native;
     guard funds.amount > 0;
     total_staked += funds.amount;
     pool.merge(funds);

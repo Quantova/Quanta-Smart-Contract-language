@@ -22,6 +22,7 @@ contract Timelock {
     conserves QTOV
     writes(vault)
   {
+    guard in_asset == native;
     vault.merge(funds);
     emit Deposited(caller, funds.amount);
   }

@@ -16,6 +16,45 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
     Ok(())
 }
 
+/// Whether this guard mentions the asset that was actually carried.
+fn guard_mentions_in_asset(stmt: &Stmt) -> bool {
+    if !matches!(stmt, Stmt::Guard { .. }) {
+        return false;
+    }
+    let mut hit = false;
+    for_each_expr(stmt, &mut |e| {
+        if matches!(e, Expr::InAsset { .. }) {
+            hit = true;
+        }
+    });
+    hit
+}
+
+/// An entry that accepts an asset must say WHICH asset it accepts.
+///
+/// The generated binding proves the declared amount equals the value carried, but the
+/// value is only a number. Nothing ties it to a kind, so without a guard on `in_asset` a
+/// caller mints a worthless asset of their own and pays with that: the amount agrees and
+/// the entry credits them as if they had paid the real thing. `guard in_asset == native`
+/// states native value, `guard in_asset == some_token` states a specific issuer.
+fn asset_kind_is_stated(entry: &EntryDecl) -> Result<(), TypeError> {
+    let takes_asset = entry.params.iter().any(|p| asset_inner(&p.ty).is_some());
+    if !takes_asset {
+        return Ok(());
+    }
+    let stated = entry.body.iter().any(guard_mentions_in_asset);
+    if stated {
+        return Ok(());
+    }
+    Err(TypeError::new(
+        "this entry accepts an asset but never says which one, so any asset the caller \
+         mints is accepted at the same price. Add `guard in_asset == native;` for native \
+         value, or `guard in_asset == <issuer>;` for a specific token"
+            .to_string(),
+        entry.name.span,
+    ))
+}
+
 fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     let mut declared: HashSet<&str> = HashSet::new();
     let mut mint_kind: Option<&str> = None;
@@ -97,6 +136,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if let Some(err) = amount_credited_while_sent(entry, &kinds) {
         return Err(err);
     }
+    asset_kind_is_stated(entry)?;
     Ok(())
 }
 
@@ -478,7 +518,7 @@ mod tests {
     fn sending_the_native_asset_with_send_still_compiles() {
         let src = "contract C { state { x: u64; } \
                    entry pay(funds: Q_Asset<QTOV>, to: Q_Address) conserves QTOV writes(x) \
-                   { x = funds.amount; send(to, funds); } }";
+                   { guard in_asset == native; x = funds.amount; send(to, funds); } }";
         ok(src);
     }
 
@@ -510,7 +550,7 @@ mod tests {
     fn crediting_an_asset_amount_while_merging_it_into_a_backing_pool_is_accepted() {
         let src = "contract C { state { vault: Q_Asset<QTOV>; balance: Map<Q_Address, u128>; } \
                    entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(vault, balance) \
-                   { balance.credit(caller, funds.amount); vault.merge(funds); } }";
+                   { guard in_asset == native; balance.credit(caller, funds.amount); vault.merge(funds); } }";
         ok(src);
     }
 
@@ -542,7 +582,7 @@ mod tests {
     fn moving_credited_value_between_backing_pools_without_sending_is_accepted() {
         let src = "contract C { state { vault: Q_Asset<QTOV>; treasury: Q_Asset<QTOV>; balance: Map<Q_Address, u128>; } \
                    entry deposit(funds: Q_Asset<QTOV>, amt: u128) conserves QTOV writes(vault, treasury, balance) \
-                   { balance.credit(caller, funds.amount); vault.merge(funds); treasury.merge(vault.split(amt)); } }";
+                   { guard in_asset == native; balance.credit(caller, funds.amount); vault.merge(funds); treasury.merge(vault.split(amt)); } }";
         ok(src);
     }
 
@@ -628,7 +668,7 @@ mod tests {
     #[test]
     fn moving_an_asset_into_a_slot_is_accepted() {
         let src = "contract C { state { pool: Q_Asset<QTOV>; } \
-                   entry dep(funds: Q_Asset<QTOV>) conserves QTOV writes(pool) { pool = funds; } }";
+                   entry dep(funds: Q_Asset<QTOV>) conserves QTOV writes(pool) { guard in_asset == native; pool = funds; } }";
         ok(src);
     }
 
@@ -636,7 +676,7 @@ mod tests {
     fn merging_the_same_asset_kind_is_accepted() {
         let src = "contract C { state { vault: Q_Asset<QTOV>; } \
                    entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(vault) \
-                   { vault.merge(funds); } }";
+                   { guard in_asset == native; vault.merge(funds); } }";
         ok(src);
     }
 
@@ -644,7 +684,7 @@ mod tests {
     fn splitting_a_pool_and_merging_it_back_matches() {
         let src = "contract C { state { vault: Q_Asset<QTOV>; pending: Q_Asset<QTOV>; } \
                    entry shuffle(order: Order) conserves QTOV writes(vault, pending) \
-                   { let out = vault.split(order.amount); pending.merge(out); } }";
+                   { guard in_asset == native; let out = vault.split(order.amount); pending.merge(out); } }";
         ok(src);
     }
 }

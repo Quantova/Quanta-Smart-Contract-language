@@ -60,7 +60,7 @@ fn run(
 
 const MERGE: &str = "contract Merge {\n\
   state { pool: Q_Asset<QTOV>; }\n\
-  entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(pool) { pool.merge(funds); }\n\
+  entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(pool) { guard in_asset == native; pool.merge(funds); }\n\
 }\n";
 
 #[test]
@@ -350,7 +350,7 @@ fn a_membership_guard_admits_a_listed_key_and_reverts_an_absent_one() {
 
 const SENDER: &str = "contract Sender {\n\
   state { pool: Q_Asset<QTOV>; }\n\
-  entry payout(to: Q_Address, funds: Q_Asset<QTOV>) conserves QTOV { send(to, funds); }\n\
+  entry payout(to: Q_Address, funds: Q_Asset<QTOV>) conserves QTOV { guard in_asset == native; send(to, funds); }\n\
 }\n";
 
 #[test]

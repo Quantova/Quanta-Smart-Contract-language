@@ -29,6 +29,7 @@ contract Faucet {
     conserves QTOV
     writes(tank)
   {
+    guard in_asset == native;
     tank.merge(funds);
     emit Refilled(caller, funds.amount);
   }

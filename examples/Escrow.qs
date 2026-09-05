@@ -22,6 +22,7 @@ contract Escrow {
     writes(holding, funded)
     denies funded == 1
   {
+    guard in_asset == native;
     guard payment.amount == price;
     funded = 1;
     holding.merge(payment);

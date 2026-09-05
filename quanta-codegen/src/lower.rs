@@ -354,6 +354,11 @@ pub fn lower_expr(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<Reg, Cod
             let off = ctx.args.offset_of(IN_ASSET_KEY);
             load_arg(ctx, off, *span)
         }
+        Expr::Native { span } => {
+            let d = ctx.regs.alloc(*span)?;
+            ctx.b.op(Instr::Ldi { d, imm: 0 });
+            Ok(d)
+        }
         Expr::Now { span } => {
             let off = ctx.args.offset_of(TIME_KEY);
             load_arg(ctx, off, *span)
@@ -3485,6 +3490,9 @@ fn lower_address(ctx: &mut Ctx, expr: &Expr, span: Span) -> Result<u64, CodegenE
             return Ok(ctx.args.deploy_param_offset(name, ADDR_BYTES));
         }
     }
+    if matches!(expr, Expr::Native { .. }) {
+        return materialize_native_addr(ctx, span);
+    }
     if let Expr::Ident(id) = expr {
         if ctx.layout.is_addr(&id.text) {
             return materialize_state_addr(ctx, &id.text.clone(), span);
@@ -3501,6 +3509,28 @@ fn lower_address(ctx: &mut Ctx, expr: &Expr, span: Span) -> Result<u64, CodegenE
             span,
         }),
     }
+}
+
+/// The native asset as an address sized value: thirty two zero bytes, which is what the
+/// host stamps into the call context when a call carries native value rather than a
+/// token. Kept in the same scratch region as a state address so it cannot collide.
+fn materialize_native_addr(ctx: &mut Ctx, span: Span) -> Result<u64, CodegenError> {
+    let off = match ctx.state_addr_scratch.get("@native").copied() {
+        Some(off) => off,
+        None => {
+            let off = ctx.next_state_addr_scratch;
+            ctx.next_state_addr_scratch += ADDR_BYTES;
+            ctx.state_addr_scratch.insert("@native".to_string(), off);
+            off
+        }
+    };
+    let zero = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: zero, imm: 0 });
+    for i in 0..ADDR_WORDS {
+        store_mem_word(ctx, off + i * WORD, zero);
+    }
+    ctx.regs.free(zero);
+    Ok(off)
 }
 
 fn materialize_state_addr(ctx: &mut Ctx, name: &str, span: Span) -> Result<u64, CodegenError> {
@@ -4393,6 +4423,7 @@ fn is_scalar_addr(ctx: &Ctx, expr: &Expr) -> bool {
     match expr {
         Expr::Caller { .. } => true,
         Expr::InAsset { .. } => true,
+        Expr::Native { .. } => true,
         Expr::Ident(id) => {
             ctx.layout.is_addr(&id.text)
                 || id.text == "deployer"

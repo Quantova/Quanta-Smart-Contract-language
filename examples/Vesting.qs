@@ -16,6 +16,7 @@ contract Vesting {
     conserves QTOV
     writes(locked)
   {
+    guard in_asset == native;
     locked.merge(funds);
     emit Deposited(funds.amount);
   }

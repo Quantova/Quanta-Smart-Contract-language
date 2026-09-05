@@ -322,7 +322,7 @@ fn an_asset_balance_anchor_is_rejected() {
     let src = "contract C {\n\
       state { owner: Q_Address; vault: Q_Asset<QTOV>; opened: u64; }\n\
       genesis { owner = deployer; }\n\
-      entry fund(payment: Q_Asset<QTOV>) conserves QTOV writes(vault) { vault.merge(payment); }\n\
+      entry fund(payment: Q_Asset<QTOV>) conserves QTOV writes(vault) { guard in_asset == native; vault.merge(payment); }\n\
       entry open(order: OpenOrder signed by owner) writes(opened)\n\
         after 24 hours from vault.amount { opened = 1; }\n\
     }\n";

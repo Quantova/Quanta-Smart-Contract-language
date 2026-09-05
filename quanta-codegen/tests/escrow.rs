@@ -21,6 +21,7 @@ const OVERPAY: &str = "contract Escrow {\n\
   genesis { price = deploy_params.price; }\n\
   invariant released <= 1;\n\
   entry fund(payment: sealed Q_Asset<QTOV>) conserves QTOV writes(holding) limits payment.amount >= price {\n\
+    guard in_asset == native;\n\
     holding.merge(payment);\n\
   }\n\
 }\n";

@@ -19,6 +19,7 @@ contract Payroll {
     conserves QTOV
     writes(treasury)
   {
+    guard in_asset == native;
     treasury.merge(funds);
     emit Funded(funds.amount);
   }

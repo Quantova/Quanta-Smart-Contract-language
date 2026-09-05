@@ -32,6 +32,7 @@ contract QNS {
     writes(owner_of, expiry_of, resolved_of, vault)
     conserves QTOV
   {
+    guard in_asset == native;
     guard years >= 1;
     guard label.len >= 3;
     guard reserved.get(label) == 0;
@@ -48,6 +49,7 @@ contract QNS {
     writes(expiry_of, vault)
     conserves QTOV
   {
+    guard in_asset == native;
     guard years >= 1;
     guard label.len >= 3;
     guard caller == owner_of.get(label);
@@ -63,6 +65,7 @@ contract QNS {
     writes(owner_of, expiry_of, resolved_of, vault)
     conserves QTOV
   {
+    guard in_asset == native;
     guard years >= 1;
     guard label.len >= 3;
     guard reserved.get(label) == 0;

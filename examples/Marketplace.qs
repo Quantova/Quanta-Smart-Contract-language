@@ -24,6 +24,7 @@ contract Marketplace {
     conserves QTOV
     writes(escrowed, item_owner, listings)
   {
+    guard in_asset == native;
     guard listings.get(id) > 0;
     guard payment.amount == listings.get(id);
     escrowed.merge(payment);

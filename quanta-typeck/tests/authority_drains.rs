@@ -47,7 +47,7 @@ fn declaring_an_asset_param_does_not_authorise_sending_a_caller_named_amount() {
   asset TOK;
   state { token: Q_Address; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry swap(funds: Q_Asset<TOK>, n: u64) conserves TOK writes(vault) { guard funds.amount > 0; send_asset(token, caller, n); vault.merge(funds); }
+  entry swap(funds: Q_Asset<TOK>, n: u64) conserves TOK writes(vault) { guard in_asset == native; guard funds.amount > 0; send_asset(token, caller, n); vault.merge(funds); }
 }"#
     ));
 }
@@ -59,7 +59,7 @@ fn a_one_unit_payment_does_not_authorise_crediting_an_arbitrary_balance() {
   asset TOK;
   state { token: Q_Address; balances: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry buy(funds: Q_Asset<TOK>, n: u64) writes(balances, vault) conserves TOK { guard funds.amount > 0; balances.credit(caller, n); vault.merge(funds); }
+  entry buy(funds: Q_Asset<TOK>, n: u64) writes(balances, vault) conserves TOK { guard in_asset == native; guard funds.amount > 0; balances.credit(caller, n); vault.merge(funds); }
   entry withdraw(amount: u64) reads(token) writes(balances) { balances.debit(caller, amount); send_asset(token, caller, amount); }
 }"#
     ));
@@ -72,7 +72,7 @@ fn membership_bought_for_one_unit_does_not_authorise_draining_the_vault() {
   asset TOK;
   state { token: Q_Address; members: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry join(funds: Q_Asset<TOK>) conserves TOK writes(members, vault) { members.credit(caller, funds.amount); vault.merge(funds); }
+  entry join(funds: Q_Asset<TOK>) conserves TOK writes(members, vault) { guard in_asset == native; members.credit(caller, funds.amount); vault.merge(funds); }
   entry payout(to: Q_Address, amount: u64) reads(token, members) { guard members.get(caller) > 0; send_asset(token, to, amount); }
 }"#
     ));
@@ -110,7 +110,7 @@ fn parking_a_caller_named_amount_in_state_does_not_launder_it() {
   asset TOK;
   state { token: Q_Address; pending: u128; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry drain(funds: Q_Asset<TOK>, n: u128) conserves TOK writes(pending, vault) { pending = n; send_asset(token, caller, pending); vault.merge(funds); }
+  entry drain(funds: Q_Asset<TOK>, n: u128) conserves TOK writes(pending, vault) { guard in_asset == native; pending = n; send_asset(token, caller, pending); vault.merge(funds); }
 }"#
     ));
 }
@@ -156,7 +156,7 @@ fn a_tally_nothing_ever_pays_out_is_not_a_balance() {
   asset TOK;
   state { power: Map<Q_Address, u64>; votes: Map<u64, u64>; vault: Q_Asset<TOK>; }
   genesis { }
-  entry join(funds: Q_Asset<TOK>) conserves TOK writes(power, vault) { power.credit(caller, funds.amount); vault.merge(funds); }
+  entry join(funds: Q_Asset<TOK>) conserves TOK writes(power, vault) { guard in_asset == native; power.credit(caller, funds.amount); vault.merge(funds); }
   entry vote(proposal: u64) reads(power) writes(votes) { votes.credit(proposal, power.get(caller)); }
 }"#
     ));
@@ -171,7 +171,7 @@ fn a_write_once_slot_is_a_sound_anchor() {
   asset TOK;
   state { token: Q_Address; total: Map<Q_Address, u64>; start: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry fund(funds: Q_Asset<TOK>, who: Q_Address) conserves TOK reads(start) writes(total, start, vault) { guard start.get(who) == 0; total.credit(who, funds.amount); start.set(who, now); vault.merge(funds); }
+  entry fund(funds: Q_Asset<TOK>, who: Q_Address) conserves TOK reads(start) writes(total, start, vault) { guard in_asset == native; guard start.get(who) == 0; total.credit(who, funds.amount); start.set(who, now); vault.merge(funds); }
   entry claim(amount: u64) reads(token, total, start) writes(total) { guard now >= start.get(caller) + 2592000; total.debit(caller, amount); send_asset(token, caller, amount); }
 }"#
     ));
@@ -186,7 +186,7 @@ fn resetting_a_vesting_clock_for_somebody_else_is_still_refused() {
   asset TOK;
   state { token: Q_Address; total: Map<Q_Address, u64>; start: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry fund(funds: Q_Asset<TOK>, who: Q_Address) conserves TOK writes(total, start, vault) { total.credit(who, funds.amount); start.set(who, now); vault.merge(funds); }
+  entry fund(funds: Q_Asset<TOK>, who: Q_Address) conserves TOK writes(total, start, vault) { guard in_asset == native; total.credit(who, funds.amount); start.set(who, now); vault.merge(funds); }
   entry claim(amount: u64) reads(token, total, start) writes(total) { guard now >= start.get(caller) + 2592000; total.debit(caller, amount); send_asset(token, caller, amount); }
 }"#
     ));
@@ -201,9 +201,9 @@ fn a_collateral_guard_against_a_computed_amount_binds_the_caller() {
   asset TOK;
   state { token: Q_Address; deposited: Map<Q_Address, u64>; locked: Map<Q_Address, u64>; borrowed: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry supply(funds: Q_Asset<TOK>) conserves TOK writes(deposited, vault) { deposited.credit(caller, funds.amount); vault.merge(funds); }
+  entry supply(funds: Q_Asset<TOK>) conserves TOK writes(deposited, vault) { guard in_asset == native; deposited.credit(caller, funds.amount); vault.merge(funds); }
   entry borrow(amount: u64) reads(token, deposited) writes(deposited, locked, borrowed) { guard deposited.get(caller) >= amount * 2; deposited.debit(caller, amount * 2); locked.credit(caller, amount * 2); borrowed.credit(caller, amount); send_asset(token, caller, amount); }
-  entry repay(funds: Q_Asset<TOK>) conserves TOK writes(borrowed, vault) { borrowed.debit(caller, funds.amount); vault.merge(funds); }
+  entry repay(funds: Q_Asset<TOK>) conserves TOK writes(borrowed, vault) { guard in_asset == native; borrowed.debit(caller, funds.amount); vault.merge(funds); }
 }"#
     ));
 }
@@ -216,9 +216,9 @@ fn borrowing_without_locking_the_collateral_is_still_refused() {
   asset TOK;
   state { token: Q_Address; deposited: Map<Q_Address, u64>; borrowed: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry supply(funds: Q_Asset<TOK>) conserves TOK writes(deposited, vault) { deposited.credit(caller, funds.amount); vault.merge(funds); }
+  entry supply(funds: Q_Asset<TOK>) conserves TOK writes(deposited, vault) { guard in_asset == native; deposited.credit(caller, funds.amount); vault.merge(funds); }
   entry borrow(amount: u64) reads(token, deposited) writes(borrowed) { guard deposited.get(caller) >= amount * 2; borrowed.credit(caller, amount); send_asset(token, caller, amount); }
-  entry repay(funds: Q_Asset<TOK>) conserves TOK writes(borrowed, vault) { borrowed.debit(caller, funds.amount); vault.merge(funds); }
+  entry repay(funds: Q_Asset<TOK>) conserves TOK writes(borrowed, vault) { guard in_asset == native; borrowed.debit(caller, funds.amount); vault.merge(funds); }
 }"#
     ));
 }
@@ -230,7 +230,7 @@ fn an_auction_may_refund_the_previous_leader_from_state() {
   asset TOK;
   state { token: Q_Address; high: u64; leader: Q_Address; refund: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry bid(funds: Q_Asset<TOK>) conserves TOK writes(high, leader, refund, vault) { guard funds.amount > high; refund.credit(leader, high); high = funds.amount; leader = caller; vault.merge(funds); }
+  entry bid(funds: Q_Asset<TOK>) conserves TOK writes(high, leader, refund, vault) { guard in_asset == native; guard funds.amount > high; refund.credit(leader, high); high = funds.amount; leader = caller; vault.merge(funds); }
   entry reclaim(amount: u64) reads(token) writes(refund) { refund.debit(caller, amount); send_asset(token, caller, amount); }
 }"#
     ));
@@ -329,7 +329,7 @@ fn a_membership_guard_does_not_license_draining_the_native_pool() {
     assert!(rejected(
         r#"contract A1 {
   state { pool: Q_Asset<QTOV>; stakes: Map<Q_Address, u128>; }
-  entry stake(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, stakes) { guard funds.amount > 0; pool.merge(funds); stakes.credit(caller, funds.amount); }
+  entry stake(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, stakes) { guard in_asset == native; guard funds.amount > 0; pool.merge(funds); stakes.credit(caller, funds.amount); }
   entry drain(amount: u128) conserves QTOV reads(stakes) writes(pool) { guard stakes.get(caller) > 0; let out = pool.split(amount); send(caller, out); }
 }"#
     ));
@@ -425,7 +425,7 @@ fn declaring_an_asset_parameter_is_not_payment_without_a_floor() {
   asset TOK;
   state { token: Q_Address; members: Map<Q_Address, u64>; owner_of: Map<Q_Address, Q_Address>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry join(fee: Q_Asset<TOK>) conserves TOK writes(members, vault) { members.set(caller, 1); vault.merge(fee); }
+  entry join(fee: Q_Asset<TOK>) conserves TOK writes(members, vault) { guard in_asset == native; members.set(caller, 1); vault.merge(fee); }
   entry hand(label: Q_Address, to: Q_Address) reads(members) writes(owner_of) { guard members.get(caller) > 0; owner_of.set(label, to); }
 }"#
     ));
@@ -462,7 +462,7 @@ fn adding_a_constant_to_a_read_does_not_earn_an_anchor() {
     assert!(rejected(
         r#"contract Loyalty {
   state { ranks: Map<Q_Address, u64>; seen: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
-  entry fund(payment: Q_Asset<QTOV>) conserves QTOV writes(vault) { vault.merge(payment); }
+  entry fund(payment: Q_Asset<QTOV>) conserves QTOV writes(vault) { guard in_asset == native; vault.merge(payment); }
   entry touch() writes(seen) { seen.set(caller, 0); }
   entry enroll() reads(seen) writes(ranks) { ranks.set(caller, seen.get(caller) + 1); }
   entry claim() conserves QTOV reads(ranks, vault) writes(vault) { guard ranks.get(caller) >= 1; let out = vault.split(1000); send(caller, out); }
@@ -540,7 +540,7 @@ fn a_credit_that_cancels_the_debit_backs_nothing() {
   asset TOK;
   state { token: Q_Address; bal: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry deposit(funds: Q_Asset<TOK>) conserves TOK writes(bal, vault) { guard funds.amount > 0; bal.credit(caller, funds.amount); vault.merge(funds); }
+  entry deposit(funds: Q_Asset<TOK>) conserves TOK writes(bal, vault) { guard in_asset == native; guard funds.amount > 0; bal.credit(caller, funds.amount); vault.merge(funds); }
   entry withdraw(n: u64) reads(token, bal) writes(bal) { guard bal.get(caller) > 0; guard n > 0; bal.credit(caller, n); bal.debit(caller, n); send_asset(token, caller, n); }
 }"#
     ));
@@ -555,7 +555,7 @@ fn a_genuine_debit_still_backs_a_withdrawal() {
   asset TOK;
   state { token: Q_Address; bal: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry deposit(funds: Q_Asset<TOK>) conserves TOK writes(bal, vault) { guard funds.amount > 0; bal.credit(caller, funds.amount); vault.merge(funds); }
+  entry deposit(funds: Q_Asset<TOK>) conserves TOK writes(bal, vault) { guard in_asset == native; guard funds.amount > 0; bal.credit(caller, funds.amount); vault.merge(funds); }
   entry withdraw(n: u64) reads(token, bal) writes(bal) { guard bal.get(caller) >= n; guard n > 0; bal.debit(caller, n); send_asset(token, caller, n); }
 }"#
     ));
@@ -676,7 +676,7 @@ fn a_pause_flag_beside_a_bound_does_not_destroy_it() {
         r#"contract S {
   state { owner: Q_Address; pool: Q_Asset<QTOV>; members: Map<Q_Address, u64>; allocation: Map<Q_Address, u128>; paused: bool; }
   genesis { owner = deployer; paused = false; }
-  entry join(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, members) { guard funds.amount > 0; members.credit(caller, funds.amount); pool.merge(funds); }
+  entry join(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, members) { guard in_asset == native; guard funds.amount > 0; members.credit(caller, funds.amount); pool.merge(funds); }
   entry set_allocation(who: Q_Address, amount: u128) reads(owner) writes(allocation) { guard caller == owner; allocation.set(who, amount); }
   entry claim(n: u128) conserves QTOV reads(members, allocation, paused) writes(pool, allocation) { guard members.get(caller) > 0; guard !paused && n <= allocation.get(caller); allocation.debit(caller, n); send(caller, pool.split(n)); }
 }"#
@@ -690,7 +690,7 @@ fn an_allocation_that_is_never_reduced_is_still_refused() {
         r#"contract Bad2 {
   state { owner: Q_Address; pool: Q_Asset<QTOV>; members: Map<Q_Address, u64>; allocation: Map<Q_Address, u128>; }
   genesis { owner = deployer; }
-  entry join(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, members) { guard funds.amount > 0; members.credit(caller, funds.amount); pool.merge(funds); }
+  entry join(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, members) { guard in_asset == native; guard funds.amount > 0; members.credit(caller, funds.amount); pool.merge(funds); }
   entry set_allocation(who: Q_Address, amount: u128) reads(owner) writes(allocation) { guard caller == owner; allocation.set(who, amount); }
   entry claim(n: u128) conserves QTOV reads(members, allocation) writes(pool) { guard members.get(caller) > 0; guard n <= allocation.get(caller); send(caller, pool.split(n)); }
 }"#
@@ -706,7 +706,7 @@ fn a_marketplace_can_pay_the_seller_and_let_them_collect() {
         r#"contract Market {
   state { listing_price: Map<Q_Id, u128>; listing_seller: Map<Q_Id, Q_Address>; proceeds: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }
   entry list(id: Q_Id, price: u128) reads(listing_seller) writes(listing_price, listing_seller) { guard listing_seller.get(id) == 0; listing_price.set(id, price); listing_seller.set(id, caller); }
-  entry buy(id: Q_Id, funds: Q_Asset<QTOV>) conserves QTOV reads(listing_price, listing_seller) writes(proceeds, vault, listing_price, listing_seller) { guard funds.amount >= listing_price.get(id); proceeds.credit(listing_seller.get(id), funds.amount); listing_price.remove(id); listing_seller.remove(id); vault.merge(funds); }
+  entry buy(id: Q_Id, funds: Q_Asset<QTOV>) conserves QTOV reads(listing_price, listing_seller) writes(proceeds, vault, listing_price, listing_seller) { guard in_asset == native; guard funds.amount >= listing_price.get(id); proceeds.credit(listing_seller.get(id), funds.amount); listing_price.remove(id); listing_seller.remove(id); vault.merge(funds); }
   entry withdraw(n: u128) conserves QTOV reads(proceeds) writes(proceeds, vault) { guard proceeds.get(caller) >= n; proceeds.debit(caller, n); send(caller, vault.split(n)); }
 }"#
     ));
@@ -719,7 +719,7 @@ fn an_auction_can_refund_the_outbid_leader() {
     assert!(!rejected(
         r#"contract Auction {
   state { high: u128; leader: Q_Address; refunds: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }
-  entry bid(funds: Q_Asset<QTOV>) conserves QTOV reads(high, leader) writes(high, leader, refunds, vault) { guard funds.amount > high; refunds.credit(leader, high); high = funds.amount; leader = caller; vault.merge(funds); }
+  entry bid(funds: Q_Asset<QTOV>) conserves QTOV reads(high, leader) writes(high, leader, refunds, vault) { guard in_asset == native; guard funds.amount > high; refunds.credit(leader, high); high = funds.amount; leader = caller; vault.merge(funds); }
   entry reclaim(n: u128) conserves QTOV reads(refunds) writes(refunds, vault) { guard refunds.get(caller) >= n; refunds.debit(caller, n); send(caller, vault.split(n)); }
 }"#
     ));
@@ -731,7 +731,7 @@ fn crediting_a_third_party_more_than_arrived_is_still_refused() {
     assert!(rejected(
         r#"contract Bad {
   state { proceeds: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }
-  entry pay(who: Q_Address, n: u128, funds: Q_Asset<QTOV>) conserves QTOV writes(proceeds, vault) { proceeds.credit(who, n); vault.merge(funds); }
+  entry pay(who: Q_Address, n: u128, funds: Q_Asset<QTOV>) conserves QTOV writes(proceeds, vault) { guard in_asset == native; proceeds.credit(who, n); vault.merge(funds); }
   entry withdraw(n: u128) conserves QTOV reads(proceeds) writes(proceeds, vault) { guard proceeds.get(caller) >= n; proceeds.debit(caller, n); send(caller, vault.split(n)); }
 }"#
     ));
@@ -742,7 +742,7 @@ fn crediting_with_no_inflow_at_all_is_still_refused() {
     assert!(rejected(
         r#"contract Bad2 {
   state { proceeds: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }
-  entry fund(funds: Q_Asset<QTOV>) conserves QTOV writes(vault) { vault.merge(funds); }
+  entry fund(funds: Q_Asset<QTOV>) conserves QTOV writes(vault) { guard in_asset == native; vault.merge(funds); }
   entry book(who: Q_Address, n: u128) writes(proceeds) { proceeds.credit(who, n); }
   entry withdraw(n: u128) conserves QTOV reads(proceeds) writes(proceeds, vault) { guard proceeds.get(caller) >= n; proceeds.debit(caller, n); send(caller, vault.split(n)); }
 }"#
@@ -756,9 +756,9 @@ fn a_liquidation_that_repays_the_debt_is_buildable() {
     assert!(!rejected(
         r#"contract Lend {
   state { pool: Q_Asset<QTOV>; collateral: Map<Q_Address, u128>; debt: Map<Q_Address, u128>; bounty: Map<Q_Address, u128>; }
-  entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, collateral) { guard funds.amount > 0; collateral.credit(caller, funds.amount); pool.merge(funds); }
+  entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, collateral) { guard in_asset == native; guard funds.amount > 0; collateral.credit(caller, funds.amount); pool.merge(funds); }
   entry borrow(amount: u128) conserves QTOV reads(collateral, debt, pool) writes(pool, debt) { guard amount > 0; guard collateral.get(caller) >= (debt.get(caller) + amount) * 2; guard pool.amount >= amount; debt.credit(caller, amount); send(caller, pool.split(amount)); }
-  entry liquidate(who: Q_Address, funds: Q_Asset<QTOV>) conserves QTOV reads(collateral, debt) writes(collateral, debt, bounty, pool) { guard collateral.get(who) < debt.get(who) * 2; guard funds.amount <= debt.get(who); debt.debit(who, funds.amount); collateral.debit(who, funds.amount); bounty.credit(caller, funds.amount); pool.merge(funds); }
+  entry liquidate(who: Q_Address, funds: Q_Asset<QTOV>) conserves QTOV reads(collateral, debt) writes(collateral, debt, bounty, pool) { guard in_asset == native; guard collateral.get(who) < debt.get(who) * 2; guard funds.amount <= debt.get(who); debt.debit(who, funds.amount); collateral.debit(who, funds.amount); bounty.credit(caller, funds.amount); pool.merge(funds); }
   entry take_bounty(n: u128) conserves QTOV reads(bounty) writes(bounty, pool) { guard bounty.get(caller) >= n; bounty.debit(caller, n); send(caller, pool.split(n)); }
 }"#
     ));
@@ -771,7 +771,7 @@ fn seizing_a_row_without_paying_for_it_is_still_refused() {
     assert!(rejected(
         r#"contract Bad {
   state { pool: Q_Asset<QTOV>; collateral: Map<Q_Address, u128>; debt: Map<Q_Address, u128>; bounty: Map<Q_Address, u128>; }
-  entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, collateral) { guard funds.amount > 0; collateral.credit(caller, funds.amount); pool.merge(funds); }
+  entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(pool, collateral) { guard in_asset == native; guard funds.amount > 0; collateral.credit(caller, funds.amount); pool.merge(funds); }
   entry liquidate(who: Q_Address, n: u128) reads(collateral, debt) writes(collateral, debt, bounty) { guard debt.get(who) >= n; debt.debit(who, n); collateral.debit(who, n); bounty.credit(caller, n); }
   entry take_bounty(n: u128) conserves QTOV reads(bounty) writes(bounty, pool) { guard bounty.get(caller) >= n; bounty.debit(caller, n); send(caller, pool.split(n)); }
 }"#
@@ -784,7 +784,7 @@ fn a_staking_pool_with_owner_granted_rewards_is_buildable() {
         r#"contract Staking {
   state { owner: Q_Address; staked: Map<Q_Address, u128>; rewards: Map<Q_Address, u128>; pool: Q_Asset<QTOV>; }
   genesis { owner = deployer; }
-  entry stake(funds: Q_Asset<QTOV>) conserves QTOV writes(staked, pool) { guard funds.amount > 0; staked.credit(caller, funds.amount); pool.merge(funds); }
+  entry stake(funds: Q_Asset<QTOV>) conserves QTOV writes(staked, pool) { guard in_asset == native; guard funds.amount > 0; staked.credit(caller, funds.amount); pool.merge(funds); }
   entry accrue(order: RewardOrder signed by owner) writes(rewards) { rewards.credit(order.who, order.amount); }
   entry unstake(n: u128) conserves QTOV reads(staked) writes(staked, pool) { guard staked.get(caller) >= n; staked.debit(caller, n); send(caller, pool.split(n)); }
   entry claim(n: u128) conserves QTOV reads(rewards) writes(rewards, pool) { guard rewards.get(caller) >= n; rewards.debit(caller, n); send(caller, pool.split(n)); }
@@ -798,7 +798,7 @@ fn a_crowdfund_with_refunds_is_buildable() {
         r#"contract Crowdfund {
   state { owner: Q_Address; goal: u128; raised: u128; contributed: Map<Q_Address, u128>; pool: Q_Asset<QTOV>; }
   genesis { owner = deployer; goal = 1000000; raised = 0; }
-  entry back(funds: Q_Asset<QTOV>) conserves QTOV writes(contributed, raised, pool) { guard funds.amount > 0; contributed.credit(caller, funds.amount); raised = checked(raised + funds.amount); pool.merge(funds); }
+  entry back(funds: Q_Asset<QTOV>) conserves QTOV writes(contributed, raised, pool) { guard in_asset == native; guard funds.amount > 0; contributed.credit(caller, funds.amount); raised = checked(raised + funds.amount); pool.merge(funds); }
   entry refund(n: u128) conserves QTOV reads(contributed, raised, goal) writes(contributed, pool) { guard raised < goal; guard contributed.get(caller) >= n; contributed.debit(caller, n); send(caller, pool.split(n)); }
 }"#
     ));
@@ -814,7 +814,7 @@ fn a_treasury_that_accounts_for_what_it_commits_is_buildable() {
         r#"contract Dao {
   state { power: Map<Q_Address, u128>; votes: Map<u64, u128>; voted: Map<Q_Address, u64>; payout: Map<u64, u128>; beneficiary: Map<u64, Q_Address>; owed: Map<Q_Address, u128>; treasury: u128; vault: Q_Asset<QTOV>; }
   genesis { treasury = 0; }
-  entry join(funds: Q_Asset<QTOV>) conserves QTOV writes(power, vault, treasury) { guard funds.amount > 0; power.credit(caller, funds.amount); treasury = checked(treasury + funds.amount); vault.merge(funds); }
+  entry join(funds: Q_Asset<QTOV>) conserves QTOV writes(power, vault, treasury) { guard in_asset == native; guard funds.amount > 0; power.credit(caller, funds.amount); treasury = checked(treasury + funds.amount); vault.merge(funds); }
   entry propose(id: u64, amount: u128, to: Q_Address) reads(power, payout) writes(payout, beneficiary) { guard power.get(caller) > 0; guard payout.get(id) == 0; payout.set(id, amount); beneficiary.set(id, to); }
   entry vote(id: u64) reads(power, voted) writes(votes, voted) { guard voted.get(caller) == 0; votes.credit(id, power.get(caller)); voted.set(caller, 1); }
   entry execute(id: u64) reads(votes, payout, beneficiary, treasury) writes(owed, payout, treasury) { guard votes.get(id) > 0; guard payout.get(id) > 0; guard treasury >= payout.get(id); treasury = treasury - payout.get(id); owed.credit(beneficiary.get(id), payout.get(id)); payout.remove(id); }
@@ -830,7 +830,7 @@ fn a_treasury_that_commits_more_than_it_holds_is_still_refused() {
     assert!(rejected(
         r#"contract BadDao {
   state { power: Map<Q_Address, u128>; votes: Map<u64, u128>; voted: Map<Q_Address, u64>; payout: Map<u64, u128>; beneficiary: Map<u64, Q_Address>; owed: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }
-  entry join(funds: Q_Asset<QTOV>) conserves QTOV writes(power, vault) { guard funds.amount > 0; power.credit(caller, funds.amount); vault.merge(funds); }
+  entry join(funds: Q_Asset<QTOV>) conserves QTOV writes(power, vault) { guard in_asset == native; guard funds.amount > 0; power.credit(caller, funds.amount); vault.merge(funds); }
   entry propose(id: u64, amount: u128, to: Q_Address) reads(power, payout) writes(payout, beneficiary) { guard power.get(caller) > 0; guard payout.get(id) == 0; payout.set(id, amount); beneficiary.set(id, to); }
   entry vote(id: u64) reads(power, voted) writes(votes, voted) { guard voted.get(caller) == 0; votes.credit(id, power.get(caller)); voted.set(caller, 1); }
   entry execute(id: u64) reads(votes, payout, beneficiary) writes(owed, payout) { guard votes.get(id) > 0; guard payout.get(id) > 0; owed.credit(beneficiary.get(id), payout.get(id)); payout.remove(id); }

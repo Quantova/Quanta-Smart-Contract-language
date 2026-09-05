@@ -221,6 +221,11 @@ pub enum Expr {
     Caller {
         span: Span,
     },
+    /// The native asset. Compares equal to `in_asset` only when the call carried
+    /// native value, which is how a contract states it will not take a foreign token.
+    Native {
+        span: Span,
+    },
     InAsset {
         span: Span,
     },
@@ -266,6 +271,7 @@ impl Expr {
             Expr::Str(v) => v.span,
             Expr::Ident(v) => v.span,
             Expr::Caller { span } => *span,
+            Expr::Native { span } => *span,
             Expr::InAsset { span } => *span,
             Expr::Now { span } => *span,
             Expr::Unary { span, .. } => *span,

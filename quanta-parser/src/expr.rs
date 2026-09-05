@@ -239,6 +239,10 @@ impl Parser {
                 self.bump();
                 Ok(Expr::InAsset { span })
             }
+            TokenKind::Native => {
+                self.bump();
+                Ok(Expr::Native { span })
+            }
             TokenKind::Now => {
                 self.bump();
                 Ok(Expr::Now { span })

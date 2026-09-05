@@ -12,6 +12,7 @@ contract Bank {
     conserves QTOV
     writes(vault, balance)
   {
+    guard in_asset == native;
     balance += funds.amount;
     vault.merge(funds);
     emit Deposited(caller, funds.amount);
