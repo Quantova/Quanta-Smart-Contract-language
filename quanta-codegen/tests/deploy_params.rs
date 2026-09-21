@@ -20,7 +20,7 @@ fn run_genesis(
     cc: &CompiledContract,
     mem: &[u8],
 ) -> Result<std::collections::BTreeMap<[u8; 32], u64>, Fault> {
-    Interpreter::for_entry(&cc.container, selector(GENESIS_SIGNATURE), 400_000)
+    Interpreter::for_entry(&cc.container, selector(GENESIS_SIGNATURE), 12_500_000)
         .expect("the genesis selector resolves")
         .with_memory(mem)
         .run()

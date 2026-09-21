@@ -14,7 +14,7 @@ use common::{map_addr_word_key, read_addr_value};
 
 const OWNER_OF_BASE: u64 = 1 << 40;
 const LINK_BASE: u64 = 1 << 40;
-const GAS: u64 = 8_000_000;
+const GAS: u64 = 12_500_000;
 
 fn compile(src: &str) -> CompiledContract {
     let program = quanta_parser::parse(src).expect("parse");

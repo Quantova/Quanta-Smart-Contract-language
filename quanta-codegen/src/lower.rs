@@ -167,10 +167,6 @@ impl Args {
         off
     }
 
-    fn has(&self, key: &str) -> bool {
-        self.offsets.contains_key(key)
-    }
-
     fn offset_of(&mut self, key: &str) -> u64 {
         self.offset_of_width(key, WORD)
     }

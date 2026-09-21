@@ -19,7 +19,7 @@ const SRC: &str = include_str!("../../examples/QNS.qs");
 const VAULT_SLOT: u64 = 35;
 const CONTRACT: [u8; 32] = [0x44; 32];
 const SCHEME_ML: u8 = 1;
-const GAS: u64 = 200_000_000;
+const GAS: u64 = 12_500_000;
 const SIGNED_TAG: &[u8; 8] = b"QTVSGN01";
 
 fn compiled() -> CompiledContract {

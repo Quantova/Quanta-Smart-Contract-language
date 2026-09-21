@@ -27,7 +27,7 @@ const CONTENT_BASE: u64 = (1 << 40) + (2 << 32);
 const CONTRACT: [u8; 32] = [0x33; 32];
 const SCHEME_ML: u8 = 1;
 const REGION_OFF: u64 = 8192;
-const GAS: u64 = 60_000_000;
+const GAS: u64 = 12_500_000;
 const SIGNED_TAG: &[u8; 8] = b"QTVSGN01";
 
 fn compiled() -> CompiledContract {
