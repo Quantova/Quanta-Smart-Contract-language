@@ -4194,8 +4194,12 @@ fn lower_map_flag(
     ctx.b.op(Instr::Ldi { d: v, imm: flag });
     let zero = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi { d: zero, imm: 0 });
+    // An address valued row is read word by word through compute_map_addr_word_key,
+    // word 0 included, so writing word 0 any other way clears a slot no reader looks at
+    // and the row stays present forever.
+    let addr_valued = map_name_is_value_addr(ctx, base);
     for w in 0..words {
-        if w == 0 {
+        if w == 0 && !addr_valued {
             compute_map_key(ctx, mbase, addr_off, span)?;
         } else {
             compute_map_addr_word_key(ctx, mbase, addr_off, w, span)?;
