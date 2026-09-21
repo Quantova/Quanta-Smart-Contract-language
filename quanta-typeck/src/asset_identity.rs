@@ -3,7 +3,7 @@
 
 use crate::error::TypeError;
 use crate::model::{asset_inner, Model};
-use quanta_ast::{Clause, EntryDecl, Expr, Stmt};
+use quanta_ast::{BinOp, Clause, EntryDecl, Expr, Stmt};
 use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
 
@@ -18,16 +18,39 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
 
 /// Whether this guard mentions the asset that was actually carried.
 fn guard_mentions_in_asset(stmt: &Stmt) -> bool {
-    if !matches!(stmt, Stmt::Guard { .. }) {
+    let Stmt::Guard { expr, .. } = stmt else {
         return false;
-    }
-    let mut hit = false;
-    for_each_expr(stmt, &mut |e| {
-        if matches!(e, Expr::InAsset { .. }) {
-            hit = true;
+    };
+    binds_in_asset(expr)
+}
+
+/// Whether this guard expression actually PINS the asset kind. Merely mentioning
+/// `in_asset` is not enough: `guard in_asset == in_asset` and
+/// `guard amount > 0 || in_asset == native` both mention it and constrain nothing, so a
+/// caller still pays with an asset they minted themselves. Only an equality against
+/// something else counts, and only in a position that must hold, so the two sides of an
+/// `||` are not enough on their own while both sides of an `&&` each are.
+fn binds_in_asset(expr: &Expr) -> bool {
+    match expr {
+        Expr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+            ..
+        } => binds_in_asset(left) || binds_in_asset(right),
+        Expr::Binary {
+            op: BinOp::Eq,
+            left,
+            right,
+            ..
+        } => {
+            let l = matches!(**left, Expr::InAsset { .. });
+            let r = matches!(**right, Expr::InAsset { .. });
+            // Exactly one side, so `in_asset == in_asset` does not count.
+            l != r
         }
-    });
-    hit
+        _ => false,
+    }
 }
 
 /// An entry that accepts an asset must say WHICH asset it accepts.

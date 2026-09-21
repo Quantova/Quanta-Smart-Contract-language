@@ -48,3 +48,52 @@ fn a_duplicate_parameter_name_is_refused() {
     );
     assert!(text.contains("more than once"), "got {text}");
 }
+
+// Mentioning in_asset is not binding it. Both of these constrain nothing, so a caller
+// still pays with an asset they minted themselves and is credited at the real price.
+#[test]
+fn a_vacuous_asset_kind_guard_is_refused() {
+    for guard in [
+        "guard funds.amount > 0 || in_asset == native;",
+        "guard in_asset == in_asset;",
+    ] {
+        let src = format!(
+            "contract Vault {{ state {{ owner: Q_Address; pool: Q_Asset<QTOV>; }} \
+             genesis {{ owner = deployer; }} \
+             entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(pool) {{ \
+               {guard} pool.merge(funds); }} }}"
+        );
+        let text = refused(&src);
+        assert!(text.contains("which one"), "guard `{guard}` got {text}");
+    }
+}
+
+// A binding guard still compiles.
+#[test]
+fn a_binding_asset_kind_guard_is_accepted() {
+    let src = "contract Vault { state { owner: Q_Address; pool: Q_Asset<QTOV>; } \
+         genesis { owner = deployer; } \
+         entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(pool) { \
+           guard in_asset == native; pool.merge(funds); } }";
+    let program = quanta_parser::parse(src).expect("parse");
+    quanta_typeck::check(&program).expect("a binding guard must still compile");
+}
+
+#[test]
+fn an_emit_whose_arity_disagrees_with_the_event_is_refused() {
+    let text = refused(
+        "contract E { state { owner: Q_Address; } genesis { owner = deployer; } \
+         event Acted(a: u64); \
+         entry act(n: u64) { guard caller == owner; emit Acted(n, n, n); } }",
+    );
+    assert!(text.contains("field"), "got {text}");
+}
+
+#[test]
+fn two_contracts_of_one_name_are_refused() {
+    let text = refused(
+        "contract Dup { state { a: u64; } entry x(n: u64) writes(a) { a = n; } } \
+         contract Dup { state { b: u64; } entry y(n: u64) writes(b) { b = n; } }",
+    );
+    assert!(text.contains("more than once"), "got {text}");
+}

@@ -4,12 +4,13 @@
 use crate::error::TypeError;
 use crate::model::Model;
 use quanta_ast::{Clause, EntryDecl, Expr, GenericArg, Item, Stmt, Type};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
     check_no_duplicate_fields(model)?;
     check_no_duplicate_entries(model)?;
     check_no_shadowed_names(model)?;
+    check_emit_arity(model)?;
     for item in &model.contract.items {
         if let Item::Genesis(g) = item {
             for stmt in &g.body {
@@ -37,6 +38,46 @@ fn check_no_duplicate_fields(model: &Model) -> Result<(), TypeError> {
                         field.name.span,
                     ));
                 }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// An `emit` whose argument count disagrees with the event declaration writes a record
+/// of one shape under a selector that publishes another, so anything decoding the log by
+/// the published ABI, the explorer included, reads a shape the chain never wrote.
+fn check_emit_arity(model: &Model) -> Result<(), TypeError> {
+    let mut events: HashMap<&str, usize> = HashMap::new();
+    for item in &model.contract.items {
+        if let Item::Event(decl) = item {
+            events.insert(decl.name.text.as_str(), decl.params.len());
+        }
+    }
+    for entry in &model.entries {
+        check_emit_arity_in(&entry.body, &events)?;
+    }
+    Ok(())
+}
+
+fn check_emit_arity_in(body: &[Stmt], events: &HashMap<&str, usize>) -> Result<(), TypeError> {
+    for stmt in body {
+        if let Stmt::Emit { name, args, span } = stmt {
+            let Some(declared) = events.get(name.text.as_str()) else {
+                return Err(TypeError::new(
+                    format!("the event `{}` is emitted but never declared", name.text),
+                    *span,
+                ));
+            };
+            if args.len() != *declared {
+                return Err(TypeError::new(
+                    format!(
+                        "the event `{}` is declared with {declared} field(s) but emitted                          with {}, so the record written would not match the signature the                          selector publishes",
+                        name.text,
+                        args.len()
+                    ),
+                    *span,
+                ));
             }
         }
     }
