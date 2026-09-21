@@ -3453,12 +3453,14 @@ fn addr_key_of(expr: &Expr, params: &HashSet<String>) -> Option<String> {
 /// mean when the row is compared against zero.
 fn lower_addr_map_presence(
     ctx: &mut Ctx,
-    _map_name: &str,
+    map_name: &str,
     mbase: u64,
     key_expr: &Expr,
     span: Span,
 ) -> Result<Reg, CodegenError> {
-    let key_off = map_key_source(ctx, key_expr, span)?;
+    // The same key region the write uses. Reading the raw slot instead lets a dirty
+    // argument tail address a different row than set() lands on.
+    let key_off = map_key_region_named(ctx, map_name, key_expr, span)?;
     let acc = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi { d: acc, imm: 0 });
     for i in 0..ADDR_WORDS {
