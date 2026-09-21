@@ -166,6 +166,10 @@ impl Args {
         off
     }
 
+    fn has(&self, key: &str) -> bool {
+        self.offsets.contains_key(key)
+    }
+
     fn offset_of(&mut self, key: &str) -> u64 {
         self.offset_of_width(key, WORD)
     }
@@ -1508,6 +1512,26 @@ fn write_scalar_key(ctx: &mut Ctx, slot: u64, key: Reg) {
     });
 }
 
+// Only the last word of the key region carries the slot. The leading words are whatever
+// the caller left in scratch, and they are hashed into the storage key, so two callers
+// reach two different rows for one slot unless they are cleared. Nothing else writes this
+// region, so clearing it once at entry is enough and keeps it off every access.
+fn zero_scalar_key_head(ctx: &mut Ctx, span: Span) -> Result<(), CodegenError> {
+    let ptr = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: SCRATCH, imm: 0 });
+    let mut offset = SCALAR_KEY_SCRATCH;
+    while offset < SCALAR_KEY_SCRATCH + ADDR_BYTES - WORD {
+        ctx.b.op(Instr::Ldi {
+            d: ptr,
+            imm: offset,
+        });
+        ctx.b.op(Instr::MStore { a: ptr, b: SCRATCH });
+        offset += WORD;
+    }
+    ctx.regs.free(ptr);
+    Ok(())
+}
+
 fn write_scalar_key_reg(ctx: &mut Ctx, slot: Reg, key: Reg) {
     ctx.b.op(Instr::Ldi {
         d: key,
@@ -1622,6 +1646,7 @@ pub fn lower_entry(
                 ctx.args.offset_of_width(key, ADDR_BYTES);
             }
         }
+        zero_scalar_key_head(&mut ctx, entry.span)?;
         lower_name_prologue(&mut ctx, entry, trap)?;
         lower_signed_prologue(&mut ctx, entry, trap)?;
         lower_quorum_prologue(&mut ctx, entry, trap)?;
@@ -1805,7 +1830,54 @@ fn lower_quorum_prologue(
             )?;
             prev_index_off = Some(index_off);
         }
+        derive_quorum_digest(ctx, name, threshold, span)?;
     }
+    Ok(())
+}
+
+// `<quorum>.digest` arrives as an ordinary argument word, so a caller picks it and the
+// contract emits it as an approval attestation for signers that never approved. Once the
+// members are verified their indices are known, so the digest is packed from them here
+// and written over the caller's word before the body can read it.
+fn derive_quorum_digest(
+    ctx: &mut Ctx,
+    name: &str,
+    threshold: u64,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let key = format!("{name}.digest");
+    if !ctx.args.has(&key) {
+        return Ok(());
+    }
+    let acc = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: acc, imm: 0 });
+    let shift = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: shift, imm: 8 });
+    for i in 0..threshold {
+        let index_off = ctx.args.offset_of(&format!("{name}#{i}#index"));
+        let index = load_arg(ctx, index_off, span)?;
+        ctx.b.op(Instr::Shl {
+            d: acc,
+            a: acc,
+            b: shift,
+        });
+        ctx.b.op(Instr::Or {
+            d: acc,
+            a: acc,
+            b: index,
+        });
+        ctx.regs.free(index);
+    }
+    ctx.regs.free(shift);
+    let ptr = ctx.regs.alloc(span)?;
+    let digest_off = ctx.args.offset_of(&key);
+    ctx.b.op(Instr::Ldi {
+        d: ptr,
+        imm: digest_off,
+    });
+    ctx.b.op(Instr::MStore { a: ptr, b: acc });
+    ctx.regs.free(ptr);
+    ctx.regs.free(acc);
     Ok(())
 }
 
