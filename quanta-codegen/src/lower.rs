@@ -46,6 +46,7 @@ const IN_ASSET_KEY: &str = "@in_asset";
 const SIGNER_ADDR_SCRATCH: u64 = 40960;
 const NONCE_PREIMAGE_SCRATCH: u64 = 41088;
 const NONCE_DIGEST_SCRATCH: u64 = 41216;
+const QUORUM_DIGEST_SCRATCH: u64 = 41336;
 const SCALAR_KEY_SCRATCH: u64 = 41344;
 const MAP_PREIMAGE_SCRATCH: u64 = 41408;
 const MAP_KEY_SCRATCH: u64 = 41472;
@@ -221,6 +222,7 @@ pub struct Ctx<'a> {
     is_genesis: bool,
     address_keys: HashSet<String>,
     name_params: HashSet<String>,
+    quorum_params: HashSet<String>,
     addr_params: HashSet<String>,
     wide_keys: HashSet<String>,
     name_keys: HashMap<String, u64>,
@@ -251,6 +253,7 @@ impl<'a> Ctx<'a> {
             asset_params,
             address_keys: HashSet::new(),
             name_params: HashSet::new(),
+            quorum_params: HashSet::new(),
             addr_params: HashSet::new(),
             wide_keys: HashSet::new(),
             name_keys: HashMap::new(),
@@ -471,6 +474,19 @@ fn lower_field(ctx: &mut Ctx, base: &Expr, field: &str, span: Span) -> Result<Re
         if field == "len" && ctx.name_params.contains(&id.text) {
             let off = ctx.args.offset_of(&format!("{}{NAME_LEN_SUFFIX}", id.text));
             return load_arg(ctx, off, span);
+        }
+        if field == "digest" && ctx.quorum_params.contains(&id.text) {
+            // Derived in the quorum prologue from the indices that actually signed.
+            // out is allocated first so ptr, allocated after it, is freed first.
+            let out = ctx.regs.alloc(span)?;
+            let ptr = ctx.regs.alloc(span)?;
+            ctx.b.op(Instr::Ldi {
+                d: ptr,
+                imm: QUORUM_DIGEST_SCRATCH,
+            });
+            ctx.b.op(Instr::MLoad { d: out, a: ptr });
+            ctx.regs.free(ptr);
+            return Ok(out);
         }
         if ctx.params.contains(&id.text) {
             let key = format!("{}.{}", id.text, field);
@@ -1635,6 +1651,9 @@ pub fn lower_entry(
         ctx.args.offset_of_width(VALUE_KEY, WORD);
         ctx.args.offset_of_width(IN_ASSET_KEY, ADDR_BYTES);
         for param in &entry.params {
+            if quorum_spec(param).is_some() {
+                ctx.quorum_params.insert(param.name.text.clone());
+            }
             if param.ty.name.text == NAME_TYPE {
                 ctx.args.offset_of_width(&param.name.text, NAME_WINDOW);
                 ctx.args
@@ -1718,6 +1737,21 @@ pub fn lower_entry(
             what: "the entry argument region overruns the scratch memory floor".to_string(),
             span: entry.span,
         });
+    }
+    // One byte per signer index in the approval digest. Anything wider silently drops a
+    // signer, so refuse it rather than emit a digest that does not name who approved.
+    for param in &entry.params {
+        if let Some((threshold, count, _)) = quorum_spec(param) {
+            if threshold > 8 || count > 255 {
+                return Err(CodegenError::Unsupported {
+                    what: format!(
+                        "a quorum of {threshold} of {count}, whose approval digest cannot \
+                         name every signer in one word"
+                    ),
+                    span: entry.span,
+                });
+            }
+        }
     }
     b.op(Instr::Halt);
     Ok(args)
@@ -1845,10 +1879,6 @@ fn derive_quorum_digest(
     threshold: u64,
     span: Span,
 ) -> Result<(), CodegenError> {
-    let key = format!("{name}.digest");
-    if !ctx.args.has(&key) {
-        return Ok(());
-    }
     let acc = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi { d: acc, imm: 0 });
     let shift = ctx.regs.alloc(span)?;
@@ -1870,10 +1900,9 @@ fn derive_quorum_digest(
     }
     ctx.regs.free(shift);
     let ptr = ctx.regs.alloc(span)?;
-    let digest_off = ctx.args.offset_of(&key);
     ctx.b.op(Instr::Ldi {
         d: ptr,
-        imm: digest_off,
+        imm: QUORUM_DIGEST_SCRATCH,
     });
     ctx.b.op(Instr::MStore { a: ptr, b: acc });
     ctx.regs.free(ptr);
