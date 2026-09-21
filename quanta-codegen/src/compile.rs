@@ -240,36 +240,47 @@ fn compile_entries(
         });
     }
 
+    // EVERY state block, in source order. Taking only the first silently dropped the
+    // defaults of the rest, so a field that reads as armed in the source deployed at zero.
     let state_block = contract.items.iter().find_map(|item| match item {
         Item::State(sb) => Some(sb),
         _ => None,
     });
-    let default_assigns: Vec<Stmt> = state_block
-        .map(|sb| {
-            sb.fields
-                .iter()
-                .filter_map(|f| {
-                    f.default.as_ref().map(|value| Stmt::Assign {
-                        target: Expr::Ident(f.name.clone()),
-                        op: AssignOp::Set,
-                        value: value.clone(),
-                        span: f.span,
-                    })
-                })
-                .collect()
+    let default_assigns: Vec<Stmt> = contract
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::State(sb) => Some(sb),
+            _ => None,
         })
-        .unwrap_or_default();
-    let genesis_block = contract.items.iter().find_map(|item| match item {
-        Item::Genesis(g) => Some(g),
-        _ => None,
-    });
-    if genesis_block.is_some() || !default_assigns.is_empty() {
-        let gspan = genesis_block
+        .flat_map(|sb| {
+            sb.fields.iter().filter_map(|f| {
+                f.default.as_ref().map(|value| Stmt::Assign {
+                    target: Expr::Ident(f.name.clone()),
+                    op: AssignOp::Set,
+                    value: value.clone(),
+                    span: f.span,
+                })
+            })
+        })
+        .collect();
+    // Every genesis block too, for the same reason.
+    let genesis_blocks: Vec<_> = contract
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Genesis(g) => Some(g),
+            _ => None,
+        })
+        .collect();
+    if !genesis_blocks.is_empty() || !default_assigns.is_empty() {
+        let gspan = genesis_blocks
+            .first()
             .map(|g| g.span)
             .or_else(|| state_block.map(|sb| sb.span))
             .unwrap_or_default();
         let mut body = default_assigns;
-        if let Some(g) = genesis_block {
+        for g in &genesis_blocks {
             body.extend(g.body.clone());
         }
         let synthetic = EntryDecl {

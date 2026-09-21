@@ -9,6 +9,7 @@ use std::collections::HashSet;
 pub fn check(model: &Model) -> Result<(), TypeError> {
     check_no_duplicate_fields(model)?;
     check_no_duplicate_entries(model)?;
+    check_no_shadowed_names(model)?;
     for item in &model.contract.items {
         if let Item::Genesis(g) = item {
             for stmt in &g.body {
@@ -36,6 +37,72 @@ fn check_no_duplicate_fields(model: &Model) -> Result<(), TypeError> {
                         field.name.span,
                     ));
                 }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A name that means one thing to the checker and another to the code generator is how a
+/// compiled contract ends up enforcing less than its source says. The checker resolves a
+/// bare name as parameter then state field; the code generator resolves it as local, then
+/// state field, then parameter. Where those orders disagree, an invariant can silently
+/// read a local instead of the state field it names, and a signed parameter can be
+/// replaced by a public state field of the same name. Refuse the overlap outright.
+fn check_no_shadowed_names(model: &Model) -> Result<(), TypeError> {
+    let mut fields: HashSet<&str> = HashSet::new();
+    for item in &model.contract.items {
+        if let Item::State(block) = item {
+            for field in &block.fields {
+                fields.insert(field.name.text.as_str());
+            }
+        }
+    }
+    for entry in &model.entries {
+        let mut params: HashSet<&str> = HashSet::new();
+        for param in &entry.params {
+            let name = param.name.text.as_str();
+            if fields.contains(name) {
+                return Err(TypeError::new(
+                    format!(
+                        "the parameter `{name}` has the same name as a state field, and the                          two resolve differently, so the body would read the field where the                          signature says the parameter"
+                    ),
+                    param.name.span,
+                ));
+            }
+            if !params.insert(name) {
+                return Err(TypeError::new(
+                    format!("the parameter `{name}` is declared more than once"),
+                    param.name.span,
+                ));
+            }
+        }
+        check_no_shadowed_lets(&entry.body, &fields, &params)?;
+    }
+    Ok(())
+}
+
+fn check_no_shadowed_lets(
+    body: &[Stmt],
+    fields: &HashSet<&str>,
+    params: &HashSet<&str>,
+) -> Result<(), TypeError> {
+    for stmt in body {
+        if let Stmt::Let { name, span, .. } = stmt {
+            let text = name.text.as_str();
+            if fields.contains(text) {
+                return Err(TypeError::new(
+                    format!(
+                        "the local `{text}` has the same name as a state field, so an                          invariant or a later read naming it would take the local instead                          of the field"
+                    ),
+                    *span,
+                ));
+            }
+            if params.contains(text) {
+                return Err(TypeError::new(
+                    format!("the local `{text}` has the same name as a parameter"),
+                    *span,
+                ));
             }
         }
     }
