@@ -24,12 +24,7 @@ const COUNTER: &str = "contract Counter {\n\
 fn is_post_quantum_crypto(op: OpCode) -> bool {
     matches!(
         op,
-        OpCode::Hash
-            | OpCode::VerifyMl
-            | OpCode::VerifySlh
-            | OpCode::MerkleVerify
-            | OpCode::Kem
-            | OpCode::Addr
+        OpCode::Hash | OpCode::VerifyMl | OpCode::VerifySlh | OpCode::MerkleVerify | OpCode::Addr
     )
 }
 
@@ -39,7 +34,6 @@ fn is_cryptographic(op: OpCode) -> bool {
         | OpCode::VerifyMl
         | OpCode::VerifySlh
         | OpCode::MerkleVerify
-        | OpCode::Kem
         | OpCode::Addr => true,
         OpCode::Halt
         | OpCode::Nop
@@ -114,8 +108,8 @@ fn the_machine_exposes_only_post_quantum_crypto_opcodes() {
     }
     assert_eq!(
         crypto.len(),
-        6,
-        "the crypto opcode set must be the post quantum six"
+        5,
+        "the crypto opcode set must be the post quantum five"
     );
 }
 

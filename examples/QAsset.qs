@@ -9,6 +9,7 @@ contract QAsset {
   genesis {
     owner = deploy_params.owner;
     total_supply = deploy_params.initial_supply;
+    balances.credit(deploy_params.owner, deploy_params.initial_supply);
   }
   entry mint(order: MintOrder signed by owner)
     mints QAT

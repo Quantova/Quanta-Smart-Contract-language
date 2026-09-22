@@ -30,6 +30,9 @@ fn arg_off(cc: &CompiledContract, entry: usize, key: &str) -> Option<usize> {
         .map(|s| s.offset as usize)
 }
 
+const TOKEN_A: [u8; 32] = [0xAAu8; 32];
+const PAID_IN: u64 = 1_000;
+
 fn signed_swap_memory(
     cc: &CompiledContract,
     entry: usize,
@@ -47,6 +50,7 @@ fn signed_swap_memory(
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
     msg.extend_from_slice(&operator);
     msg.extend_from_slice(&0u64.to_be_bytes());
+    msg.extend_from_slice(&PAID_IN.to_be_bytes());
     msg.extend_from_slice(to);
     msg.extend_from_slice(&out.to_be_bytes());
     msg.extend_from_slice(&0u64.to_be_bytes());
@@ -71,6 +75,18 @@ fn signed_swap_memory(
     if let Some(o) = arg_off(cc, entry, "order.out") {
         mem[o..o + 8].copy_from_slice(&out.to_be_bytes());
     }
+    if let Some(o) = arg_off(cc, entry, "order.amount_in") {
+        mem[o..o + 8].copy_from_slice(&PAID_IN.to_be_bytes());
+    }
+    if let Some(o) = arg_off(cc, entry, "funds") {
+        mem[o..o + 8].copy_from_slice(&PAID_IN.to_be_bytes());
+    }
+    if let Some(o) = arg_off(cc, entry, "@value") {
+        mem[o..o + 8].copy_from_slice(&PAID_IN.to_be_bytes());
+    }
+    if let Some(o) = arg_off(cc, entry, "@in_asset") {
+        mem[o..o + 32].copy_from_slice(&TOKEN_A);
+    }
     mem[region_off..].copy_from_slice(&region);
     (mem, operator)
 }
@@ -92,6 +108,7 @@ fn swap_a_for_b_verifies_the_operator_order_and_pays_out_token_b() {
 
     let mut storage: BTreeMap<[u8; 32], u64> = BTreeMap::new();
     put_addr_slots(&mut storage, 0, &operator);
+    put_addr_slots(&mut storage, 4, &TOKEN_A);
     put_addr_slots(&mut storage, 8, &token_b);
 
     let outcome = Interpreter::for_entry(&cc.container, selector, GAS)
@@ -142,6 +159,7 @@ fn a_swap_order_not_signed_by_the_operator_reverts() {
 
     let mut storage: BTreeMap<[u8; 32], u64> = BTreeMap::new();
     put_addr_slots(&mut storage, 0, &[0x22u8; 32]);
+    put_addr_slots(&mut storage, 4, &TOKEN_A);
     put_addr_slots(&mut storage, 8, &token_b);
 
     let result = Interpreter::for_entry(&cc.container, selector, GAS)
@@ -152,5 +170,36 @@ fn a_swap_order_not_signed_by_the_operator_reverts() {
     assert!(
         result.is_err(),
         "an order whose signer is not the pool operator must revert"
+    );
+}
+
+#[test]
+fn a_swap_that_pays_in_the_wrong_asset_reverts() {
+    let cc = compile(DEX_SRC);
+    let entry = cc
+        .entries
+        .iter()
+        .position(|e| e.name == "swap_a_for_b")
+        .expect("swap_a_for_b entry");
+    let selector = cc.container.entries[entry].selector;
+    let to = [0x11u8; 32];
+    let token_b = [0xBBu8; 32];
+    let (mut mem, operator) = signed_swap_memory(&cc, entry, selector, &to, 700);
+    let o = arg_off(&cc, entry, "@in_asset").expect("in asset slot");
+    mem[o..o + 32].copy_from_slice(&token_b);
+
+    let mut storage: BTreeMap<[u8; 32], u64> = BTreeMap::new();
+    put_addr_slots(&mut storage, 0, &operator);
+    put_addr_slots(&mut storage, 4, &TOKEN_A);
+    put_addr_slots(&mut storage, 8, &token_b);
+
+    let result = Interpreter::for_entry(&cc.container, selector, GAS)
+        .expect("swap entry")
+        .with_storage(storage)
+        .with_memory(&mem)
+        .run();
+    assert!(
+        result.is_err(),
+        "paying token_b into the a to b leg must revert"
     );
 }

@@ -145,6 +145,8 @@ pub struct Args {
     next: u64,
     deploy_params: Vec<DeployParamSlot>,
     oversize: Option<String>,
+    sealed: HashSet<String>,
+    unsigned: Option<String>,
 }
 
 impl Args {
@@ -153,6 +155,12 @@ impl Args {
     }
 
     fn offset_of_width(&mut self, key: &str, bytes: u64) -> u64 {
+        if key
+            .split_once('.')
+            .is_some_and(|(base, _)| self.sealed.contains(base))
+        {
+            self.unsigned.get_or_insert_with(|| key.to_string());
+        }
         if let Some(off) = self.offsets.get(key) {
             if self.widths.get(key).is_some_and(|locked| *locked < bytes) {
                 self.oversize.get_or_insert_with(|| key.to_string());
@@ -191,6 +199,10 @@ impl Args {
 
     fn oversized_arg(&self) -> Option<&str> {
         self.oversize.as_deref()
+    }
+
+    fn unsigned_arg(&self) -> Option<&str> {
+        self.unsigned.as_deref()
     }
 
     pub fn deploy_params(&self) -> &[DeployParamSlot] {
@@ -1646,9 +1658,11 @@ pub fn lower_entry(
         ctx.args.offset_of_width(CHAIN_KEY, WORD);
         ctx.args.offset_of_width(VALUE_KEY, WORD);
         ctx.args.offset_of_width(IN_ASSET_KEY, ADDR_BYTES);
+        ctx.args.sealed = asset_params.clone();
         for param in &entry.params {
             if quorum_spec(param).is_some() {
                 ctx.quorum_params.insert(param.name.text.clone());
+                ctx.args.sealed.insert(param.name.text.clone());
             }
             if param.ty.name.text == NAME_TYPE {
                 ctx.args.offset_of_width(&param.name.text, NAME_WINDOW);
@@ -1675,6 +1689,19 @@ pub fn lower_entry(
                 .filter(|p| ctx.asset_params.contains(&p.name.text))
                 .map(|p| p.name.text.clone())
                 .collect();
+            if asset_names.is_empty() {
+                let value = load_arg(&mut ctx, value_off, entry.span)?;
+                let zero = ctx.regs.alloc(entry.span)?;
+                ctx.b.op(Instr::Ldi { d: zero, imm: 0 });
+                ctx.b.op(Instr::Eq {
+                    d: value,
+                    a: value,
+                    b: zero,
+                });
+                ctx.b.jz(value, trap);
+                ctx.regs.free(zero);
+                ctx.regs.free(value);
+            }
             for name in asset_names {
                 let amt_off = ctx.args.offset_of(&name);
                 let amount = load_arg(&mut ctx, amt_off, entry.span)?;
@@ -1712,13 +1739,21 @@ pub fn lower_entry(
             ctx.regs.free(want);
             ctx.regs.free(got);
         }
-        if writes_state {
+        if writes_state || ctx.is_genesis {
             for inv in invariants {
                 let r = lower_expr(&mut ctx, inv, false)?;
                 ctx.b.jz(r, trap);
                 ctx.regs.free(r);
             }
         }
+    }
+    if let Some(field) = args.unsigned_arg() {
+        return Err(CodegenError::Rejected {
+            what: format!(
+                "`{field}` would be read from the caller's arguments, but no signature covers a field of a quorum or asset parameter"
+            ),
+            span: entry.span,
+        });
     }
     if let Some(field) = args.oversized_arg() {
         return Err(CodegenError::Rejected {
@@ -1942,18 +1977,44 @@ fn quorum_message_fields(
             specs.push((off, words));
             continue;
         }
-        for key in collect_signed_fields(entry, pname) {
-            let words = if ctx.address_keys.contains(&key) {
-                ADDR_WORDS
-            } else if ctx.wide_keys.contains(&key) {
-                2
-            } else {
-                1
-            };
-            specs.push((ctx.args.offset_of_width(&key, words * WORD), words));
-        }
+        let keys = collect_signed_fields(entry, pname);
+        specs.extend(signed_field_specs(ctx, keys));
     }
     Ok(specs)
+}
+
+fn signed_field_specs(ctx: &mut Ctx, keys: Vec<String>) -> Vec<(u64, u64)> {
+    let mut specs: Vec<(u64, u64)> = Vec::new();
+    let push = |specs: &mut Vec<(u64, u64)>, spec: (u64, u64)| {
+        if !specs.iter().any(|(off, _)| *off == spec.0) {
+            specs.push(spec);
+        }
+    };
+    for key in keys {
+        if ctx.name_params.contains(&key) {
+            let window = ctx.args.offset_of_width(&key, NAME_WINDOW);
+            push(&mut specs, (window, NAME_WINDOW / WORD));
+            let len = ctx.args.offset_of(&format!("{key}{NAME_LEN_SUFFIX}"));
+            push(&mut specs, (len, 1));
+            continue;
+        }
+        let key = match key.split_once('.') {
+            Some((base, "len")) if ctx.name_params.contains(base) => {
+                format!("{base}{NAME_LEN_SUFFIX}")
+            }
+            _ => key,
+        };
+        let words = if ctx.address_keys.contains(&key) {
+            ADDR_WORDS
+        } else if ctx.wide_keys.contains(&key) {
+            2
+        } else {
+            1
+        };
+        let off = ctx.args.offset_of_width(&key, words * WORD);
+        push(&mut specs, (off, words));
+    }
+    specs
 }
 
 struct QuorumMember<'a> {
@@ -2503,6 +2564,90 @@ fn lower_name_ends_on_a_byte(
     Ok(())
 }
 
+fn lower_name_charset(
+    ctx: &mut Ctx,
+    window_off: u64,
+    len: Reg,
+    trap: Label,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let index = ctx.regs.alloc(span)?;
+    let byte = ctx.regs.alloc(span)?;
+    let tmp = ctx.regs.alloc(span)?;
+    let flag = ctx.regs.alloc(span)?;
+    let top = ctx.b.label();
+    let accepted = ctx.b.label();
+    let done = ctx.b.label();
+    ctx.b.op(Instr::Ldi { d: index, imm: 0 });
+    ctx.b.mark(top);
+    ctx.b.op(Instr::GtU {
+        d: flag,
+        a: len,
+        b: index,
+    });
+    ctx.b.jz(flag, done);
+    ctx.b.op(Instr::Ldi {
+        d: tmp,
+        imm: window_off,
+    });
+    ctx.b.op(Instr::Add {
+        d: tmp,
+        a: tmp,
+        b: index,
+    });
+    ctx.b.op(Instr::MLoad { d: byte, a: tmp });
+    ctx.b.op(Instr::Ldi { d: tmp, imm: 56 });
+    ctx.b.op(Instr::Shr {
+        d: byte,
+        a: byte,
+        b: tmp,
+    });
+    ctx.b.op(Instr::Ldi {
+        d: tmp,
+        imm: b'-' as u64,
+    });
+    ctx.b.op(Instr::Eq {
+        d: flag,
+        a: byte,
+        b: tmp,
+    });
+    ctx.b.jnz(flag, accepted);
+    for (low, high) in [(b'a' as u64, b'z' as u64), (b'0' as u64, b'9' as u64)] {
+        let outside = ctx.b.label();
+        ctx.b.op(Instr::Ldi { d: tmp, imm: low });
+        ctx.b.op(Instr::GtU {
+            d: flag,
+            a: tmp,
+            b: byte,
+        });
+        ctx.b.jnz(flag, outside);
+        ctx.b.op(Instr::Ldi { d: tmp, imm: high });
+        ctx.b.op(Instr::GtU {
+            d: flag,
+            a: byte,
+            b: tmp,
+        });
+        ctx.b.jz(flag, accepted);
+        ctx.b.mark(outside);
+    }
+    ctx.b.op(Instr::Ldi { d: flag, imm: 1 });
+    ctx.b.jnz(flag, trap);
+    ctx.b.mark(accepted);
+    ctx.b.op(Instr::Ldi { d: tmp, imm: 1 });
+    ctx.b.op(Instr::Add {
+        d: index,
+        a: index,
+        b: tmp,
+    });
+    ctx.b.jnz(tmp, top);
+    ctx.b.mark(done);
+    ctx.regs.free(flag);
+    ctx.regs.free(tmp);
+    ctx.regs.free(byte);
+    ctx.regs.free(index);
+    Ok(())
+}
+
 fn lower_name_prologue(ctx: &mut Ctx, entry: &EntryDecl, trap: Label) -> Result<(), CodegenError> {
     let names: Vec<(String, Span)> = entry
         .params
@@ -2533,6 +2678,7 @@ fn lower_name_prologue(ctx: &mut Ctx, entry: &EntryDecl, trap: Label) -> Result<
 
         lower_name_tail_is_zero(ctx, window_off, len, trap, *span)?;
         lower_name_ends_on_a_byte(ctx, window_off, len, trap, *span)?;
+        lower_name_charset(ctx, window_off, len, trap, *span)?;
 
         let rptr = ctx.regs.alloc(*span)?;
         ctx.b.op(Instr::Ldi {
@@ -3086,19 +3232,8 @@ fn lower_signed_binding(
     let span = param.span;
     let scheme_off = ctx.args.offset_of(&format!("{name}{SIG_SCHEME_SUFFIX}"));
     let ptr_off = ctx.args.offset_of(&format!("{name}{SIG_PTR_SUFFIX}"));
-    let field_specs: Vec<(u64, u64)> = collect_signed_fields(entry, name)
-        .iter()
-        .map(|key| {
-            let words = if ctx.address_keys.contains(key) {
-                ADDR_WORDS
-            } else if ctx.wide_keys.contains(key) {
-                2
-            } else {
-                1
-            };
-            (ctx.args.offset_of_width(key, words * WORD), words)
-        })
-        .collect();
+    let keys = collect_signed_fields(entry, name);
+    let field_specs = signed_field_specs(ctx, keys);
     let selector_word = u32::from_be_bytes(entry_selector(entry)) as u64;
 
     let ml_label = ctx.b.label();

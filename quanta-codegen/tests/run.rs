@@ -60,7 +60,7 @@ fn meter_advance_runs_metered_and_writes_state() {
     // carries whatever the caller left there, and the eight byte event payload at the
     // durable event byte price.
     assert_eq!(
-        out.meter_used, 1752,
+        out.meter_used, 1760,
         "metered meter cost of the advance entry"
     );
 }

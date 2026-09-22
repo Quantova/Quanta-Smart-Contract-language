@@ -44,6 +44,20 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         .collect();
     let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
     let derived = param_derived_locals(entry, &params, &signed);
+    if entry
+        .params
+        .iter()
+        .any(|p| p.signed_by.is_some() || crate::model::is_quorum_param(p))
+    {
+        if let Some(span) = entry.body.iter().find_map(caller_outside_guard) {
+            return Err(TypeError::new(
+                "a signed or quorum order does not bind who submits it, so `caller` may only be \
+                 compared in a guard here; carry the recipient inside the order"
+                    .to_string(),
+                span,
+            ));
+        }
+    }
 
     for clause in &entry.clauses {
         let expr = match clause {
@@ -1620,25 +1634,15 @@ fn entry_reduces_a_caller_row(entry: &EntryDecl) -> bool {
         stmt_exprs(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
-                    if matches!(base.as_ref(), Expr::Ident(_))
-                        && matches!(args.first(), Some(Expr::Caller { .. }))
-                    {
-                        if name.text == "debit" {
-                            reduces = true;
-                        }
-                        // `bal.set(caller, bal.get(caller) - n)` is the same reduction
-                        // written out.
-                        if matches!(name.text.as_str(), "set" | "insert") {
-                            if let Some(v) = args.get(1) {
-                                let mut subtracts = false;
-                                walk(v, &mut |x| {
-                                    if matches!(x, Expr::Binary { op: BinOp::Sub, .. }) {
-                                        subtracts = true;
-                                    }
-                                });
-                                if subtracts {
-                                    reduces = true;
-                                }
+                    if let Expr::Ident(map) = base.as_ref() {
+                        if matches!(args.first(), Some(Expr::Caller { .. })) {
+                            if name.text == "debit" {
+                                reduces = true;
+                            }
+                            if matches!(name.text.as_str(), "set" | "insert")
+                                && row_reduction(&map.text, args)
+                            {
+                                reduces = true;
                             }
                         }
                     }
@@ -1962,20 +1966,9 @@ fn entry_consumes_the_row(entry: &EntryDecl, field: &str) -> bool {
                         }
                         // `m.set(k, m.get(k) - n)` is the same consumption written out.
                         if matches!(name.text.as_str(), "set" | "insert") {
-                            if let Some(v) = args.get(1) {
-                                let mut subtracts = false;
-                                let mut zeroed = false;
-                                walk(v, &mut |x| {
-                                    if matches!(x, Expr::Binary { op: BinOp::Sub, .. }) {
-                                        subtracts = true;
-                                    }
-                                    if matches!(x, Expr::Int(n) if n.text.replace('_', "") == "0") {
-                                        zeroed = true;
-                                    }
-                                });
-                                if subtracts || zeroed {
-                                    consumed = true;
-                                }
+                            let zeroed = matches!(args.get(1), Some(Expr::Int(n)) if n.text.replace('_', "") == "0");
+                            if zeroed || row_reduction(field, args) {
+                                consumed = true;
                             }
                         }
                     }
@@ -2046,6 +2039,33 @@ fn credits_only_what_was_paid_in(model: &Model, entry: &EntryDecl, field: &str) 
 /// Reducing a row cannot forge authority: a smaller balance passes fewer gates, not
 /// more. Whether the reduction is JUSTIFIED is a separate question, answered by the
 /// rules that govern the entry doing it.
+fn row_reduction(field: &str, args: &[Expr]) -> bool {
+    let (
+        Some(key),
+        Some(Expr::Binary {
+            op: BinOp::Sub,
+            left,
+            ..
+        }),
+    ) = (args.first(), args.get(1))
+    else {
+        return false;
+    };
+    let Expr::Call {
+        callee, args: read, ..
+    } = left.as_ref()
+    else {
+        return false;
+    };
+    let Expr::Field { base, name, .. } = callee.as_ref() else {
+        return false;
+    };
+    matches!(base.as_ref(), Expr::Ident(m) if m.text == field)
+        && name.text == "get"
+        && read.len() == 1
+        && expr_eq(&read[0], key)
+}
+
 fn only_reduces_the_field(entry: &EntryDecl, field: &str) -> bool {
     let mut saw = false;
     let mut all_reduce = true;
@@ -2063,15 +2083,7 @@ fn only_reduces_the_field(entry: &EntryDecl, field: &str) -> bool {
                                 saw = true;
                                 // A set that subtracts from the same row is a
                                 // reduction written out; anything else is not.
-                                let reduces = args.get(1).is_some_and(|v| {
-                                    let mut sub = false;
-                                    walk(v, &mut |x| {
-                                        if matches!(x, Expr::Binary { op: BinOp::Sub, .. }) {
-                                            sub = true;
-                                        }
-                                    });
-                                    sub && name.text != "credit"
-                                });
+                                let reduces = name.text != "credit" && row_reduction(field, args);
                                 if !reduces {
                                     all_reduce = false;
                                 }
@@ -2171,13 +2183,12 @@ fn inflow_only_totals(model: &Model) -> HashSet<String> {
             let Expr::Ident(id) = target else { continue };
             // Does the assigned value grow the total, and by how much?
             let mut grows_by_asset = false;
-            let mut shrinks = matches!(op, AssignOp::Sub);
+            let shrinks = matches!(op, AssignOp::Sub)
+                || matches!(value, Expr::Binary { op: BinOp::Sub, left, .. }
+                    if matches!(left.as_ref(), Expr::Ident(t) if t.text == id.text));
             walk(value, &mut |x| {
                 if asset_amount_backer(x, &assets).is_some() {
                     grows_by_asset = true;
-                }
-                if matches!(x, Expr::Binary { op: BinOp::Sub, .. }) {
-                    shrinks = true;
                 }
             });
             if shrinks {
@@ -2597,7 +2608,7 @@ struct Prot {
     steps: u64,
 }
 
-fn authority_anchor_protected(model: &Model, field: &str) -> bool {
+pub(crate) fn authority_anchor_protected(model: &Model, field: &str) -> bool {
     let mut prot = Prot {
         stack: HashSet::new(),
         memo: HashMap::new(),
@@ -3740,6 +3751,31 @@ fn reads_map_key(map: &str, expr: &Expr, key: &Expr) -> bool {
         }
     }
     false
+}
+
+fn caller_outside_guard(stmt: &Stmt) -> Option<quanta_lexer::Span> {
+    match stmt {
+        Stmt::Guard { .. } => None,
+        Stmt::Let { value, .. } => caller_in(value),
+        Stmt::Emit { args, .. } => args.iter().find_map(caller_in),
+        Stmt::Assign { target, value, .. } => caller_in(target).or_else(|| caller_in(value)),
+        Stmt::Expr { expr, .. } => caller_in(expr),
+    }
+}
+
+fn caller_in(expr: &Expr) -> Option<quanta_lexer::Span> {
+    match expr {
+        Expr::Caller { span } => Some(*span),
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            caller_in(expr)
+        }
+        Expr::Binary { left, right, .. } => caller_in(left).or_else(|| caller_in(right)),
+        Expr::Field { base, .. } => caller_in(base),
+        Expr::Call { callee, args, .. } => {
+            caller_in(callee).or_else(|| args.iter().find_map(caller_in))
+        }
+        _ => None,
+    }
 }
 
 fn entry_binds_caller(model: &Model, entry: &EntryDecl, _signed: &HashSet<&str>) -> bool {

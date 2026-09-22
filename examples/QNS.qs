@@ -110,10 +110,11 @@ contract QNS {
     emit PrimarySet(caller, label);
   }
   entry transfer(label: Q_Name, to: Q_Address)
-    reads(owner_of)
+    reads(owner_of, expiry_of)
     writes(owner_of, resolved_of)
   {
     guard owner_of.get(label) == caller;
+    guard now < expiry_of.get(label);
     owner_of.set(label, to);
     resolved_of.set(label, to);
     emit Transferred(label, caller, to);

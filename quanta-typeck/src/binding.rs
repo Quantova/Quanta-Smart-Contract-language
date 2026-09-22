@@ -26,7 +26,29 @@ struct Authorized<'a> {
 
 impl<'a> Authorized<'a> {
     fn read_field(&self, base: &str, field: &str, span: quanta_lexer::Span) -> Option<TypeError> {
-        if self.asset.contains(base) || self.quorum.contains(base) || self.signed.contains(base) {
+        if self.asset.contains(base) {
+            return (field != "amount").then(|| {
+                TypeError::new(
+                    format!(
+                        "`{base}.{field}` is caller data no signature covers; an asset parameter \
+                         exposes only `amount`"
+                    ),
+                    span,
+                )
+            });
+        }
+        if self.quorum.contains(base) {
+            return (field != "digest").then(|| {
+                TypeError::new(
+                    format!(
+                        "`{base}.{field}` is caller data the guardians never sign; a quorum \
+                         parameter exposes only `digest`"
+                    ),
+                    span,
+                )
+            });
+        }
+        if self.signed.contains(base) {
             return None;
         }
         if self.guardian.contains(base) {

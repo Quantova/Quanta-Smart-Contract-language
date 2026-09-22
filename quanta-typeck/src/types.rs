@@ -13,6 +13,7 @@ enum Ty {
     Address,
     Asset,
     Hash,
+    Name,
     Time,
     Str,
     Unknown,
@@ -196,7 +197,16 @@ impl<'a> Env<'a> {
                 expect_numeric_or(r, Ty::Int, right, "an ordering needs numbers")?;
                 Ok(Ty::Bool)
             }
-            BinOp::Eq | BinOp::Ne => Ok(Ty::Bool),
+            BinOp::Eq | BinOp::Ne => {
+                if l == Ty::Name || r == Ty::Name {
+                    return Err(TypeError::new(
+                        "two names cannot be compared directly, the comparison would see only \
+                         their first eight bytes; key a map by the name instead",
+                        left.span(),
+                    ));
+                }
+                Ok(Ty::Bool)
+            }
         }
     }
 }
@@ -218,6 +228,7 @@ fn ty_of_decl(ty: &Type) -> Ty {
         "Q_Address" => Ty::Address,
         "Q_Asset" => Ty::Asset,
         "Q_Hash" => Ty::Hash,
+        "Q_Name" => Ty::Name,
         "Time" => Ty::Time,
         _ => Ty::Unknown,
     }

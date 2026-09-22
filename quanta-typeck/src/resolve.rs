@@ -9,6 +9,8 @@ use std::collections::{HashMap, HashSet};
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
     check_no_duplicate_fields(model)?;
+    check_no_duplicate_events(model)?;
+    check_one_asset_when_minting(model)?;
     check_no_duplicate_entries(model)?;
     check_no_shadowed_names(model)?;
     check_emit_arity(model)?;
@@ -22,6 +24,74 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
     }
     for entry in &model.entries {
         check_entry(model, entry)?;
+    }
+    Ok(())
+}
+
+fn check_no_duplicate_events(model: &Model) -> Result<(), TypeError> {
+    let mut seen: HashSet<&str> = HashSet::new();
+    for item in &model.contract.items {
+        if let Item::Event(decl) = item {
+            if !seen.insert(decl.name.text.as_str()) {
+                return Err(TypeError::new(
+                    format!("event `{}` is declared more than once", decl.name.text),
+                    decl.name.span,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mints_asset_in(stmt: &Stmt) -> Option<quanta_lexer::Span> {
+    fn in_expr(expr: &Expr) -> Option<quanta_lexer::Span> {
+        match expr {
+            Expr::Call { callee, args, span } => {
+                if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "mint_asset") {
+                    return Some(*span);
+                }
+                in_expr(callee).or_else(|| args.iter().find_map(in_expr))
+            }
+            Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+                in_expr(expr)
+            }
+            Expr::Binary { left, right, .. } => in_expr(left).or_else(|| in_expr(right)),
+            Expr::Field { base, .. } => in_expr(base),
+            _ => None,
+        }
+    }
+    match stmt {
+        Stmt::Guard { expr, .. } | Stmt::Expr { expr, .. } => in_expr(expr),
+        Stmt::Let { value, .. } => in_expr(value),
+        Stmt::Emit { args, .. } => args.iter().find_map(in_expr),
+        Stmt::Assign { target, value, .. } => in_expr(target).or_else(|| in_expr(value)),
+    }
+}
+
+fn check_one_asset_when_minting(model: &Model) -> Result<(), TypeError> {
+    let declared = model
+        .contract
+        .items
+        .iter()
+        .filter(|item| matches!(item, Item::Asset(_)))
+        .count();
+    if declared <= 1 {
+        return Ok(());
+    }
+    let bodies = model.contract.items.iter().flat_map(|item| match item {
+        Item::Entry(e) => e.body.as_slice(),
+        Item::Genesis(g) => g.body.as_slice(),
+        _ => &[],
+    });
+    for stmt in bodies {
+        if let Some(span) = mints_asset_in(stmt) {
+            return Err(TypeError::new(
+                "`mint_asset` names no asset, and this contract declares more than one, so \
+                 every declared asset would share one on chain supply"
+                    .to_string(),
+                span,
+            ));
+        }
     }
     Ok(())
 }

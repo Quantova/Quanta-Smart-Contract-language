@@ -10,7 +10,8 @@ contract Pool {
     shares: Map<Q_Address, u64>;
     pending_a: Map<Q_Address, u64>;
     max_reserve: u128 = 1_000_000_000_000_000;
-    vault: Q_Asset<QTOV>;
+    vault_a: Q_Asset<TOKA>;
+    vault_b: Q_Asset<TOKB>;
   }
   genesis {
     token_a = deploy_params.token_a;
@@ -19,20 +20,29 @@ contract Pool {
     reserve_b = 0;
     total_shares = 0;
   }
-  entry deposit_a(funds: Q_Asset<QTOV>)
+  entry deposit_a(funds: Q_Asset<TOKA>)
     reads(token_a)
-    writes(pending_a, vault)
-    conserves QTOV
+    writes(pending_a, vault_a)
+    conserves TOKA
   {
     guard in_asset == token_a;
     pending_a.credit(caller, funds.amount);
-    vault.merge(funds);
+    vault_a.merge(funds);
     emit Deposited(caller, token_a, funds.amount);
   }
-  entry seed_liquidity(funds: Q_Asset<QTOV>)
+  entry withdraw_pending_a()
+    reads(token_a, pending_a)
+    writes(pending_a)
+  {
+    guard pending_a.get(caller) > 0;
+    let owed = pending_a.get(caller);
+    pending_a.debit(caller, owed);
+    send_asset(token_a, caller, owed);
+  }
+  entry seed_liquidity(funds: Q_Asset<TOKB>)
     reads(token_b, pending_a, total_shares)
-    writes(pending_a, reserve_a, reserve_b, total_shares, shares, vault)
-    conserves QTOV
+    writes(pending_a, reserve_a, reserve_b, total_shares, shares, vault_b)
+    conserves TOKB
   {
     guard in_asset == token_b;
     guard total_shares == 0;
@@ -43,13 +53,13 @@ contract Pool {
     total_shares = pending_a.get(caller);
     shares.credit(caller, pending_a.get(caller));
     pending_a.debit(caller, pending_a.get(caller));
-    vault.merge(funds);
+    vault_b.merge(funds);
     emit LiquidityAdded(caller, reserve_a, funds.amount, reserve_a);
   }
-  entry provide_liquidity(funds: Q_Asset<QTOV>, min_shares: u128)
+  entry provide_liquidity(funds: Q_Asset<TOKB>, min_shares: u128)
     reads(token_b, pending_a, reserve_a, reserve_b, total_shares, max_reserve)
-    writes(pending_a, reserve_a, reserve_b, total_shares, shares, vault)
-    conserves QTOV
+    writes(pending_a, reserve_a, reserve_b, total_shares, shares, vault_b)
+    conserves TOKB
     limits reserve_b + funds.amount <= max_reserve && reserve_a + funds.amount <= max_reserve && total_shares + funds.amount <= max_reserve
   {
     guard in_asset == token_b;
@@ -65,7 +75,7 @@ contract Pool {
     pending_a.debit(caller, (funds.amount * reserve_a) / reserve_b);
     reserve_a = reserve_a + (funds.amount * reserve_a) / reserve_b;
     reserve_b = reserve_b + funds.amount;
-    vault.merge(funds);
+    vault_b.merge(funds);
     emit LiquidityAdded(caller, funds.amount, funds.amount, min_shares);
   }
   entry remove_liquidity(amount: u128)
@@ -87,10 +97,10 @@ contract Pool {
     total_shares = total_shares - amount;
     emit LiquidityRemoved(caller, amount);
   }
-  entry swap_a_for_b(funds: Q_Asset<QTOV>, min_out: u128)
+  entry swap_a_for_b(funds: Q_Asset<TOKA>, min_out: u128)
     reads(token_a, token_b, reserve_a, reserve_b, max_reserve)
-    writes(reserve_a, reserve_b, vault)
-    conserves QTOV
+    writes(reserve_a, reserve_b, vault_a)
+    conserves TOKA
     limits reserve_a + funds.amount <= max_reserve
   {
     guard in_asset == token_a;
@@ -104,12 +114,12 @@ contract Pool {
     emit Swapped(caller, token_a, funds.amount, (funds.amount * 997 * reserve_b) / (reserve_a * 1000 + funds.amount * 997));
     reserve_b = reserve_b - (funds.amount * 997 * reserve_b) / (reserve_a * 1000 + funds.amount * 997);
     reserve_a = reserve_a + funds.amount;
-    vault.merge(funds);
+    vault_a.merge(funds);
   }
-  entry swap_b_for_a(funds: Q_Asset<QTOV>, min_out: u128)
+  entry swap_b_for_a(funds: Q_Asset<TOKB>, min_out: u128)
     reads(token_a, token_b, reserve_a, reserve_b, max_reserve)
-    writes(reserve_a, reserve_b, vault)
-    conserves QTOV
+    writes(reserve_a, reserve_b, vault_b)
+    conserves TOKB
     limits reserve_b + funds.amount <= max_reserve
   {
     guard in_asset == token_b;
@@ -123,7 +133,7 @@ contract Pool {
     emit Swapped(caller, token_b, funds.amount, (funds.amount * 997 * reserve_a) / (reserve_b * 1000 + funds.amount * 997));
     reserve_a = reserve_a - (funds.amount * 997 * reserve_a) / (reserve_b * 1000 + funds.amount * 997);
     reserve_b = reserve_b + funds.amount;
-    vault.merge(funds);
+    vault_b.merge(funds);
   }
   event Deposited(who: Q_Address, token: Q_Address, amount: u128);
   event LiquidityAdded(who: Q_Address, amount_a: u128, amount_b: u128, minted: u128);

@@ -74,17 +74,80 @@ fn binds_in_asset(model: &Model, entry: &EntryDecl, expr: &Expr) -> bool {
 /// caller mints a worthless asset of their own and pays with that: the amount agrees and
 /// the entry credits them as if they had paid the real thing. `guard in_asset == native`
 /// states native value, `guard in_asset == some_token` states a specific issuer.
-fn asset_kind_is_stated(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
-    let takes_asset = entry.params.iter().any(|p| asset_inner(&p.ty).is_some());
-    if !takes_asset {
-        return Ok(());
+fn in_asset_pins<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
+    match expr {
+        Expr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+            ..
+        } => {
+            in_asset_pins(left, out);
+            in_asset_pins(right, out);
+        }
+        Expr::Binary {
+            op: BinOp::Eq,
+            left,
+            right,
+            ..
+        } => match (&**left, &**right) {
+            (Expr::InAsset { .. }, other) | (other, Expr::InAsset { .. })
+                if !matches!(other, Expr::InAsset { .. }) =>
+            {
+                out.push(other)
+            }
+            _ => {}
+        },
+        _ => {}
     }
+}
+
+fn pin_matches_kind(model: &Model, entry: &EntryDecl, kind: &str, pin: &Expr) -> bool {
+    match pin {
+        Expr::Native { .. } => kind == NATIVE_ASSET,
+        Expr::Ident(id) => {
+            kind != NATIVE_ASSET
+                && names_a_fixed_asset(model, entry, pin)
+                && crate::signature::authority_anchor_protected(model, &id.text)
+        }
+        _ => false,
+    }
+}
+
+fn asset_kind_is_stated(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
+    let Some((param, kind)) = entry
+        .params
+        .iter()
+        .find_map(|p| asset_inner(&p.ty).map(|kind| (p, kind)))
+    else {
+        return Ok(());
+    };
     let stated = entry
         .body
         .iter()
         .any(|stmt| guard_mentions_in_asset(model, entry, stmt));
     if stated {
-        return Ok(());
+        let mut pins = Vec::new();
+        for stmt in &entry.body {
+            if let Stmt::Guard { expr, .. } = stmt {
+                in_asset_pins(expr, &mut pins);
+            }
+        }
+        if pins
+            .iter()
+            .any(|pin| pin_matches_kind(model, entry, kind, pin))
+        {
+            return Ok(());
+        }
+        return Err(TypeError::new(
+            format!(
+                "`{}` is declared `Q_Asset<{kind}>`, but no guard pins `in_asset` to that kind: \
+                 native value needs `in_asset == native` and a token needs a Q_Address field \
+                 only its owner can set",
+                param.name.text
+            ),
+            param.name.span,
+        ));
     }
     Err(TypeError::new(
         "this entry accepts an asset but never says which one, so any asset the caller \

@@ -47,7 +47,7 @@ fn declaring_an_asset_param_does_not_authorise_sending_a_caller_named_amount() {
   asset TOK;
   state { token: Q_Address; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry swap(funds: Q_Asset<TOK>, n: u64) conserves TOK writes(vault) { guard in_asset == native; guard funds.amount > 0; send_asset(token, caller, n); vault.merge(funds); }
+  entry swap(funds: Q_Asset<TOK>, n: u64) conserves TOK writes(vault) { guard in_asset == token; guard funds.amount > 0; send_asset(token, caller, n); vault.merge(funds); }
 }"#
     ));
 }
@@ -59,7 +59,7 @@ fn a_one_unit_payment_does_not_authorise_crediting_an_arbitrary_balance() {
   asset TOK;
   state { token: Q_Address; balances: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry buy(funds: Q_Asset<TOK>, n: u64) writes(balances, vault) conserves TOK { guard in_asset == native; guard funds.amount > 0; balances.credit(caller, n); vault.merge(funds); }
+  entry buy(funds: Q_Asset<TOK>, n: u64) writes(balances, vault) conserves TOK { guard in_asset == token; guard funds.amount > 0; balances.credit(caller, n); vault.merge(funds); }
   entry withdraw(amount: u64) reads(token) writes(balances) { balances.debit(caller, amount); send_asset(token, caller, amount); }
 }"#
     ));
@@ -72,7 +72,7 @@ fn membership_bought_for_one_unit_does_not_authorise_draining_the_vault() {
   asset TOK;
   state { token: Q_Address; members: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry join(funds: Q_Asset<TOK>) conserves TOK writes(members, vault) { guard in_asset == native; members.credit(caller, funds.amount); vault.merge(funds); }
+  entry join(funds: Q_Asset<TOK>) conserves TOK writes(members, vault) { guard in_asset == token; members.credit(caller, funds.amount); vault.merge(funds); }
   entry payout(to: Q_Address, amount: u64) reads(token, members) { guard members.get(caller) > 0; send_asset(token, to, amount); }
 }"#
     ));
@@ -110,7 +110,7 @@ fn parking_a_caller_named_amount_in_state_does_not_launder_it() {
   asset TOK;
   state { token: Q_Address; pending: u128; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry drain(funds: Q_Asset<TOK>, n: u128) conserves TOK writes(pending, vault) { guard in_asset == native; pending = n; send_asset(token, caller, pending); vault.merge(funds); }
+  entry drain(funds: Q_Asset<TOK>, n: u128) conserves TOK writes(pending, vault) { guard in_asset == token; pending = n; send_asset(token, caller, pending); vault.merge(funds); }
 }"#
     ));
 }
@@ -154,9 +154,9 @@ fn a_tally_nothing_ever_pays_out_is_not_a_balance() {
     assert!(!rejected(
         r#"contract Dao {
   asset TOK;
-  state { power: Map<Q_Address, u64>; votes: Map<u64, u64>; vault: Q_Asset<TOK>; }
+  state { power: Map<Q_Address, u64>; votes: Map<u64, u64>; vault: Q_Asset<QTOV>; }
   genesis { }
-  entry join(funds: Q_Asset<TOK>) conserves TOK writes(power, vault) { guard in_asset == native; power.credit(caller, funds.amount); vault.merge(funds); }
+  entry join(funds: Q_Asset<QTOV>) conserves QTOV writes(power, vault) { guard in_asset == native; power.credit(caller, funds.amount); vault.merge(funds); }
   entry vote(proposal: u64) reads(power) writes(votes) { votes.credit(proposal, power.get(caller)); }
 }"#
     ));
@@ -171,7 +171,7 @@ fn a_write_once_slot_is_a_sound_anchor() {
   asset TOK;
   state { token: Q_Address; total: Map<Q_Address, u64>; start: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry fund(funds: Q_Asset<TOK>, who: Q_Address) conserves TOK reads(start) writes(total, start, vault) { guard in_asset == native; guard start.get(who) == 0; total.credit(who, funds.amount); start.set(who, now); vault.merge(funds); }
+  entry fund(funds: Q_Asset<TOK>, who: Q_Address) conserves TOK reads(start) writes(total, start, vault) { guard in_asset == token; guard start.get(who) == 0; total.credit(who, funds.amount); start.set(who, now); vault.merge(funds); }
   entry claim(amount: u64) reads(token, total, start) writes(total) { guard now >= start.get(caller) + 2592000; total.debit(caller, amount); send_asset(token, caller, amount); }
 }"#
     ));
@@ -186,7 +186,7 @@ fn resetting_a_vesting_clock_for_somebody_else_is_still_refused() {
   asset TOK;
   state { token: Q_Address; total: Map<Q_Address, u64>; start: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry fund(funds: Q_Asset<TOK>, who: Q_Address) conserves TOK writes(total, start, vault) { guard in_asset == native; total.credit(who, funds.amount); start.set(who, now); vault.merge(funds); }
+  entry fund(funds: Q_Asset<TOK>, who: Q_Address) conserves TOK writes(total, start, vault) { guard in_asset == token; total.credit(who, funds.amount); start.set(who, now); vault.merge(funds); }
   entry claim(amount: u64) reads(token, total, start) writes(total) { guard now >= start.get(caller) + 2592000; total.debit(caller, amount); send_asset(token, caller, amount); }
 }"#
     ));
@@ -201,9 +201,9 @@ fn a_collateral_guard_against_a_computed_amount_binds_the_caller() {
   asset TOK;
   state { token: Q_Address; deposited: Map<Q_Address, u64>; locked: Map<Q_Address, u64>; borrowed: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry supply(funds: Q_Asset<TOK>) conserves TOK writes(deposited, vault) { guard in_asset == native; deposited.credit(caller, funds.amount); vault.merge(funds); }
+  entry supply(funds: Q_Asset<TOK>) conserves TOK writes(deposited, vault) { guard in_asset == token; deposited.credit(caller, funds.amount); vault.merge(funds); }
   entry borrow(amount: u64) reads(token, deposited) writes(deposited, locked, borrowed) { guard deposited.get(caller) >= amount * 2; deposited.debit(caller, amount * 2); locked.credit(caller, amount * 2); borrowed.credit(caller, amount); send_asset(token, caller, amount); }
-  entry repay(funds: Q_Asset<TOK>) conserves TOK writes(borrowed, vault) { guard in_asset == native; borrowed.debit(caller, funds.amount); vault.merge(funds); }
+  entry repay(funds: Q_Asset<TOK>) conserves TOK writes(borrowed, vault) { guard in_asset == token; borrowed.debit(caller, funds.amount); vault.merge(funds); }
 }"#
     ));
 }
@@ -216,9 +216,9 @@ fn borrowing_without_locking_the_collateral_is_still_refused() {
   asset TOK;
   state { token: Q_Address; deposited: Map<Q_Address, u64>; borrowed: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry supply(funds: Q_Asset<TOK>) conserves TOK writes(deposited, vault) { guard in_asset == native; deposited.credit(caller, funds.amount); vault.merge(funds); }
+  entry supply(funds: Q_Asset<TOK>) conserves TOK writes(deposited, vault) { guard in_asset == token; deposited.credit(caller, funds.amount); vault.merge(funds); }
   entry borrow(amount: u64) reads(token, deposited) writes(borrowed) { guard deposited.get(caller) >= amount * 2; borrowed.credit(caller, amount); send_asset(token, caller, amount); }
-  entry repay(funds: Q_Asset<TOK>) conserves TOK writes(borrowed, vault) { guard in_asset == native; borrowed.debit(caller, funds.amount); vault.merge(funds); }
+  entry repay(funds: Q_Asset<TOK>) conserves TOK writes(borrowed, vault) { guard in_asset == token; borrowed.debit(caller, funds.amount); vault.merge(funds); }
 }"#
     ));
 }
@@ -230,7 +230,7 @@ fn an_auction_may_refund_the_previous_leader_from_state() {
   asset TOK;
   state { token: Q_Address; high: u64; leader: Q_Address; refund: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry bid(funds: Q_Asset<TOK>) conserves TOK writes(high, leader, refund, vault) { guard in_asset == native; guard funds.amount > high; refund.credit(leader, high); high = funds.amount; leader = caller; vault.merge(funds); }
+  entry bid(funds: Q_Asset<TOK>) conserves TOK writes(high, leader, refund, vault) { guard in_asset == token; guard funds.amount > high; refund.credit(leader, high); high = funds.amount; leader = caller; vault.merge(funds); }
   entry reclaim(amount: u64) reads(token) writes(refund) { refund.debit(caller, amount); send_asset(token, caller, amount); }
 }"#
     ));
@@ -425,7 +425,7 @@ fn declaring_an_asset_parameter_is_not_payment_without_a_floor() {
   asset TOK;
   state { token: Q_Address; members: Map<Q_Address, u64>; owner_of: Map<Q_Address, Q_Address>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry join(fee: Q_Asset<TOK>) conserves TOK writes(members, vault) { guard in_asset == native; members.set(caller, 1); vault.merge(fee); }
+  entry join(fee: Q_Asset<TOK>) conserves TOK writes(members, vault) { guard in_asset == token; members.set(caller, 1); vault.merge(fee); }
   entry hand(label: Q_Address, to: Q_Address) reads(members) writes(owner_of) { guard members.get(caller) > 0; owner_of.set(label, to); }
 }"#
     ));
@@ -540,7 +540,7 @@ fn a_credit_that_cancels_the_debit_backs_nothing() {
   asset TOK;
   state { token: Q_Address; bal: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry deposit(funds: Q_Asset<TOK>) conserves TOK writes(bal, vault) { guard in_asset == native; guard funds.amount > 0; bal.credit(caller, funds.amount); vault.merge(funds); }
+  entry deposit(funds: Q_Asset<TOK>) conserves TOK writes(bal, vault) { guard in_asset == token; guard funds.amount > 0; bal.credit(caller, funds.amount); vault.merge(funds); }
   entry withdraw(n: u64) reads(token, bal) writes(bal) { guard bal.get(caller) > 0; guard n > 0; bal.credit(caller, n); bal.debit(caller, n); send_asset(token, caller, n); }
 }"#
     ));
@@ -555,7 +555,7 @@ fn a_genuine_debit_still_backs_a_withdrawal() {
   asset TOK;
   state { token: Q_Address; bal: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
-  entry deposit(funds: Q_Asset<TOK>) conserves TOK writes(bal, vault) { guard in_asset == native; guard funds.amount > 0; bal.credit(caller, funds.amount); vault.merge(funds); }
+  entry deposit(funds: Q_Asset<TOK>) conserves TOK writes(bal, vault) { guard in_asset == token; guard funds.amount > 0; bal.credit(caller, funds.amount); vault.merge(funds); }
   entry withdraw(n: u64) reads(token, bal) writes(bal) { guard bal.get(caller) >= n; guard n > 0; bal.debit(caller, n); send_asset(token, caller, n); }
 }"#
     ));

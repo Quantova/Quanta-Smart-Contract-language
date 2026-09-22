@@ -5,6 +5,32 @@ use crate::emit::{Builder, LinkError};
 use crate::error::CodegenError;
 use crate::layout::{Layout, ADDR_WORDS};
 use crate::lower::{collect_signed_fields, lower_entry, EventSig};
+
+fn canonical_signed_fields(entry: &quanta_ast::EntryDecl, param: &str) -> Vec<String> {
+    let names: Vec<&str> = entry
+        .params
+        .iter()
+        .filter(|p| p.ty.name.text == "Q_Name")
+        .map(|p| p.name.text.as_str())
+        .collect();
+    let raw = collect_signed_fields(entry, param);
+    let mut out: Vec<String> = Vec::new();
+    for key in &raw {
+        let canonical = match key.split_once('.') {
+            Some((base, "len")) if names.contains(&base) => {
+                if raw.iter().any(|k| k == base) {
+                    continue;
+                }
+                format!("{base}#len")
+            }
+            _ => key.clone(),
+        };
+        if !out.contains(&canonical) {
+            out.push(canonical);
+        }
+    }
+    out
+}
 use crate::selector::{entry_selector, entry_signature, event_selector, event_signature};
 use qtv_vm::container::{Container, Entry, SELECTOR_BYTES};
 use qtv_vm::isa::Instr;
@@ -69,7 +95,7 @@ fn event_field_words(ev: &EventDecl) -> Vec<u64> {
 
 fn type_words(ty: &Type) -> u64 {
     match ty.name.text.as_str() {
-        "Q_Address" => ADDR_WORDS,
+        "Q_Address" | "Q_Name" => ADDR_WORDS,
         "u128" | "i128" => 2,
         _ => 1,
     }
@@ -234,7 +260,7 @@ fn compile_entries(
                 .filter(|p| p.signed_by.is_some())
                 .map(|p| SignedOrder {
                     param: p.name.text.clone(),
-                    fields: collect_signed_fields(entry, &p.name.text),
+                    fields: canonical_signed_fields(entry, &p.name.text),
                 })
                 .collect(),
         });
@@ -295,7 +321,15 @@ fn compile_entries(
         };
         let start = b.label();
         b.mark(start);
-        let genesis_args = lower_entry(&layout, &synthetic, &[], &events_map, &mut b, trap, true)?;
+        let genesis_args = lower_entry(
+            &layout,
+            &synthetic,
+            &invariants,
+            &events_map,
+            &mut b,
+            trap,
+            true,
+        )?;
         deploy_params = genesis_args
             .deploy_params()
             .iter()
