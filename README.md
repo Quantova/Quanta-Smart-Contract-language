@@ -13,7 +13,7 @@ The defining property of Quanta is that the classic smart contract exploits are 
 - Forged authorization cannot be assembled. Authority over an entry comes only from a parameter written `signed by` a party, a value produced by a real signature verification. Reconstructing authority by comparing self declared parameter data to a stored party is rejected as a forged authority.
 - Infinite mint is refused by conservation. Only an entry that declares `mints` or `burns` may change supply, and a mint must be gated by a signed party or a quorum. An entry that creates supply without the declaration, or that mints without authority, does not compile.
 - Dropped and double spent value are ruled out by linearity. An asset value must be used exactly once. Consuming it twice copies it and leaving it unused on a path drops it, and both are compile errors.
-- Front running is closed by the sealed rule. An order that competes for a pooled asset and is settled in a later call must be declared `sealed`, so it travels under key encapsulation and cannot be read in the mempool and outbid. An unsealed competitive order that gates on its own amount is rejected.
+- Front running is flagged by the sealed rule. An order that competes for a pooled asset and is settled in a later call must be declared `sealed`, and an unsealed competitive order that gates on its own amount is rejected. The declaration marks the order but does not yet hide it. No sealing is applied on the way to the chain today, so a sealed value is readable in the mempool like any other argument.
 
 The repository carries a corpus of six exploit contracts, one per class. Each is valid Quanta syntax and each is rejected by the checker for its own reason, and a test asserts that not one of them compiles clean.
 

@@ -197,6 +197,27 @@ fn a_guardian_set_deploy_param_seeds_the_whole_set() {
 }
 
 #[test]
+fn a_guardian_set_naming_one_address_twice_is_refused_at_genesis() {
+    let cc = compile(GUARDIAN_PARAM);
+    let dup: [[u8; 32]; 3] = [[0xA1; 32], [0xA1; 32], [0xC3; 32]];
+    let mut bytes = Vec::new();
+    for a in &dup {
+        bytes.extend_from_slice(a);
+    }
+    assert!(
+        run_genesis(&cc, &params_memory(&bytes)).is_err(),
+        "one key in two seats would count twice towards the quorum"
+    );
+    let mut late = [[0xA1; 32], [0xB2; 32], [0xB2; 32]];
+    late[2][31] = 0xB2;
+    let mut bytes = Vec::new();
+    for a in &late {
+        bytes.extend_from_slice(a);
+    }
+    assert!(run_genesis(&cc, &params_memory(&bytes)).is_err());
+}
+
+#[test]
 fn a_deploy_param_read_outside_genesis_is_refused() {
     let src = "contract Bad {\n\
       state { owner: Q_Address; }\n\

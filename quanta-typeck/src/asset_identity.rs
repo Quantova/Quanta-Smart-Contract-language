@@ -17,11 +17,24 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
 }
 
 /// Whether this guard mentions the asset that was actually carried.
-fn guard_mentions_in_asset(stmt: &Stmt) -> bool {
+fn guard_mentions_in_asset(model: &Model, entry: &EntryDecl, stmt: &Stmt) -> bool {
     let Stmt::Guard { expr, .. } = stmt else {
         return false;
     };
-    binds_in_asset(expr)
+    binds_in_asset(model, entry, expr)
+}
+
+/// What `in_asset` may be pinned to: native value, or an issuer the contract stored. A
+/// parameter is chosen by the caller, so `in_asset == pay_token` lets them name an asset
+/// they minted themselves and pay with that.
+fn names_a_fixed_asset(model: &Model, entry: &EntryDecl, expr: &Expr) -> bool {
+    match expr {
+        Expr::Native { .. } => true,
+        Expr::Ident(id) => {
+            model.is_state(&id.text) && !entry.params.iter().any(|p| p.name.text == id.text)
+        }
+        _ => false,
+    }
 }
 
 /// Whether this guard expression actually PINS the asset kind. Merely mentioning
@@ -30,25 +43,29 @@ fn guard_mentions_in_asset(stmt: &Stmt) -> bool {
 /// caller still pays with an asset they minted themselves. Only an equality against
 /// something else counts, and only in a position that must hold, so the two sides of an
 /// `||` are not enough on their own while both sides of an `&&` each are.
-fn binds_in_asset(expr: &Expr) -> bool {
+fn binds_in_asset(model: &Model, entry: &EntryDecl, expr: &Expr) -> bool {
     match expr {
         Expr::Binary {
             op: BinOp::And,
             left,
             right,
             ..
-        } => binds_in_asset(left) || binds_in_asset(right),
+        } => binds_in_asset(model, entry, left) || binds_in_asset(model, entry, right),
         Expr::Binary {
             op: BinOp::Eq,
             left,
             right,
             ..
-        } => {
-            let l = matches!(**left, Expr::InAsset { .. });
-            let r = matches!(**right, Expr::InAsset { .. });
-            // Exactly one side, so `in_asset == in_asset` does not count.
-            l != r
-        }
+        } => match (&**left, &**right) {
+            // Exactly one side, so `in_asset == in_asset` does not count, and the other
+            // side must be an asset the caller cannot choose.
+            (Expr::InAsset { .. }, other) | (other, Expr::InAsset { .. })
+                if !matches!(other, Expr::InAsset { .. }) =>
+            {
+                names_a_fixed_asset(model, entry, other)
+            }
+            _ => false,
+        },
         _ => false,
     }
 }
@@ -60,12 +77,15 @@ fn binds_in_asset(expr: &Expr) -> bool {
 /// caller mints a worthless asset of their own and pays with that: the amount agrees and
 /// the entry credits them as if they had paid the real thing. `guard in_asset == native`
 /// states native value, `guard in_asset == some_token` states a specific issuer.
-fn asset_kind_is_stated(entry: &EntryDecl) -> Result<(), TypeError> {
+fn asset_kind_is_stated(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     let takes_asset = entry.params.iter().any(|p| asset_inner(&p.ty).is_some());
     if !takes_asset {
         return Ok(());
     }
-    let stated = entry.body.iter().any(guard_mentions_in_asset);
+    let stated = entry
+        .body
+        .iter()
+        .any(|stmt| guard_mentions_in_asset(model, entry, stmt));
     if stated {
         return Ok(());
     }
@@ -159,7 +179,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if let Some(err) = amount_credited_while_sent(entry, &kinds) {
         return Err(err);
     }
-    asset_kind_is_stated(entry)?;
+    asset_kind_is_stated(model, entry)?;
     Ok(())
 }
 
@@ -535,6 +555,32 @@ mod tests {
                    { x = funds.amount; send(to, funds); } }";
         let msg = error_for(src);
         assert!(msg.contains("send_asset"), "got: {msg}");
+    }
+
+    #[test]
+    fn pinning_in_asset_to_a_parameter_the_caller_picks_is_not_naming_the_asset() {
+        let src = "contract C { state { paid: u128; } \
+                   entry pay(funds: Q_Asset<QTOV>, pay_token: Q_Address) conserves QTOV writes(paid) \
+                   { guard in_asset == pay_token; paid = funds.amount; } }";
+        assert!(error_for(src).contains("never says which one"));
+    }
+
+    #[test]
+    fn pinning_in_asset_to_a_stored_issuer_names_the_asset() {
+        let src = "contract C { asset TKN; state { token: Q_Address; paid: u128; } \
+                   entry pay(funds: Q_Asset<TKN>) conserves TKN writes(paid) \
+                   { guard in_asset == token; paid = funds.amount; } }";
+        let program = quanta_parser::parse(src).expect("source parses");
+        let model = Model::build(&program.contracts[0]);
+        let result = super::check(&model);
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .map_or(true, |e| !e.message.contains("never says which one")),
+            "a stored issuer satisfies the rule: {:?}",
+            result.err().map(|e| e.message)
+        );
     }
 
     #[test]

@@ -2387,6 +2387,85 @@ fn lower_bounds_prologue(
     Ok(())
 }
 
+fn lower_name_tail_is_zero(
+    ctx: &mut Ctx,
+    window_off: u64,
+    len: Reg,
+    trap: Label,
+    span: Span,
+) -> Result<(), CodegenError> {
+    for word in 0..NAME_WINDOW / WORD {
+        let start = word * WORD;
+        let next = ctx.b.label();
+        let whole = ctx.b.label();
+        let edge = ctx.regs.alloc(span)?;
+        let cover = ctx.regs.alloc(span)?;
+        // len >= start + 8: the whole word is name, nothing to check.
+        ctx.b.op(Instr::Ldi {
+            d: edge,
+            imm: start + WORD - 1,
+        });
+        ctx.b.op(Instr::GtU {
+            d: cover,
+            a: len,
+            b: edge,
+        });
+        ctx.b.jnz(cover, next);
+        // len <= start: none of the word is name, all of it must be zero.
+        ctx.b.op(Instr::Ldi {
+            d: edge,
+            imm: start,
+        });
+        ctx.b.op(Instr::GtU {
+            d: cover,
+            a: len,
+            b: edge,
+        });
+        ctx.b.jz(cover, whole);
+        // Partly name: shift the name bytes out, and what is left must be zero.
+        ctx.b.op(Instr::Sub {
+            d: cover,
+            a: len,
+            b: edge,
+        });
+        ctx.b.op(Instr::Ldi { d: edge, imm: 3 });
+        ctx.b.op(Instr::Shl {
+            d: cover,
+            a: cover,
+            b: edge,
+        });
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: window_off + start,
+        });
+        ctx.b.op(Instr::MLoad {
+            d: edge,
+            a: SCRATCH,
+        });
+        ctx.b.op(Instr::Shl {
+            d: edge,
+            a: edge,
+            b: cover,
+        });
+        ctx.b.jnz(edge, trap);
+        ctx.b.jmp(next);
+        ctx.b.mark(whole);
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: window_off + start,
+        });
+        ctx.b.op(Instr::MLoad {
+            d: edge,
+            a: SCRATCH,
+        });
+        ctx.b.jnz(edge, trap);
+        ctx.b.mark(next);
+        ctx.regs.free(cover);
+        ctx.regs.free(edge);
+    }
+    Ok(())
+}
+
 fn lower_name_prologue(ctx: &mut Ctx, entry: &EntryDecl, trap: Label) -> Result<(), CodegenError> {
     let names: Vec<(String, Span)> = entry
         .params
@@ -2414,6 +2493,12 @@ fn lower_name_prologue(ctx: &mut Ctx, entry: &EntryDecl, trap: Label) -> Result<
         ctx.b.jnz(over, trap);
         ctx.regs.free(over);
         ctx.regs.free(bound);
+
+        // The window must be canonical: every byte past `len` zero. Otherwise the key is
+        // drawn from a prefix while a signature, an event or an address read sees the whole
+        // window, so a relayer can point a signed "alice" at "ali", and "paypal" can be
+        // registered as "paypa" while the event names "paypal".
+        lower_name_tail_is_zero(ctx, window_off, len, trap, *span)?;
 
         let rptr = ctx.regs.alloc(*span)?;
         ctx.b.op(Instr::Ldi {
@@ -4690,6 +4775,38 @@ fn lower_assign(
                 })
             }
         };
+        // Every seat a different address. The same key in two seats signs two nonces and
+        // fills both, so a 4 of 7 quorum would be met by 3 keys.
+        for i in 0..count {
+            for j in (i + 1)..count {
+                let same = ctx.regs.alloc(span)?;
+                ctx.b.op(Instr::Ldi { d: same, imm: 0 });
+                for w in 0..ADDR_WORDS {
+                    let a = ctx.regs.alloc(span)?;
+                    let b = ctx.regs.alloc(span)?;
+                    ctx.b.op(Instr::Ldi {
+                        d: SCRATCH,
+                        imm: src_off + (i * ADDR_WORDS + w) * WORD,
+                    });
+                    ctx.b.op(Instr::MLoad { d: a, a: SCRATCH });
+                    ctx.b.op(Instr::Ldi {
+                        d: SCRATCH,
+                        imm: src_off + (j * ADDR_WORDS + w) * WORD,
+                    });
+                    ctx.b.op(Instr::MLoad { d: b, a: SCRATCH });
+                    ctx.b.op(Instr::Xor { d: a, a, b });
+                    ctx.b.op(Instr::Or {
+                        d: same,
+                        a: same,
+                        b: a,
+                    });
+                    ctx.regs.free(b);
+                    ctx.regs.free(a);
+                }
+                ctx.b.jz(same, ctx.trap);
+                ctx.regs.free(same);
+            }
+        }
         for w in 0..words {
             let r = ctx.regs.alloc(span)?;
             ctx.b.op(Instr::Ldi {

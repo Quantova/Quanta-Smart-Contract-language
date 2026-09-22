@@ -139,37 +139,54 @@ fn different_labels_hash_to_different_keys() {
 }
 
 #[test]
-fn the_declared_length_is_bound_into_the_key() {
+fn a_window_carrying_bytes_past_its_length_reverts() {
     let cc = compiled();
+    // "alicexyz" declared as 5 or 3 bytes: the key would come from a prefix while a
+    // signature or an event sees the whole window, so a relayer could point a signed
+    // "alice" at "ali". Only a window zero past its length is a name.
     let w = window(b"alicexyz");
-    let s5 = run_claim(&cc, &w, 5, 10).expect("claim halts");
-    let s3 = run_claim(&cc, &w, 3, 20).expect("claim halts");
+    assert!(run_claim(&cc, &w, 5, 10).is_err());
+    assert!(run_claim(&cc, &w, 3, 20).is_err());
 
-    let k5 = expected_key(&w, 5);
-    let k3 = expected_key(&w, 3);
-    assert_ne!(
-        k5, k3,
-        "a shorter declared length derives a different key from the same window"
+    let alice = run_claim(&cc, &window(b"alice"), 5, 10).expect("a canonical name halts");
+    let ali = run_claim(&cc, &window(b"ali"), 3, 20).expect("a canonical name halts");
+    let k5 = expected_key(&window(b"alice"), 5);
+    let k3 = expected_key(&window(b"ali"), 3);
+    assert_ne!(k5, k3);
+    assert_eq!(alice.get(&k5).copied(), Some(10));
+    assert_eq!(ali.get(&k3).copied(), Some(20));
+    assert_eq!(alice.get(&slot_key(1)).copied(), Some(5));
+    assert_eq!(ali.get(&slot_key(1)).copied(), Some(3));
+}
+
+#[test]
+fn the_tail_check_holds_at_every_word_boundary() {
+    let cc = compiled();
+    let mut stray = window(b"abcdefgh");
+    stray[20] = b'z';
+    assert!(
+        run_claim(&cc, &stray, 8, 1).is_err(),
+        "a stray byte in a later word"
     );
-    assert_eq!(s5.get(&k5).copied(), Some(10));
-    assert_eq!(s3.get(&k3).copied(), Some(20));
-    assert_eq!(
-        s5.get(&slot_key(1)).copied(),
-        Some(5),
-        "the length reported is the length declared"
-    );
-    assert_eq!(
-        s3.get(&slot_key(1)).copied(),
-        Some(3),
-        "the length reported is the length declared"
+    let mut edge = window(b"abcdefgh");
+    edge[8] = b'z';
+    assert!(
+        run_claim(&cc, &edge, 8, 1).is_err(),
+        "the byte right after a full word"
     );
     assert!(
-        !s3.contains_key(&k5),
-        "a run that reports length 3 never reaches the length 5 key"
+        run_claim(&cc, &window(b"abcdefgh"), 8, 1).is_ok(),
+        "exactly one full word"
     );
     assert!(
-        !s5.contains_key(&k3),
-        "a run that reports length 5 never reaches the length 3 key"
+        run_claim(&cc, &window(b"abcdefghijklm"), 13, 1).is_ok(),
+        "a name spanning two words"
+    );
+    let full = [b'q'; 32];
+    assert!(run_claim(&cc, &full, 32, 1).is_ok(), "the whole window");
+    assert!(
+        run_claim(&cc, &full, 31, 1).is_err(),
+        "one stray byte at the very end"
     );
 }
 

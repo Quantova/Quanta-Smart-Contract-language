@@ -3,7 +3,8 @@
 
 use crate::error::TypeError;
 use crate::model::Model;
-use quanta_ast::{Clause, EntryDecl, Expr, GenericArg, Item, Stmt, Type};
+use quanta_ast::{AfterTarget, Clause, EntryDecl, Expr, GenericArg, Item, Stmt, Type};
+use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
@@ -11,6 +12,7 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
     check_no_duplicate_entries(model)?;
     check_no_shadowed_names(model)?;
     check_emit_arity(model)?;
+    check_deployer_only_in_genesis(model)?;
     for item in &model.contract.items {
         if let Item::Genesis(g) = item {
             for stmt in &g.body {
@@ -56,6 +58,12 @@ fn check_emit_arity(model: &Model) -> Result<(), TypeError> {
     }
     for entry in &model.entries {
         check_emit_arity_in(&entry.body, &events)?;
+    }
+    // Genesis emits too, and its record is read by the same published ABI.
+    for item in &model.contract.items {
+        if let Item::Genesis(genesis) = item {
+            check_emit_arity_in(&genesis.body, &events)?;
+        }
     }
     Ok(())
 }
@@ -312,6 +320,79 @@ fn is_external_address(expr: &Expr, addresses: &HashSet<&str>) -> bool {
     }
 }
 
+/// `deployer` is the account that deployed the contract, and it is only the caller while
+/// genesis runs. Anywhere else the code generator has nothing to read it from but the
+/// caller slot, so `guard caller == deployer` would compare the caller with itself and let
+/// anyone through. Genesis must store it, and entries compare against the stored field.
+fn check_deployer_only_in_genesis(model: &Model) -> Result<(), TypeError> {
+    let refuse = |span: Span| {
+        TypeError::new(
+            "`deployer` is only known while genesis runs. Store it there, for example \
+             `owner = deployer;`, and compare against that field; inside an entry it would \
+             read as the current caller"
+                .to_string(),
+            span,
+        )
+    };
+    for item in &model.contract.items {
+        let mut exprs: Vec<&Expr> = Vec::new();
+        match item {
+            Item::Invariant(decl) => exprs.push(&decl.expr),
+            Item::Entry(entry) => {
+                for param in &entry.params {
+                    if let Some(signer) = &param.signed_by {
+                        if signer.text == "deployer" {
+                            return Err(refuse(signer.span));
+                        }
+                    }
+                }
+                for clause in &entry.clauses {
+                    match clause {
+                        Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => {
+                            exprs.push(expr)
+                        }
+                        Clause::After { target, from, .. } => {
+                            if let AfterTarget::Expr(expr) = target {
+                                exprs.push(expr);
+                            }
+                            if let Some(expr) = from {
+                                exprs.push(expr);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let mut found: Option<Span> = None;
+                for stmt in &entry.body {
+                    for_each_expr(stmt, &mut |expr| note_deployer(expr, &mut found));
+                }
+                if let Some(span) = found {
+                    return Err(refuse(span));
+                }
+            }
+            _ => {}
+        }
+        let mut found: Option<Span> = None;
+        for expr in exprs {
+            walk(expr, &mut |e| note_deployer(e, &mut found));
+        }
+        if let Some(span) = found {
+            return Err(refuse(span));
+        }
+    }
+    Ok(())
+}
+
+fn note_deployer(expr: &Expr, found: &mut Option<Span>) {
+    if found.is_none() {
+        if let Expr::Ident(id) = expr {
+            if id.text == "deployer" {
+                *found = Some(id.span);
+            }
+        }
+    }
+}
+
 fn for_each_expr(stmt: &Stmt, f: &mut impl FnMut(&Expr)) {
     match stmt {
         Stmt::Guard { expr, .. } | Stmt::Expr { expr, .. } => walk(expr, f),
@@ -374,6 +455,45 @@ mod tests {
         super::check(&model)
             .expect_err("checker should reject")
             .message
+    }
+
+    fn accepted(src: &str) -> bool {
+        let program = quanta_parser::parse(src).expect("source parses");
+        let model = Model::build(&program.contracts[0]);
+        super::check(&model).is_ok()
+    }
+
+    #[test]
+    fn deployer_inside_an_entry_is_refused_because_it_would_read_as_the_caller() {
+        let guard = "contract Admin { state { owner: Q_Address; fee: u64; } \
+                     genesis { owner = deployer; } \
+                     entry set_fee(bps: u64) writes(fee) { guard caller == deployer; fee = bps; } }";
+        assert!(error_for(guard).contains("only known while genesis runs"));
+
+        let denies = "contract Admin { state { owner: Q_Address; fee: u64; } \
+                      genesis { owner = deployer; } \
+                      entry set_fee(bps: u64) writes(fee) denies caller != deployer { fee = bps; } }";
+        assert!(error_for(denies).contains("only known while genesis runs"));
+
+        let assign = "contract Admin { state { owner: Q_Address; } \
+                      genesis { owner = deployer; } \
+                      entry reset() writes(owner) { owner = deployer; } }";
+        assert!(error_for(assign).contains("only known while genesis runs"));
+    }
+
+    #[test]
+    fn a_genesis_emit_of_the_wrong_arity_is_refused() {
+        let src = "contract C { state { a: u64; } event Minted(amount: u64); \
+                   genesis { emit Minted(1, 2, 3); } entry f() writes(a) { a = 1; } }";
+        assert!(error_for(src).contains("declared with 1 field"));
+    }
+
+    #[test]
+    fn deployer_in_genesis_and_the_stored_owner_in_an_entry_are_accepted() {
+        let src = "contract Admin { state { owner: Q_Address; fee: u64; } \
+                   genesis { owner = deployer; } \
+                   entry set_fee(bps: u64) writes(fee) { guard caller == owner; fee = bps; } }";
+        assert!(accepted(src));
     }
 
     #[test]
