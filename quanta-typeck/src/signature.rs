@@ -1706,8 +1706,8 @@ fn only_reduces_the_field(entry: &EntryDecl, field: &str) -> bool {
                             return;
                         }
                         match name.text.as_str() {
-                            "debit" | "remove" => saw = true,
-                            "credit" | "set" | "insert" => {
+                            "debit" => saw = true,
+                            "credit" | "set" | "insert" | "remove" => {
                                 saw = true;
                                 let reduces = name.text != "credit" && row_reduction(field, args);
                                 if !reduces {
@@ -1962,6 +1962,15 @@ fn forged_ownership_transfer(
                             if matches!(args.first(), Some(Expr::Caller { .. })) {
                                 return;
                             }
+                            if name.text == "remove" {
+                                let paid = args
+                                    .first()
+                                    .is_some_and(|key| pays_the_holder(entry, &map.text, key));
+                                if !paid {
+                                    forged = Some(map.text.clone());
+                                }
+                                return;
+                            }
                             if let Some(value) = args.get(1) {
                                 if handed(value) {
                                     forged = Some(map.text.clone());
@@ -1985,6 +1994,38 @@ fn forged_ownership_transfer(
             entry.name.span,
         )
     })
+}
+
+fn pays_the_holder(entry: &EntryDecl, map: &str, key: &Expr) -> bool {
+    let holder_of = |e: &Expr| {
+        let Expr::Call { callee, args, .. } = e else {
+            return false;
+        };
+        let Expr::Field { base, name, .. } = callee.as_ref() else {
+            return false;
+        };
+        name.text == "get"
+            && matches!(base.as_ref(), Expr::Ident(m) if m.text == map)
+            && args.first().is_some_and(|k| expr_eq(k, key))
+    };
+    let mut paid = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            let Expr::Call { callee, args, .. } = e else {
+                return;
+            };
+            let recipient = match callee.as_ref() {
+                Expr::Ident(id) if id.text == "send" => args.first(),
+                Expr::Ident(id) if id.text == "send_asset" => args.get(1),
+                Expr::Field { name, .. } if name.text == "credit" => args.first(),
+                _ => None,
+            };
+            if recipient.is_some_and(holder_of) {
+                paid = true;
+            }
+        });
+    }
+    paid
 }
 
 fn forged_signed_authority(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
@@ -3726,6 +3767,36 @@ mod tests {
         if let Err(e) = super::check(&model) {
             panic!("checker should accept this contract, got {}", e.message);
         }
+    }
+
+    #[test]
+    fn removing_a_row_the_caller_does_not_hold_needs_authority() {
+        let burn = "contract C { state { owner_of: Map<Q_Id, Q_Address>; } \
+                    entry burn(id: Q_Id) writes(owner_of) { owner_of.remove(id); } }";
+        assert!(error_for(burn).contains("hands ownership"));
+        let own_burn = "contract C { state { owner_of: Map<Q_Id, Q_Address>; } \
+                        entry burn(id: Q_Id) writes(owner_of) \
+                        { guard owner_of.get(id) == caller; owner_of.remove(id); } }";
+        accepts(own_burn);
+    }
+
+    #[test]
+    fn a_free_removal_leaves_a_deny_list_unprotected() {
+        let src = "contract C { state { owner: Q_Address; vault: Q_Asset<QTOV>; \
+                   frozen: Registry<Q_Address>; balances: Map<Q_Address, u64>; } \
+                   genesis { owner = deployer; } \
+                   entry freeze(order: FreezeOrder signed by owner) writes(frozen) \
+                   { frozen.insert(order.who); } \
+                   entry thaw(who: Q_Address) writes(frozen) { frozen.remove(who); } \
+                   entry deposit(funds: Q_Asset<QTOV>) conserves QTOV writes(vault, balances) \
+                   { guard in_asset == native; balances.credit(caller, funds.amount); vault.merge(funds); } \
+                   entry withdraw(amount: u64) conserves QTOV writes(vault, balances) \
+                   denies frozen.contains(caller) \
+                   { balances.debit(caller, amount); let out = vault.split(amount); send(caller, out); } }";
+        assert!(!super::authority_anchor_protected(
+            &crate::model::Model::build(&quanta_parser::parse(src).unwrap().contracts[0]),
+            "frozen"
+        ));
     }
 
     #[test]
