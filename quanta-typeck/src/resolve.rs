@@ -146,7 +146,7 @@ fn check_emit_arity_in(body: &[Stmt], events: &HashMap<&str, usize>) -> Result<(
             if args.len() != *declared {
                 return Err(TypeError::new(
                     format!(
-                        "the event `{}` is declared with {declared} field(s) but emitted                          with {}, so the record written would not match the signature the                          selector publishes",
+                        "the event `{}` is declared with {declared} field(s) but emitted with {}, so the record written would not match the signature the selector publishes",
                         name.text,
                         args.len()
                     ),
@@ -174,7 +174,7 @@ fn check_no_shadowed_names(model: &Model) -> Result<(), TypeError> {
             if fields.contains(name) {
                 return Err(TypeError::new(
                     format!(
-                        "the parameter `{name}` has the same name as a state field, and the                          two resolve differently, so the body would read the field where the                          signature says the parameter"
+                        "the parameter `{name}` has the same name as a state field, and the two resolve differently, so the body would read the field where the signature says the parameter"
                     ),
                     param.name.span,
                 ));
@@ -202,7 +202,7 @@ fn check_no_shadowed_lets(
             if fields.contains(text) {
                 return Err(TypeError::new(
                     format!(
-                        "the local `{text}` has the same name as a state field, so an                          invariant or a later read naming it would take the local instead                          of the field"
+                        "the local `{text}` has the same name as a state field, so an invariant or a later read naming it would take the local instead of the field"
                     ),
                     *span,
                 ));

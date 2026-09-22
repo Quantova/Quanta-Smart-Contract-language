@@ -36,3 +36,34 @@ fn a_sane_width_board_still_compiles() {
     quanta_typeck::check(&program).expect("typecheck");
     compile_contract(&program.contracts[0]).expect("a sane width board compiles");
 }
+
+fn many_sends(count: usize) -> String {
+    let body: String = (0..count)
+        .map(|_| "send_asset(caller, caller, 1); ")
+        .collect();
+    format!(
+        "contract Spray {{ state {{ owner: Q_Address; }} \
+         genesis {{ owner = deployer; }} \
+         entry spray() {{ guard caller == owner; {body}}} }}"
+    )
+}
+
+#[test]
+fn an_entry_whose_working_memory_outgrows_the_machine_is_refused() {
+    let program = quanta_parser::parse(&many_sends(400)).expect("parse");
+    quanta_typeck::check(&program).expect("typecheck");
+    let err = compile_contract(&program.contracts[0])
+        .expect_err("the working memory would run past the machine's memory");
+    let text = format!("{err:?}");
+    assert!(
+        text.contains("working memory"),
+        "the rejection names the overrun, got {text}"
+    );
+}
+
+#[test]
+fn an_entry_with_a_few_sends_still_compiles() {
+    let program = quanta_parser::parse(&many_sends(8)).expect("parse");
+    quanta_typeck::check(&program).expect("typecheck");
+    compile_contract(&program.contracts[0]).expect("a few sends compile");
+}

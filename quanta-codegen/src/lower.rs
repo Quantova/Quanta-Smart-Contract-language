@@ -1720,6 +1720,14 @@ pub fn lower_entry(
                 ctx.regs.free(r);
             }
         }
+        if ctx.next_asset_local > EVENT_BASE
+            || ctx.next_state_addr_scratch > qtv_vm::state::MEM_BYTES as u64
+        {
+            return Err(CodegenError::Unsupported {
+                what: "an entry needing more working memory than the machine provides".to_string(),
+                span: entry.span,
+            });
+        }
     }
     if let Some(field) = args.unsigned_arg() {
         return Err(CodegenError::Rejected {
@@ -3721,6 +3729,12 @@ fn lower_emit(ctx: &mut Ctx, name: &str, args: &[Expr], span: Span) -> Result<()
         }
     }
 
+    if offset > SIGNER_ADDR_SCRATCH {
+        return Err(CodegenError::Unsupported {
+            what: format!("an emit of `{name}` wider than the event region"),
+            span,
+        });
+    }
     let len = offset - EVENT_BASE;
     let off_reg = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi {
