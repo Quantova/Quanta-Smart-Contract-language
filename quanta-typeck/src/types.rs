@@ -186,7 +186,11 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
                 env.ty_of(value)?;
             }
             Stmt::Assign { .. } | Stmt::Expr { .. } => env.check_stmt_types(stmt)?,
-            Stmt::Emit { .. } => {}
+            Stmt::Emit { args, .. } => {
+                for arg in args {
+                    env.ty_of(arg)?;
+                }
+            }
         }
     }
     check_arithmetic(entry, &env.params)?;
@@ -278,6 +282,28 @@ impl<'a> Env<'a> {
         matches!(field.ty.name.text.as_str(), "Map" | "Registry").then_some(*field)
     }
 
+    fn expect_asset_receiver(&self, callee: &Expr) -> Result<(), TypeError> {
+        let Expr::Field { base, name, .. } = callee else {
+            return Ok(());
+        };
+        if !matches!(name.text.as_str(), "merge" | "split") {
+            return Ok(());
+        }
+        let pool = match base.as_ref() {
+            Expr::Ident(id) if !self.params.contains_key(id.text.as_str()) => {
+                self.model.state.get(id.text.as_str())
+            }
+            _ => None,
+        };
+        match pool {
+            Some(field) if field.ty.name.text == "Q_Asset" => Ok(()),
+            _ => Err(TypeError::new(
+                format!("`{}` works only on a Q_Asset state field", name.text),
+                base.span(),
+            )),
+        }
+    }
+
     fn expect_predicate(&self, expr: &Expr) -> Result<(), TypeError> {
         let ty = self.ty_of(expr)?;
         if matches!(ty, Ty::Bool | Ty::Unknown) {
@@ -311,6 +337,7 @@ impl<'a> Env<'a> {
                 _ => Ty::Unknown,
             }),
             Expr::Call { callee, args, .. } => {
+                self.expect_asset_receiver(callee)?;
                 for arg in args {
                     self.ty_of(arg)?;
                 }
@@ -715,6 +742,12 @@ mod tests {
         let overwrite = "contract C { state { vault: Q_Asset<QTOV>; } \
                          entry put(funds: Q_Asset<QTOV>) writes(vault) { vault = funds; } }";
         assert!(error_for(overwrite).contains("changes only by merge"));
+        let absorbed = "contract C { state { count: u64; } \
+                        entry put(funds: Q_Asset<QTOV>) writes(count) { count.merge(funds); } }";
+        assert!(error_for(absorbed).contains("works only on a Q_Asset state field"));
+        let drawn = "contract C { state { count: u64; } \
+                     entry take() writes(count) { send(caller, count.split(5)); } }";
+        assert!(error_for(drawn).contains("works only on a Q_Asset state field"));
         let mistyped = "contract C { state { owner: Q_Address; count: u64 = owner; } }";
         assert!(error_for(mistyped).contains("cannot be stored"));
         ok("contract C { state { cap: u64 = 50_000; paused: bool = 0; } }");
