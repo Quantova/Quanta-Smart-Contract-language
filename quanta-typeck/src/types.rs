@@ -236,6 +236,25 @@ impl<'a> Env<'a> {
                     AssignOp::Set => compatible(slot, given),
                     AssignOp::Add | AssignOp::Sub => numeric(slot) && numeric(given),
                 };
+                if let (Expr::Ident(id), Expr::Int(lit)) = (target, value) {
+                    let max = self
+                        .model
+                        .state
+                        .get(id.text.as_str())
+                        .and_then(|field| narrow_max(&field.ty.name.text));
+                    let literal = lit.text.replace('_', "").parse::<u128>().ok();
+                    if let (Some(max), Some(literal)) = (max, literal) {
+                        if literal > u128::from(max) {
+                            return Err(TypeError::new(
+                                format!(
+                                    "{literal} does not fit `{}`, whose largest value is {max}",
+                                    id.text
+                                ),
+                                value.span(),
+                            ));
+                        }
+                    }
+                }
                 if !fits {
                     return Err(TypeError::new(
                         format!(
@@ -584,6 +603,16 @@ fn asset_calls_consumed(stmt: &Stmt) -> Result<(), TypeError> {
     }
 }
 
+fn narrow_max(ty: &str) -> Option<u64> {
+    match ty {
+        "bool" => Some(1),
+        "u8" => Some(u64::from(u8::MAX)),
+        "u16" => Some(u64::from(u16::MAX)),
+        "u32" => Some(u64::from(u32::MAX)),
+        _ => None,
+    }
+}
+
 fn is_zero_literal(expr: &Expr) -> bool {
     matches!(expr, Expr::Int(n) if n.text.replace('_', "").trim_start_matches('0').is_empty())
 }
@@ -902,6 +931,12 @@ mod tests {
         let named_credit = "contract C { state { balances: Map<Q_Address, u64>; } \
                             entry pay(to: Q_Address) writes(balances) { balances.credit(to, to); } }";
         assert!(error_for(named_credit).contains("moves only a number"));
+        let wide_default = "contract C { state { level: u8 = 300; } }";
+        assert!(error_for(wide_default).contains("does not fit"));
+        let wide_flag =
+            "contract C { state { paused: bool; } entry p() writes(paused) { paused = 2; } }";
+        assert!(error_for(wide_flag).contains("does not fit"));
+        ok("contract C { state { level: u8 = 255; paused: bool = 1; } }");
         let mistyped = "contract C { state { owner: Q_Address; count: u64 = owner; } }";
         assert!(error_for(mistyped).contains("cannot be stored"));
         ok("contract C { state { cap: u64 = 50_000; paused: bool = 0; } }");
