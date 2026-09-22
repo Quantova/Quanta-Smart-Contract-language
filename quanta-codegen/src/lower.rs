@@ -325,7 +325,14 @@ fn parse_date_epoch(text: &str, span: Span) -> Result<u64, CodegenError> {
     let y: i64 = parts[0].parse().map_err(|_| bad())?;
     let m: i64 = parts[1].parse().map_err(|_| bad())?;
     let d: i64 = parts[2].parse().map_err(|_| bad())?;
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let month_days = match m {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if !(1..=12).contains(&m) || !(1..=month_days).contains(&d) {
         return Err(bad());
     }
     let days = days_from_civil(y, m, d);
@@ -5068,6 +5075,24 @@ mod tests {
     use qtv_vm::interp::Interpreter;
     use quanta_ast::{Item, Stmt};
     use std::collections::BTreeMap;
+
+    #[test]
+    fn a_day_the_month_does_not_have_is_refused() {
+        let span = Span::default();
+        assert!(parse_date_epoch("2026-02-29", span).is_err());
+        assert!(parse_date_epoch("2026-02-31", span).is_err());
+        assert!(parse_date_epoch("2026-04-31", span).is_err());
+        assert!(parse_date_epoch("2100-02-29", span).is_err());
+        assert_eq!(
+            parse_date_epoch("2028-02-29", span).unwrap(),
+            parse_date_epoch("2028-03-01", span).unwrap() - 86_400
+        );
+        assert_eq!(
+            parse_date_epoch("2000-02-29", span).unwrap(),
+            parse_date_epoch("2000-03-01", span).unwrap() - 86_400
+        );
+        assert_eq!(parse_date_epoch("1970-01-01", span).unwrap(), 0);
+    }
 
     fn harness(expr_src: &str) -> (Layout, HashSet<String>, Expr) {
         let src = format!(
