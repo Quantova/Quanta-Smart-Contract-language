@@ -43,7 +43,71 @@ fn guardian_bound(ty: &Type) -> Result<(), TypeError> {
     }
 }
 
+fn storable(ty: &Type) -> Result<(), TypeError> {
+    let refuse = |what: String, at| Err(TypeError::new(what, at));
+    match ty.name.text.as_str() {
+        "Q_Name" => refuse(
+            "a name cannot be stored, a slot keeps only its first eight bytes; key a map or \
+             registry by the name instead"
+                .into(),
+            ty.span,
+        ),
+        keyed @ ("Map" | "Registry") => {
+            let arity = if keyed == "Map" { 2 } else { 1 };
+            if ty.args.len() != arity {
+                return refuse(format!("a {keyed} takes {arity} type arguments"), ty.span);
+            }
+            for (index, arg) in ty.args.iter().enumerate() {
+                let GenericArg::Type(inner) = arg else {
+                    return refuse(format!("a {keyed} takes only type arguments"), ty.span);
+                };
+                let is_key = index == 0;
+                let fits = match ty_of_decl(inner) {
+                    Ty::Name => is_key,
+                    Ty::Unknown | Ty::Asset | Ty::Str => false,
+                    _ => inner.args.is_empty(),
+                };
+                if !fits {
+                    return refuse(
+                        format!(
+                            "`{}` cannot be a {keyed} {}",
+                            type_text(inner),
+                            if is_key { "key" } else { "value" }
+                        ),
+                        inner.span,
+                    );
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn type_text(ty: &Type) -> String {
+    if ty.args.is_empty() {
+        return ty.name.text.clone();
+    }
+    let args: Vec<String> = ty
+        .args
+        .iter()
+        .map(|arg| match arg {
+            GenericArg::Type(inner) => type_text(inner),
+            GenericArg::Int(i) => i.text.clone(),
+            _ => "_".into(),
+        })
+        .collect();
+    format!("{}<{}>", ty.name.text, args.join(", "))
+}
+
 pub fn check(model: &Model) -> Result<(), TypeError> {
+    for item in &model.contract.items {
+        if let Item::State(block) = item {
+            for field in &block.fields {
+                storable(&field.ty)?;
+            }
+        }
+    }
     for field in model.state.values() {
         guardian_bound(&field.ty)?;
     }
@@ -63,6 +127,17 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
     }
     for entry in &model.entries {
         check_entry(model, entry)?;
+    }
+    for item in &model.contract.items {
+        if let Item::Genesis(genesis) = item {
+            let env = Env {
+                model,
+                params: HashMap::new(),
+            };
+            for stmt in &genesis.body {
+                env.check_stmt_types(stmt)?;
+            }
+        }
     }
     Ok(())
 }
@@ -88,10 +163,8 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
             Stmt::Let { value, .. } => {
                 env.ty_of(value)?;
             }
-            Stmt::Assign { value, .. } => {
-                env.ty_of(value)?;
-            }
-            Stmt::Emit { .. } | Stmt::Expr { .. } => {}
+            Stmt::Assign { .. } | Stmt::Expr { .. } => env.check_stmt_types(stmt)?,
+            Stmt::Emit { .. } => {}
         }
     }
     check_arithmetic(entry, &env.params)?;
@@ -99,6 +172,83 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
 }
 
 impl<'a> Env<'a> {
+    fn check_stmt_types(&self, stmt: &Stmt) -> Result<(), TypeError> {
+        match stmt {
+            Stmt::Assign {
+                target, op, value, ..
+            } => {
+                let slot = self.ty_of(target)?;
+                let given = self.ty_of(value)?;
+                let fits = match op {
+                    AssignOp::Set => compatible(slot, given),
+                    AssignOp::Add | AssignOp::Sub => numeric(slot) && numeric(given),
+                };
+                if !fits {
+                    return Err(TypeError::new(
+                        format!(
+                            "a {} value cannot be stored in a {} slot",
+                            given.describe(),
+                            slot.describe()
+                        ),
+                        value.span(),
+                    ));
+                }
+                Ok(())
+            }
+            Stmt::Expr { expr, .. } => {
+                self.ty_of(expr)?;
+                self.check_keyed_call(expr)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn check_keyed_call(&self, expr: &Expr) -> Result<(), TypeError> {
+        let Expr::Call { callee, args, .. } = expr else {
+            return Ok(());
+        };
+        let Expr::Field { base, name, .. } = callee.as_ref() else {
+            return Ok(());
+        };
+        let Some(field) = self.keyed_field(base) else {
+            return Ok(());
+        };
+        let key = declared_arg(&field.ty, 0);
+        let value = declared_arg(&field.ty, 1);
+        let expected: &[Ty] = match name.text.as_str() {
+            "set" => &[key, value],
+            "insert" | "remove" | "contains" => &[key],
+            _ => return Ok(()),
+        };
+        for (index, (arg, want)) in args.iter().zip(expected).enumerate() {
+            let got = self.ty_of(arg)?;
+            let named_key = index == 0 && got == Ty::Name;
+            if !named_key && !compatible(*want, got) {
+                return Err(TypeError::new(
+                    format!(
+                        "`{}` holds {} here, not a {} value",
+                        field.name.text,
+                        want.describe(),
+                        got.describe()
+                    ),
+                    arg.span(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn keyed_field(&self, base: &Expr) -> Option<&'a quanta_ast::FieldDecl> {
+        let Expr::Ident(id) = base else {
+            return None;
+        };
+        if self.params.contains_key(id.text.as_str()) {
+            return None;
+        }
+        let field = self.model.state.get(id.text.as_str())?;
+        matches!(field.ty.name.text.as_str(), "Map" | "Registry").then_some(*field)
+    }
+
     fn expect_predicate(&self, expr: &Expr) -> Result<(), TypeError> {
         let ty = self.ty_of(expr)?;
         if matches!(ty, Ty::Bool | Ty::Unknown) {
@@ -148,15 +298,26 @@ impl<'a> Env<'a> {
         if let Some(field) = self.model.state.get(name) {
             return ty_of_decl(&field.ty);
         }
+        if name == "deployer" {
+            return Ty::Address;
+        }
         Ty::Unknown
     }
 
     fn ty_of_call(&self, callee: &Expr) -> Ty {
         match callee {
-            Expr::Field { name, .. } => match name.text.as_str() {
+            Expr::Field { base, name, .. } => match name.text.as_str() {
                 "contains" => Ty::Bool,
                 "split" => Ty::Asset,
-                "get" => Ty::Int,
+                "get" => match self.keyed_field(base) {
+                    Some(field) if field.ty.name.text == "Map" => {
+                        match declared_arg(&field.ty, 1) {
+                            Ty::Unknown | Ty::Time => Ty::Int,
+                            known => known,
+                        }
+                    }
+                    _ => Ty::Int,
+                },
                 _ => Ty::Unknown,
             },
             Expr::Ident(id) if id.text == "mint" => Ty::Asset,
@@ -205,9 +366,63 @@ impl<'a> Env<'a> {
                         left.span(),
                     ));
                 }
+                let absent = |ty: Ty, other: &Expr| ty == Ty::Address && is_zero_literal(other);
+                if !compatible(l, r) && !absent(l, right) && !absent(r, left) {
+                    return Err(TypeError::new(
+                        format!(
+                            "a {} cannot be compared with a {}",
+                            l.describe(),
+                            r.describe()
+                        ),
+                        right.span(),
+                    ));
+                }
                 Ok(Ty::Bool)
             }
         }
+    }
+}
+
+impl Ty {
+    fn describe(self) -> &'static str {
+        match self {
+            Ty::Int => "number",
+            Ty::Bool => "boolean",
+            Ty::Address => "address",
+            Ty::Asset => "asset",
+            Ty::Hash => "hash",
+            Ty::Name => "name",
+            Ty::Time => "time",
+            Ty::Str => "string",
+            Ty::Unknown => "value",
+        }
+    }
+}
+
+fn numeric(ty: Ty) -> bool {
+    matches!(ty, Ty::Int | Ty::Time | Ty::Unknown)
+}
+
+fn is_zero_literal(expr: &Expr) -> bool {
+    matches!(expr, Expr::Int(n) if n.text.replace('_', "").trim_start_matches('0').is_empty())
+}
+
+fn one_word(ty: Ty) -> bool {
+    matches!(ty, Ty::Int | Ty::Time | Ty::Bool)
+}
+
+fn compatible(want: Ty, got: Ty) -> bool {
+    want == got
+        || want == Ty::Unknown
+        || got == Ty::Unknown
+        || (one_word(want) && one_word(got))
+        || (want == Ty::Address && got == Ty::Name)
+}
+
+fn declared_arg(ty: &Type, index: usize) -> Ty {
+    match ty.args.get(index) {
+        Some(GenericArg::Type(inner)) => ty_of_decl(inner),
+        _ => Ty::Unknown,
     }
 }
 
@@ -230,6 +445,7 @@ fn ty_of_decl(ty: &Type) -> Ty {
         "Q_Hash" => Ty::Hash,
         "Q_Name" => Ty::Name,
         "Time" => Ty::Time,
+        "Q_Id" => Ty::Int,
         _ => Ty::Unknown,
     }
 }
@@ -425,5 +641,46 @@ mod tests {
                    entry mint(order: MintOrder) mints TKN writes(total_supply) \
                    { total_supply += order.amount; } }";
         ok(src);
+    }
+
+    #[test]
+    fn a_value_of_another_type_cannot_be_stored_in_a_slot() {
+        let assign = "contract C { state { owner: Q_Address; count: u64; } \
+                      entry put() writes(count) { count = owner; } }";
+        assert!(error_for(assign).contains("cannot be stored"));
+        let map_value =
+            "contract C { state { owner: Q_Address; holders: Map<Q_Address, Q_Address>; } \
+                         entry put(years: u64) writes(holders) { holders.set(owner, years); } }";
+        assert!(error_for(map_value).contains("not a number value"));
+        let map_key = "contract C { state { owner: Q_Address; ids: Map<Q_Id, u64>; } \
+                       entry put() writes(ids) { ids.set(owner, 1); } }";
+        assert!(error_for(map_key).contains("not a address value"));
+        let compare = "contract C { state { owner: Q_Address; count: u64; } \
+                       entry put() writes(count) { guard owner == count; count = 1; } }";
+        assert!(error_for(compare).contains("cannot be compared"));
+        let genesis = "contract C { state { owner: Q_Address; count: u64; } \
+                       genesis { count = deployer; } }";
+        assert!(error_for(genesis).contains("cannot be stored"));
+    }
+
+    #[test]
+    fn a_name_or_a_nested_map_cannot_be_held_in_a_slot() {
+        let named = "contract C { state { label: Q_Name; } }";
+        assert!(error_for(named).contains("a name cannot be stored"));
+        let named_value = "contract C { state { tags: Map<Q_Address, Q_Name>; } }";
+        assert!(error_for(named_value).contains("cannot be a Map value"));
+        let nested = "contract C { state { grid: Map<Q_Address, Map<Q_Address, u64> >; } }";
+        assert!(error_for(nested).contains("cannot be a Map value"));
+        let arity = "contract C { state { grid: Map<Q_Address>; } }";
+        assert!(error_for(arity).contains("takes 2 type arguments"));
+    }
+
+    #[test]
+    fn same_width_values_and_name_keys_are_accepted() {
+        ok("contract C { state { paused: bool; last: Map<Q_Address, Time>; gap: u64; \
+            owner_of: Map<Q_Address, Q_Address>; names: Registry<Q_Name>; } \
+            entry go(label: Q_Name) writes(paused, last, owner_of, names) \
+            { guard now >= last.get(caller) + gap; guard owner_of.get(label) == 0; \
+            paused = 1; last.set(caller, now); owner_of.set(label, caller); names.insert(label); } }");
     }
 }
