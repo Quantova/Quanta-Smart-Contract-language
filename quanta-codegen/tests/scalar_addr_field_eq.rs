@@ -9,7 +9,7 @@ use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 
 const GAS: u64 = 4_000_000;
 
-const SRC: &str = "contract C { state { seen: Map<Q_Address, u64>; hits: u64; } \
+const SRC: &str = "contract C { state { seen: Registry<Q_Address>; hits: u64; } \
     entry act(order: Pair) writes(seen, hits) { \
       guard order.a == order.b; \
       seen.insert(order.a); \
@@ -87,7 +87,7 @@ fn identical_addresses_pass() {
 #[test]
 fn an_address_field_compared_to_a_non_address_is_rejected() {
     let program = quanta_parser::parse(
-        "contract C { state { seen: Map<Q_Address, u64>; hits: u64; } \
+        "contract C { state { seen: Registry<Q_Address>; hits: u64; } \
          entry act(order: Pair) writes(seen, hits) { \
            guard order.a == 5; seen.insert(order.a); hits += 1; } }",
     )

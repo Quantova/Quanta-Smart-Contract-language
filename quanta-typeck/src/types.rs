@@ -268,9 +268,19 @@ impl<'a> Env<'a> {
         };
         let key = declared_arg(&field.ty, 0);
         let value = declared_arg(&field.ty, 1);
+        if matches!(name.text.as_str(), "credit" | "debit") {
+            if let Some(amount) = args.get(1) {
+                if !matches!(self.ty_of(amount)?, Ty::Int | Ty::Asset | Ty::Unknown) {
+                    return Err(TypeError::new(
+                        format!("`{}` moves only a number or an asset amount", name.text),
+                        amount.span(),
+                    ));
+                }
+            }
+        }
         let expected: &[Ty] = match name.text.as_str() {
             "set" => &[key, value],
-            "insert" | "remove" | "contains" => &[key],
+            "insert" | "remove" | "contains" | "credit" | "debit" => &[key],
             _ => return Ok(()),
         };
         for (index, (arg, want)) in args.iter().zip(expected).enumerate() {
@@ -300,6 +310,35 @@ impl<'a> Env<'a> {
         }
         let field = self.model.state.get(id.text.as_str())?;
         matches!(field.ty.name.text.as_str(), "Map" | "Registry").then_some(*field)
+    }
+
+    fn expect_keyed_op(&self, callee: &Expr) -> Result<(), TypeError> {
+        let Expr::Field { base, name, .. } = callee else {
+            return Ok(());
+        };
+        let Some(field) = self.keyed_field(base) else {
+            return Ok(());
+        };
+        let method = name.text.as_str();
+        let fits = match field.ty.name.text.as_str() {
+            "Registry" => matches!(method, "insert" | "remove" | "contains"),
+            _ => match method {
+                "set" | "get" | "contains" | "remove" => true,
+                "credit" | "debit" => declared_arg(&field.ty, 1) == Ty::Int,
+                _ => false,
+            },
+        };
+        if fits {
+            return Ok(());
+        }
+        Err(TypeError::new(
+            format!(
+                "`{method}` does not apply to `{}`, a {}",
+                field.name.text,
+                type_text(&field.ty)
+            ),
+            name.span,
+        ))
     }
 
     fn expect_asset_receiver(&self, callee: &Expr) -> Result<(), TypeError> {
@@ -358,6 +397,7 @@ impl<'a> Env<'a> {
             }),
             Expr::Call { callee, args, .. } => {
                 self.expect_asset_receiver(callee)?;
+                self.expect_keyed_op(callee)?;
                 for arg in args {
                     self.ty_of(arg)?;
                 }
@@ -850,6 +890,18 @@ mod tests {
             entry move(order: MoveOrder) writes(vault, pool) \
             { let out = vault.split(order.amount); pool.merge(out); } }",
         );
+        let lost_credit = "contract C { state { owner_of: Map<Q_Address, Q_Address>; } \
+                           entry put() writes(owner_of) { owner_of.credit(caller, 5); } }";
+        assert!(error_for(lost_credit).contains("does not apply"));
+        let flag_credit = "contract C { state { members: Registry<Q_Address>; } \
+                           entry join() writes(members) { members.credit(caller, 1); } }";
+        assert!(error_for(flag_credit).contains("does not apply"));
+        let reset = "contract C { state { balances: Map<Q_Address, u64>; } \
+                     entry reset() writes(balances) { balances.insert(caller); } }";
+        assert!(error_for(reset).contains("does not apply"));
+        let named_credit = "contract C { state { balances: Map<Q_Address, u64>; } \
+                            entry pay(to: Q_Address) writes(balances) { balances.credit(to, to); } }";
+        assert!(error_for(named_credit).contains("moves only a number"));
         let mistyped = "contract C { state { owner: Q_Address; count: u64 = owner; } }";
         assert!(error_for(mistyped).contains("cannot be stored"));
         ok("contract C { state { cap: u64 = 50_000; paused: bool = 0; } }");

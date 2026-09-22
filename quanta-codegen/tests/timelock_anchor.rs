@@ -303,7 +303,8 @@ fn a_map_anchor_armed_by_insert_is_rejected() {
     }\n";
     let what = rejection(src);
     assert!(
-        what.contains("`anchor`") && what.contains("pre-date the delay"),
+        what.contains("`anchor`")
+            && (what.contains("pre-date the delay") || what.contains("does not apply")),
         "arming a time anchor with insert stores a flag not a timestamp and is rejected: {what}"
     );
 }
