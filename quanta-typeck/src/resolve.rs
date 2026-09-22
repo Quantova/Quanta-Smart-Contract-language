@@ -59,7 +59,6 @@ fn check_emit_arity(model: &Model) -> Result<(), TypeError> {
     for entry in &model.entries {
         check_emit_arity_in(&entry.body, &events)?;
     }
-    // Genesis emits too, and its record is read by the same published ABI.
     for item in &model.contract.items {
         if let Item::Genesis(genesis) = item {
             check_emit_arity_in(&genesis.body, &events)?;
@@ -320,10 +319,6 @@ fn is_external_address(expr: &Expr, addresses: &HashSet<&str>) -> bool {
     }
 }
 
-/// `deployer` is the account that deployed the contract, and it is only the caller while
-/// genesis runs. Anywhere else the code generator has nothing to read it from but the
-/// caller slot, so `guard caller == deployer` would compare the caller with itself and let
-/// anyone through. Genesis must store it, and entries compare against the stored field.
 fn check_deployer_only_in_genesis(model: &Model) -> Result<(), TypeError> {
     let refuse = |span: Span| {
         TypeError::new(

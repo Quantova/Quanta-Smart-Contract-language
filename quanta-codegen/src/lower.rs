@@ -2400,7 +2400,6 @@ fn lower_name_tail_is_zero(
         let whole = ctx.b.label();
         let edge = ctx.regs.alloc(span)?;
         let cover = ctx.regs.alloc(span)?;
-        // len >= start + 8: the whole word is name, nothing to check.
         ctx.b.op(Instr::Ldi {
             d: edge,
             imm: start + WORD - 1,
@@ -2411,7 +2410,6 @@ fn lower_name_tail_is_zero(
             b: edge,
         });
         ctx.b.jnz(cover, next);
-        // len <= start: none of the word is name, all of it must be zero.
         ctx.b.op(Instr::Ldi {
             d: edge,
             imm: start,
@@ -2422,7 +2420,6 @@ fn lower_name_tail_is_zero(
             b: edge,
         });
         ctx.b.jz(cover, whole);
-        // Partly name: shift the name bytes out, and what is left must be zero.
         ctx.b.op(Instr::Sub {
             d: cover,
             a: len,
@@ -2466,6 +2463,46 @@ fn lower_name_tail_is_zero(
     Ok(())
 }
 
+fn lower_name_ends_on_a_byte(
+    ctx: &mut Ctx,
+    window_off: u64,
+    len: Reg,
+    trap: Label,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let done = ctx.b.label();
+    ctx.b.jz(len, done);
+    let at = ctx.regs.alloc(span)?;
+    let step = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
+        d: at,
+        imm: window_off,
+    });
+    ctx.b.op(Instr::Add {
+        d: at,
+        a: at,
+        b: len,
+    });
+    ctx.b.op(Instr::Ldi { d: step, imm: 1 });
+    ctx.b.op(Instr::Sub {
+        d: at,
+        a: at,
+        b: step,
+    });
+    ctx.b.op(Instr::MLoad { d: at, a: at });
+    ctx.b.op(Instr::Ldi { d: step, imm: 56 });
+    ctx.b.op(Instr::Shr {
+        d: at,
+        a: at,
+        b: step,
+    });
+    ctx.b.jz(at, trap);
+    ctx.regs.free(step);
+    ctx.regs.free(at);
+    ctx.b.mark(done);
+    Ok(())
+}
+
 fn lower_name_prologue(ctx: &mut Ctx, entry: &EntryDecl, trap: Label) -> Result<(), CodegenError> {
     let names: Vec<(String, Span)> = entry
         .params
@@ -2494,11 +2531,8 @@ fn lower_name_prologue(ctx: &mut Ctx, entry: &EntryDecl, trap: Label) -> Result<
         ctx.regs.free(over);
         ctx.regs.free(bound);
 
-        // The window must be canonical: every byte past `len` zero. Otherwise the key is
-        // drawn from a prefix while a signature, an event or an address read sees the whole
-        // window, so a relayer can point a signed "alice" at "ali", and "paypal" can be
-        // registered as "paypa" while the event names "paypal".
         lower_name_tail_is_zero(ctx, window_off, len, trap, *span)?;
+        lower_name_ends_on_a_byte(ctx, window_off, len, trap, *span)?;
 
         let rptr = ctx.regs.alloc(*span)?;
         ctx.b.op(Instr::Ldi {
@@ -4775,8 +4809,6 @@ fn lower_assign(
                 })
             }
         };
-        // Every seat a different address. The same key in two seats signs two nonces and
-        // fills both, so a 4 of 7 quorum would be met by 3 keys.
         for i in 0..count {
             for j in (i + 1)..count {
                 let same = ctx.regs.alloc(span)?;

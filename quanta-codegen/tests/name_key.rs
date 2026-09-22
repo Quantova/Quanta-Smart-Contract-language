@@ -141,9 +141,6 @@ fn different_labels_hash_to_different_keys() {
 #[test]
 fn a_window_carrying_bytes_past_its_length_reverts() {
     let cc = compiled();
-    // "alicexyz" declared as 5 or 3 bytes: the key would come from a prefix while a
-    // signature or an event sees the whole window, so a relayer could point a signed
-    // "alice" at "ali". Only a window zero past its length is a name.
     let w = window(b"alicexyz");
     assert!(run_claim(&cc, &w, 5, 10).is_err());
     assert!(run_claim(&cc, &w, 3, 20).is_err());
@@ -188,6 +185,23 @@ fn the_tail_check_holds_at_every_word_boundary() {
         run_claim(&cc, &full, 31, 1).is_err(),
         "one stray byte at the very end"
     );
+}
+
+#[test]
+fn a_length_padded_with_zeros_past_the_name_reverts() {
+    let cc = compiled();
+    let win = window(b"alice");
+    assert!(run_claim(&cc, &win, 5, 7).is_ok());
+    for padded in [6u64, 7, 32] {
+        assert!(
+            run_claim(&cc, &win, padded, 7).is_err(),
+            "a signed \"alice\" cannot be pointed at \"alice\" plus {} zero bytes",
+            padded - 5
+        );
+    }
+    let full = [0x61u8; 32];
+    assert!(run_claim(&cc, &full, 32, 7).is_ok());
+    assert!(run_claim(&cc, &[0u8; 32], 0, 7).is_ok());
 }
 
 #[test]

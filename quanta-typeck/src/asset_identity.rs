@@ -24,9 +24,6 @@ fn guard_mentions_in_asset(model: &Model, entry: &EntryDecl, stmt: &Stmt) -> boo
     binds_in_asset(model, entry, expr)
 }
 
-/// What `in_asset` may be pinned to: native value, or an issuer the contract stored. A
-/// parameter is chosen by the caller, so `in_asset == pay_token` lets them name an asset
-/// they minted themselves and pay with that.
 fn names_a_fixed_asset(model: &Model, entry: &EntryDecl, expr: &Expr) -> bool {
     match expr {
         Expr::Native { .. } => true,
