@@ -3,7 +3,9 @@
 
 use crate::error::TypeError;
 use crate::model::{is_asset_param, is_integer_type, Model};
-use quanta_ast::{AssignOp, BinOp, Clause, EntryDecl, Expr, GenericArg, Item, Stmt, Type, UnaryOp};
+use quanta_ast::{
+    AfterTarget, AssignOp, BinOp, Clause, EntryDecl, Expr, GenericArg, Item, Stmt, Type, UnaryOp,
+};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -158,6 +160,7 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
             };
             for stmt in &genesis.body {
                 env.check_stmt_types(stmt)?;
+                asset_calls_consumed(stmt)?;
             }
         }
     }
@@ -192,6 +195,23 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
                 }
             }
         }
+    }
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => no_asset_call(expr)?,
+            Clause::After { target, from, .. } => {
+                if let AfterTarget::Expr(expr) = target {
+                    no_asset_call(expr)?;
+                }
+                if let Some(expr) = from {
+                    no_asset_call(expr)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        asset_calls_consumed(stmt)?;
     }
     check_arithmetic(entry, &env.params)?;
     Ok(())
@@ -457,6 +477,71 @@ impl Ty {
 
 fn numeric(ty: Ty) -> bool {
     matches!(ty, Ty::Int | Ty::Time | Ty::Unknown)
+}
+
+fn is_asset_call(expr: &Expr) -> bool {
+    let Expr::Call { callee, .. } = expr else {
+        return false;
+    };
+    match callee.as_ref() {
+        Expr::Field { name, .. } => name.text == "split",
+        Expr::Ident(id) => id.text == "mint",
+        _ => false,
+    }
+}
+
+fn no_asset_call(expr: &Expr) -> Result<(), TypeError> {
+    if is_asset_call(expr) {
+        return Err(TypeError::new(
+            "an asset made here would be dropped; bind it with `let` or pass it straight to \
+             send, merge or credit",
+            expr.span(),
+        ));
+    }
+    match expr {
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            no_asset_call(expr)
+        }
+        Expr::Binary { left, right, .. } => {
+            no_asset_call(left)?;
+            no_asset_call(right)
+        }
+        Expr::Field { base, .. } => no_asset_call(base),
+        Expr::Call { callee, args, .. } => {
+            no_asset_call(callee)?;
+            args.iter().try_for_each(no_asset_call)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn consumed_asset_call(expr: &Expr) -> Result<(), TypeError> {
+    match expr {
+        Expr::Call { callee, args, .. } if is_asset_call(expr) => {
+            no_asset_call(callee)?;
+            args.iter().try_for_each(no_asset_call)
+        }
+        _ => no_asset_call(expr),
+    }
+}
+
+fn asset_calls_consumed(stmt: &Stmt) -> Result<(), TypeError> {
+    match stmt {
+        Stmt::Let { value, .. } => consumed_asset_call(value),
+        Stmt::Expr {
+            expr: Expr::Call { callee, args, .. },
+            ..
+        } => {
+            no_asset_call(callee)?;
+            args.iter().try_for_each(consumed_asset_call)
+        }
+        Stmt::Expr { expr, .. } | Stmt::Guard { expr, .. } => no_asset_call(expr),
+        Stmt::Assign { target, value, .. } => {
+            no_asset_call(target)?;
+            no_asset_call(value)
+        }
+        Stmt::Emit { args, .. } => args.iter().try_for_each(no_asset_call),
+    }
 }
 
 fn is_zero_literal(expr: &Expr) -> bool {
@@ -748,6 +833,23 @@ mod tests {
         let drawn = "contract C { state { count: u64; } \
                      entry take() writes(count) { send(caller, count.split(5)); } }";
         assert!(error_for(drawn).contains("works only on a Q_Asset state field"));
+        let guarded = "contract C { state { vault: Q_Asset<QTOV>; count: u64; } \
+                       entry poke() writes(count, vault) \
+                       { guard vault.split(5) == vault.split(5); count = 1; } }";
+        assert!(error_for(guarded).contains("would be dropped"));
+        let clause = "contract C { state { vault: Q_Asset<QTOV>; count: u64; } \
+                      entry poke() writes(count, vault) limits vault.split(5) == vault.split(5) \
+                      { count = 1; } }";
+        assert!(error_for(clause).contains("would be dropped"));
+        let emitted = "contract C { state { vault: Q_Asset<QTOV>; } \
+                       entry poke() writes(vault) { emit Poked(vault.split(7)); } \
+                       event Poked(v: u64); }";
+        assert!(error_for(emitted).contains("would be dropped"));
+        ok(
+            "contract C { state { vault: Q_Asset<QTOV>; pool: Q_Asset<QTOV>; } \
+            entry move(order: MoveOrder) writes(vault, pool) \
+            { let out = vault.split(order.amount); pool.merge(out); } }",
+        );
         let mistyped = "contract C { state { owner: Q_Address; count: u64 = owner; } }";
         assert!(error_for(mistyped).contains("cannot be stored"));
         ok("contract C { state { cap: u64 = 50_000; paused: bool = 0; } }");
