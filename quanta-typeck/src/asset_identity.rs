@@ -11,6 +11,35 @@ const NATIVE_ASSET: &str = "QTOV";
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
     let pins = issuer_pins(model);
+    let mut owner_of_field: HashMap<&str, &str> = HashMap::new();
+    let mut kinds: Vec<&String> = pins.keys().collect();
+    kinds.sort();
+    for kind in kinds {
+        let fields = &pins[kind];
+        if fields.len() > 1 {
+            let mut named: Vec<&str> = fields.iter().map(String::as_str).collect();
+            named.sort_unstable();
+            return Err(TypeError::new(
+                format!(
+                    "`{kind}` is received under more than one issuer ({}), so one asset can be \
+                     paid in as another",
+                    named.join(", ")
+                ),
+                model.contract.name.span,
+            ));
+        }
+        for field in fields {
+            if let Some(other) = owner_of_field.insert(field.as_str(), kind.as_str()) {
+                return Err(TypeError::new(
+                    format!(
+                        "`{field}` is the issuer pinned for both `{other}` and `{kind}`, so the \
+                         two kinds are one asset under two names"
+                    ),
+                    model.contract.name.span,
+                ));
+            }
+        }
+    }
     for entry in &model.entries {
         check_entry(model, entry, &pins)?;
     }
@@ -664,6 +693,17 @@ mod tests {
         let program = quanta_parser::parse(src).expect("source parses");
         let model = Model::build(&program.contracts[0]);
         super::check(&model).expect("checker should accept");
+    }
+
+    #[test]
+    fn a_kind_pinned_to_two_issuers_is_refused() {
+        let src = "contract D { state { issuer_a: Q_Address; issuer_b: Q_Address; \
+                   reserve_a: Q_Asset<TOKA>; } genesis { issuer_a = deploy_params.a; issuer_b = deploy_params.b; } \
+                   entry add(funds: Q_Asset<TOKA>) reads(issuer_a) conserves TOKA writes(reserve_a) \
+                   { guard in_asset == issuer_a; reserve_a.merge(funds); } \
+                   entry add_too(funds: Q_Asset<TOKA>) reads(issuer_b) conserves TOKA writes(reserve_a) \
+                   { guard in_asset == issuer_b; reserve_a.merge(funds); } }";
+        assert!(error_for(src).contains("received under more than one issuer"));
     }
 
     #[test]
