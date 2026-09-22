@@ -101,10 +101,32 @@ fn type_text(ty: &Type) -> String {
 }
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
+    let defaults = Env {
+        model,
+        params: HashMap::new(),
+    };
     for item in &model.contract.items {
         if let Item::State(block) = item {
             for field in &block.fields {
                 storable(&field.ty)?;
+                let Some(value) = &field.default else {
+                    continue;
+                };
+                if matches!(
+                    field.ty.name.text.as_str(),
+                    "Map" | "Registry" | "GuardianSet" | "Q_Asset"
+                ) {
+                    return Err(TypeError::new(
+                        format!("a {} field cannot take a default value", field.ty.name.text),
+                        value.span(),
+                    ));
+                }
+                defaults.check_stmt_types(&Stmt::Assign {
+                    target: Expr::Ident(field.name.clone()),
+                    op: AssignOp::Set,
+                    value: value.clone(),
+                    span: field.span,
+                })?;
             }
         }
     }
@@ -179,6 +201,13 @@ impl<'a> Env<'a> {
             } => {
                 let slot = self.ty_of(target)?;
                 let given = self.ty_of(value)?;
+                if slot == Ty::Asset {
+                    return Err(TypeError::new(
+                        "an asset field changes only by merge, split or send; assigning it \
+                         would discard what it already holds",
+                        target.span(),
+                    ));
+                }
                 let fits = match op {
                     AssignOp::Set => compatible(slot, given),
                     AssignOp::Add | AssignOp::Sub => numeric(slot) && numeric(given),
@@ -673,6 +702,22 @@ mod tests {
         assert!(error_for(nested).contains("cannot be a Map value"));
         let arity = "contract C { state { grid: Map<Q_Address>; } }";
         assert!(error_for(arity).contains("takes 2 type arguments"));
+    }
+
+    #[test]
+    fn an_asset_cannot_be_seeded_from_nothing() {
+        let default = "contract C { state { vault: Q_Asset<QTOV> = 1000000; } }";
+        assert!(error_for(default).contains("cannot take a default value"));
+        let keyed = "contract C { state { balances: Map<Q_Address, u64> = 7; } }";
+        assert!(error_for(keyed).contains("cannot take a default value"));
+        let genesis = "contract C { state { vault: Q_Asset<QTOV>; } genesis { vault = 1000000; } }";
+        assert!(error_for(genesis).contains("changes only by merge"));
+        let overwrite = "contract C { state { vault: Q_Asset<QTOV>; } \
+                         entry put(funds: Q_Asset<QTOV>) writes(vault) { vault = funds; } }";
+        assert!(error_for(overwrite).contains("changes only by merge"));
+        let mistyped = "contract C { state { owner: Q_Address; count: u64 = owner; } }";
+        assert!(error_for(mistyped).contains("cannot be stored"));
+        ok("contract C { state { cap: u64 = 50_000; paused: bool = 0; } }");
     }
 
     #[test]
