@@ -10,10 +10,77 @@ use std::collections::{HashMap, HashSet};
 const NATIVE_ASSET: &str = "QTOV";
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
+    let pins = issuer_pins(model);
     for entry in &model.entries {
-        check_entry(model, entry)?;
+        check_entry(model, entry, &pins)?;
     }
     Ok(())
+}
+
+fn issuer_pins(model: &Model) -> HashMap<String, HashSet<String>> {
+    let mut pins: HashMap<String, HashSet<String>> = HashMap::new();
+    for entry in &model.entries {
+        for param in &entry.params {
+            let Some(kind) = asset_inner(&param.ty) else {
+                continue;
+            };
+            if kind == NATIVE_ASSET {
+                continue;
+            }
+            for stmt in &entry.body {
+                if let Stmt::Guard { expr, .. } = stmt {
+                    let mut found = Vec::new();
+                    in_asset_pins(expr, &mut found);
+                    for pin in found {
+                        if let Expr::Ident(id) = pin {
+                            if model.is_state(&id.text) {
+                                pins.entry(kind.to_string())
+                                    .or_default()
+                                    .insert(id.text.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    pins
+}
+
+fn issuer_error(
+    model: &Model,
+    pins: &HashMap<String, HashSet<String>>,
+    kind: &str,
+    issuer: &Expr,
+    span: Span,
+) -> Option<TypeError> {
+    if kind == NATIVE_ASSET && !model.is_declared_asset(kind) {
+        return Some(TypeError::new(
+            "native value moves with send, not send_asset".to_string(),
+            span,
+        ));
+    }
+    let named = match issuer {
+        Expr::Ident(id) => Some(id.text.as_str()),
+        _ => None,
+    };
+    let fits = if model.is_declared_asset(kind) {
+        named == Some("self")
+    } else {
+        match pins.get(kind) {
+            Some(fields) => named.is_some_and(|n| fields.contains(n)),
+            None => true,
+        }
+    };
+    (!fits).then(|| {
+        TypeError::new(
+            format!(
+                "this sends `{kind}` value under an issuer that is not the one `{kind}` is \
+                 received from, so one pool is drawn down while another asset leaves"
+            ),
+            span,
+        )
+    })
 }
 
 fn guard_mentions_in_asset(model: &Model, entry: &EntryDecl, stmt: &Stmt) -> bool {
@@ -142,7 +209,11 @@ fn asset_kind_is_stated(model: &Model, entry: &EntryDecl) -> Result<(), TypeErro
     ))
 }
 
-fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
+fn check_entry(
+    model: &Model,
+    entry: &EntryDecl,
+    pins: &HashMap<String, HashSet<String>>,
+) -> Result<(), TypeError> {
     let mut declared: HashSet<&str> = HashSet::new();
     let mut mint_kind: Option<&str> = None;
     for clause in &entry.clauses {
@@ -215,6 +286,18 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
                 return;
             }
             err = asset_flow_in_expr(model, &kinds, mint_kind, e);
+            if err.is_some() {
+                return;
+            }
+            if let Expr::Call { callee, args, span } = e {
+                if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send_asset") {
+                    if let (Some(issuer), Some(value)) = (args.first(), args.get(2)) {
+                        if let Some(kind) = expr_asset_kind(model, &kinds, mint_kind, value) {
+                            err = issuer_error(model, pins, &kind, issuer, *span);
+                        }
+                    }
+                }
+            }
         });
         if let Some(e) = err {
             return Err(e);
@@ -581,6 +664,27 @@ mod tests {
         let program = quanta_parser::parse(src).expect("source parses");
         let model = Model::build(&program.contracts[0]);
         super::check(&model).expect("checker should accept");
+    }
+
+    #[test]
+    fn a_split_leaves_only_under_its_own_issuer() {
+        let dex = |issuer: &str| {
+            format!(
+                "contract D {{ state {{ operator: Q_Address; issuer_a: Q_Address; issuer_b: Q_Address; \
+                 reserve_a: Q_Asset<TOKA>; reserve_b: Q_Asset<TOKB>; }} \
+                 genesis {{ operator = deployer; issuer_a = deploy_params.a; issuer_b = deploy_params.b; }} \
+                 entry add_b(funds: Q_Asset<TOKB>) reads(issuer_b) conserves TOKB writes(reserve_b) \
+                 {{ guard in_asset == issuer_b; reserve_b.merge(funds); }} \
+                 entry swap(input: Q_Asset<TOKA>, order: SwapOrder signed by operator) reads(issuer_a) \
+                 conserves TOKA conserves TOKB writes(reserve_a, reserve_b) \
+                 {{ guard in_asset == issuer_a; guard input.amount == order.in_amt; reserve_a.merge(input); \
+                 send_asset({issuer}, order.to, reserve_b.split(order.out)); }} }}"
+            )
+        };
+        assert!(error_for(&dex("issuer_a")).contains("not the one `TOKB` is received from"));
+        let program = quanta_parser::parse(&dex("issuer_b")).expect("parses");
+        let model = crate::model::Model::build(&program.contracts[0]);
+        assert!(super::check(&model).is_ok());
     }
 
     #[test]
