@@ -539,8 +539,13 @@ fn map_is_ever_paid_out(model: &Model, field: &str) -> bool {
                 }
                 if let Expr::Call { callee, args, .. } = e {
                     match callee.as_ref() {
-                        Expr::Ident(id) if id.text == "send_asset" || id.text == "mint_asset" => {
+                        Expr::Ident(id) if id.text == "send_asset" => {
                             if args.get(2).is_some_and(reads_field) {
+                                found = true;
+                            }
+                        }
+                        Expr::Ident(id) if id.text == "mint_asset" => {
+                            if args.get(1).is_some_and(reads_field) {
                                 found = true;
                             }
                         }
@@ -808,9 +813,8 @@ fn outflow_amount_is_a_self_written_row(model: &Model, entry: &EntryDecl) -> boo
             }
             if let Expr::Call { callee, args, .. } = e {
                 let amount = match callee.as_ref() {
-                    Expr::Ident(id) if id.text == "send_asset" || id.text == "mint_asset" => {
-                        args.get(2)
-                    }
+                    Expr::Ident(id) if id.text == "send_asset" => args.get(2),
+                    Expr::Ident(id) if id.text == "mint_asset" => args.get(1),
                     Expr::Ident(id) if id.text == "send" => args.get(1),
                     Expr::Field { name, .. } if name.text == "split" => args.first(),
                     _ => None,
@@ -1067,9 +1071,8 @@ fn names_in_outflow_amounts(entry: &EntryDecl) -> HashSet<String> {
         stmt_exprs(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
                 let amount = match callee.as_ref() {
-                    Expr::Ident(id) if id.text == "send_asset" || id.text == "mint_asset" => {
-                        args.get(2)
-                    }
+                    Expr::Ident(id) if id.text == "send_asset" => args.get(2),
+                    Expr::Ident(id) if id.text == "mint_asset" => args.get(1),
                     Expr::Ident(id) if id.text == "send" => args.get(1),
                     Expr::Field { name, .. } if name.text == "split" => args.first(),
                     _ => None,
@@ -3565,7 +3568,7 @@ fn map_lookup_on_param(
 
 fn is_addr_keyed(model: &Model, ident: &str) -> bool {
     if let Some(f) = model.state.get(ident) {
-        if matches!(f.ty.name.text.as_str(), "Map" | "Set") {
+        if matches!(f.ty.name.text.as_str(), "Map" | "Registry") {
             if let Some(GenericArg::Type(k)) = f.ty.args.first() {
                 return k.name.text == "Q_Address";
             }
@@ -3723,6 +3726,38 @@ mod tests {
         if let Err(e) = super::check(&model) {
             panic!("checker should accept this contract, got {}", e.message);
         }
+    }
+
+    #[test]
+    fn a_row_paid_out_through_mint_asset_cannot_be_credited_freely() {
+        let src = "contract C { asset TKN; state { owner: Q_Address; supply: u128; \
+                   rewards: Map<Q_Address, u64>; } genesis { owner = deployer; } \
+                   entry accrue() writes(rewards) { rewards.credit(caller, 1000); } \
+                   entry payout(order: PayoutOrder signed by owner) mints TKN writes(supply) \
+                   { mint_asset(order.to, rewards.get(order.to)); } }";
+        assert!(error_for(src).contains("moves ledger value with no authority"));
+    }
+
+    #[test]
+    fn a_registry_lookup_on_a_handed_address_is_forged_authority() {
+        let src = "contract C { state { owner: Q_Address; members: Registry<Q_Address>; \
+                   vault: Q_Asset<QTOV>; } genesis { owner = deployer; } \
+                   entry admit(order: AdmitOrder signed by owner) writes(members) \
+                   { members.insert(order.who); } \
+                   entry pay(who: Q_Address, amount: u64) conserves QTOV writes(vault) \
+                   { guard members.contains(who); let out = vault.split(amount); send(who, out); } }";
+        assert!(error_for(src).contains("looking up self declared"));
+    }
+
+    #[test]
+    fn membership_of_the_caller_in_a_protected_registry_binds_the_caller() {
+        let src = "contract C { state { owner: Q_Address; staff: Registry<Q_Address>; \
+                   holder: Map<u64, Q_Address>; } genesis { owner = deployer; } \
+                   entry hire(order: HireOrder signed by owner) writes(staff) \
+                   { staff.insert(order.who); } \
+                   entry assign(id: u64, to: Q_Address) writes(holder) \
+                   { guard staff.contains(caller); holder.set(id, to); } }";
+        accepts(src);
     }
 
     #[test]
