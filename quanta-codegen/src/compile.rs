@@ -107,7 +107,7 @@ fn reject_unsupported_type(ty: &Type) -> Result<(), CodegenError> {
     if UNSUPPORTED_INT_TYPES.contains(&ty.name.text.as_str()) {
         return Err(CodegenError::Unsupported {
             what: format!(
-                "the integer type `{}`; the code generator supports only u64 and u128",
+                "the signed integer type `{}`; the code generator supports only unsigned integers",
                 ty.name.text
             ),
             span: ty.span,
