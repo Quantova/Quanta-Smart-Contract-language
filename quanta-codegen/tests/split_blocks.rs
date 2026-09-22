@@ -12,8 +12,6 @@ fn compiled(src: &str) -> Vec<u8> {
         .code
 }
 
-// A safety switch declared in a second state block used to deploy at zero, reading as
-// armed in the source and disarmed on chain.
 #[test]
 fn a_default_in_a_later_state_block_is_still_initialised() {
     let split = compiled(

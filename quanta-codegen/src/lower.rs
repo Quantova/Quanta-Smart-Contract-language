@@ -222,8 +222,6 @@ pub struct Ctx<'a> {
     params: &'a HashSet<String>,
     asset_params: &'a HashSet<String>,
     asset_locals: HashMap<String, u64>,
-    /// Plain `let` bindings. Kept apart from `asset_locals` on purpose: an asset local
-    /// is treated as carrying a movable asset, and a named intermediate value is not.
     scalar_locals: HashMap<String, u64>,
     next_asset_local: u64,
     entry_mints: bool,
@@ -417,8 +415,6 @@ fn lower_call_value(
 }
 
 fn lower_ident(ctx: &mut Ctx, name: &str, span: Span) -> Result<Reg, CodegenError> {
-    // `true` and `false` reach codegen as bare names. Without these a pause or freeze
-    // flag could not even be initialised in genesis, so no contract could ship one.
     if name == "true" || name == "false" {
         let d = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
@@ -484,8 +480,6 @@ fn lower_field(ctx: &mut Ctx, base: &Expr, field: &str, span: Span) -> Result<Re
             return load_arg(ctx, off, span);
         }
         if field == "digest" && ctx.quorum_params.contains(&id.text) {
-            // Derived in the quorum prologue from the indices that actually signed.
-            // out is allocated first so ptr, allocated after it, is freed first.
             let out = ctx.regs.alloc(span)?;
             let ptr = ctx.regs.alloc(span)?;
             ctx.b.op(Instr::Ldi {
@@ -607,9 +601,6 @@ fn produces_asset(value: &Expr) -> bool {
 
 fn lower_let(ctx: &mut Ctx, name: &str, value: &Expr, span: Span) -> Result<(), CodegenError> {
     if !produces_asset(value) {
-        // A plain named intermediate. Only asset splits and mints used to lower, so no
-        // contract could name a computed value at all: `let half = n / 2;` was a hard
-        // refusal, and every real contract names something.
         if is_wide_expr(ctx, value) {
             return Err(CodegenError::Unsupported {
                 what: format!(
@@ -702,17 +693,12 @@ fn lower_binary(
     wrapping: bool,
 ) -> Result<Reg, CodegenError> {
     if matches!(op, BinOp::Eq | BinOp::Ne) {
-        // `owner_of.get(id) == 0` asks whether the slot is EMPTY. Zero is not an
-        // address, so routing it through the address comparison refused it, and that
-        // is the natural way to check a name or a token id is unclaimed.
         let is_zero = |e: &Expr| matches!(e, Expr::Int(n) if n.text.replace('_', "").trim_start_matches('0').is_empty());
         for (side, other) in [(left, right), (right, left)] {
             if is_zero(other) {
                 if let Some((name, mbase, key)) = addr_map_get(ctx, side) {
                     let name = name.to_string();
                     let present = lower_addr_map_presence(ctx, &name, mbase, key, side.span())?;
-                    // `present` is 1 when the row holds something. `== 0` is the
-                    // negation of that, `!= 0` is that.
                     if matches!(op, BinOp::Eq) {
                         logical_not(ctx, present);
                     }
@@ -861,9 +847,6 @@ fn is_wide_expr(ctx: &Ctx, expr: &Expr) -> bool {
         Expr::Field { base, name, .. } => {
             matches!(base.as_ref(), Expr::Ident(id) if ctx.wide_keys.contains(&format!("{}.{}", id.text, name.text)))
         }
-        // `bal.get(k)` on a u128 valued map is a wide value. Without this arm every
-        // narrow context, and every comparison, treated it as one word and refused to
-        // lower it, so a u128 balance could not be compared or added at all.
         Expr::Call { callee, .. } => {
             matches!(callee.as_ref(), Expr::Field { base, name, .. }
                 if name.text == "get" && map_name_is_value_wide(ctx, base))
@@ -1065,11 +1048,6 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
             });
             Ok((lo, hi))
         }
-        // `bal.get(k)` where the map holds a u128. The wide WRITE path stores the low
-        // word at the map key and the high word at word index 1, so the read is the
-        // same two loads in the same order. Without this every u128 map was write
-        // only, which put a token balance, a pool reserve and a lending collateral
-        // row out of reach of the language entirely.
         Expr::Call { callee, args, span } => {
             if let Expr::Field { base, name, .. } = callee.as_ref() {
                 if name.text == "get" && map_name_is_value_wide(ctx, base) {
@@ -1536,10 +1514,6 @@ fn write_scalar_key(ctx: &mut Ctx, slot: u64, key: Reg) {
     });
 }
 
-// Only the last word of the key region carries the slot. The leading words are whatever
-// the caller left in scratch, and they are hashed into the storage key, so two callers
-// reach two different rows for one slot unless they are cleared. Nothing else writes this
-// region, so clearing it once at entry is enough and keeps it off every access.
 fn zero_scalar_key_head(ctx: &mut Ctx, span: Span) -> Result<(), CodegenError> {
     let ptr = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi { d: SCRATCH, imm: 0 });
@@ -1769,8 +1743,6 @@ pub fn lower_entry(
             span: entry.span,
         });
     }
-    // One byte per signer index in the approval digest. Anything wider silently drops a
-    // signer, so refuse it rather than emit a digest that does not name who approved.
     for param in &entry.params {
         if let Some((threshold, count, _)) = quorum_spec(param) {
             if threshold > 8 || count > 255 {
@@ -1900,10 +1872,6 @@ fn lower_quorum_prologue(
     Ok(())
 }
 
-// `<quorum>.digest` arrives as an ordinary argument word, so a caller picks it and the
-// contract emits it as an approval attestation for signers that never approved. Once the
-// members are verified their indices are known, so the digest is packed from them here
-// and written over the caller's word before the body can read it.
 fn derive_quorum_digest(
     ctx: &mut Ctx,
     name: &str,
@@ -3797,11 +3765,6 @@ fn addr_key_of(expr: &Expr, params: &HashSet<String>) -> Option<String> {
     }
 }
 
-/// Whether an address valued map row holds anything, as a 0 or 1 register.
-///
-/// Every word of the value is OR'd together, so a partially written row still reads as
-/// present. This is what `contains` means for an address map, and what `== 0` has to
-/// mean when the row is compared against zero.
 fn lower_addr_map_presence(
     ctx: &mut Ctx,
     map_name: &str,
@@ -3809,8 +3772,6 @@ fn lower_addr_map_presence(
     key_expr: &Expr,
     span: Span,
 ) -> Result<Reg, CodegenError> {
-    // The same key region the write uses. Reading the raw slot instead lets a dirty
-    // argument tail address a different row than set() lands on.
     let key_off = map_key_region_named(ctx, map_name, key_expr, span)?;
     let acc = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi { d: acc, imm: 0 });
@@ -3864,9 +3825,6 @@ fn lower_address(ctx: &mut Ctx, expr: &Expr, span: Span) -> Result<u64, CodegenE
     }
 }
 
-/// The native asset as an address sized value: thirty two zero bytes, which is what the
-/// host stamps into the call context when a call carries native value rather than a
-/// token. Kept in the same scratch region as a state address so it cannot collide.
 fn materialize_native_addr(ctx: &mut Ctx, span: Span) -> Result<u64, CodegenError> {
     let off = match ctx.state_addr_scratch.get("@native").copied() {
         Some(off) => off,
@@ -4203,10 +4161,6 @@ fn id_word_offset(ctx: &mut Ctx, key_expr: &Expr, span: Span) -> Result<u64, Cod
             }
             _ => id_key_into_scratch(ctx, key_expr, span),
         },
-        // A key the contract computes itself, such as a sequential `next_id`, is not in
-        // the argument region. Evaluating it into a scratch word gives it an offset the
-        // key computation can read. Without this no contract could allocate its own
-        // ids, so an NFT collection could not mint.
         _ => id_key_into_scratch(ctx, key_expr, span),
     }
 }
@@ -4420,11 +4374,6 @@ fn lower_map_credit(
     Ok(())
 }
 
-/// Load both words of a u128 map value.
-///
-/// Mirrors `lower_map_credit_wide` exactly: the low word lives at the map key and the
-/// high word at word index 1. Reading has to use the same two slots in the same order
-/// or the halves come back mismatched.
 fn load_wide_map_value(
     ctx: &mut Ctx,
     base: &Expr,
@@ -4526,11 +4475,6 @@ fn lower_map_flag(
     let key_expr = one_arg(args, span)?;
     let addr_off = map_key_region(ctx, base, key_expr, span)?;
 
-    // A map VALUE is not always one word. A u128 spans two slots and an address spans
-    // four, and this used to write the flag into the low word only: `remove` left a
-    // u128 row holding its whole high word, so clearing a balance above 2^64 left the
-    // high part behind as real value, and burning an NFT left three quarters of the
-    // owner address in place. Every word of the value has to be written.
     let words = if map_name_is_value_addr(ctx, base) {
         ADDR_WORDS
     } else if map_name_is_value_wide(ctx, base) {
@@ -4539,15 +4483,10 @@ fn lower_map_flag(
         1
     };
 
-    // Both registers are taken before the loop so every key allocated inside it is
-    // freed in stack order, which the allocator requires.
     let v = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi { d: v, imm: flag });
     let zero = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi { d: zero, imm: 0 });
-    // An address valued row is read word by word through compute_map_addr_word_key,
-    // word 0 included, so writing word 0 any other way clears a slot no reader looks at
-    // and the row stays present forever.
     let addr_valued = map_name_is_value_addr(ctx, base);
     for w in 0..words {
         if w == 0 && !addr_valued {
@@ -4556,8 +4495,6 @@ fn lower_map_flag(
             compute_map_addr_word_key(ctx, mbase, addr_off, w, span)?;
         }
         let key = map_key_ptr(ctx, span)?;
-        // Only the low word carries the flag; the rest are cleared, so an `insert`
-        // marks presence with exactly 1 and a `remove` leaves nothing at all.
         let src = if w == 0 { v } else { zero };
         ctx.b.op(Instr::SStore { a: key, b: src });
         ctx.regs.free(key);
@@ -4579,8 +4516,6 @@ fn lower_map_read(
         let key_expr = one_arg(args, span)?;
         let key_off = map_key_region(ctx, base, key_expr, span)?;
         if op == "contains" || op == "has" {
-            // Presence on a two word value is "either word is set". Refusing this
-            // meant `contains` could not be asked of any u128 map at all.
             let acc = ctx.regs.alloc(span)?;
             ctx.b.op(Instr::Ldi { d: acc, imm: 0 });
             for i in 0..2u64 {

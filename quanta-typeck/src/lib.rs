@@ -24,8 +24,6 @@ use model::Model;
 use quanta_ast::Program;
 
 pub fn check(program: &Program) -> Result<(), TypeError> {
-    // Two contracts of one name compile to one artifact path, the last one winning, so a
-    // verifier matching by name compares against a container the deploy never used.
     let mut names: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for contract in &program.contracts {
         if !names.insert(contract.name.text.as_str()) {

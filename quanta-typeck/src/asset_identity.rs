@@ -16,7 +16,6 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
     Ok(())
 }
 
-/// Whether this guard mentions the asset that was actually carried.
 fn guard_mentions_in_asset(model: &Model, entry: &EntryDecl, stmt: &Stmt) -> bool {
     let Stmt::Guard { expr, .. } = stmt else {
         return false;
@@ -34,12 +33,6 @@ fn names_a_fixed_asset(model: &Model, entry: &EntryDecl, expr: &Expr) -> bool {
     }
 }
 
-/// Whether this guard expression actually PINS the asset kind. Merely mentioning
-/// `in_asset` is not enough: `guard in_asset == in_asset` and
-/// `guard amount > 0 || in_asset == native` both mention it and constrain nothing, so a
-/// caller still pays with an asset they minted themselves. Only an equality against
-/// something else counts, and only in a position that must hold, so the two sides of an
-/// `||` are not enough on their own while both sides of an `&&` each are.
 fn binds_in_asset(model: &Model, entry: &EntryDecl, expr: &Expr) -> bool {
     match expr {
         Expr::Binary {
@@ -54,8 +47,6 @@ fn binds_in_asset(model: &Model, entry: &EntryDecl, expr: &Expr) -> bool {
             right,
             ..
         } => match (&**left, &**right) {
-            // Exactly one side, so `in_asset == in_asset` does not count, and the other
-            // side must be an asset the caller cannot choose.
             (Expr::InAsset { .. }, other) | (other, Expr::InAsset { .. })
                 if !matches!(other, Expr::InAsset { .. }) =>
             {
@@ -67,13 +58,6 @@ fn binds_in_asset(model: &Model, entry: &EntryDecl, expr: &Expr) -> bool {
     }
 }
 
-/// An entry that accepts an asset must say WHICH asset it accepts.
-///
-/// The generated binding proves the declared amount equals the value carried, but the
-/// value is only a number. Nothing ties it to a kind, so without a guard on `in_asset` a
-/// caller mints a worthless asset of their own and pays with that: the amount agrees and
-/// the entry credits them as if they had paid the real thing. `guard in_asset == native`
-/// states native value, `guard in_asset == some_token` states a specific issuer.
 fn in_asset_pins<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
     match expr {
         Expr::Binary {

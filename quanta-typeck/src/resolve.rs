@@ -116,9 +116,6 @@ fn check_no_duplicate_fields(model: &Model) -> Result<(), TypeError> {
     Ok(())
 }
 
-/// An `emit` whose argument count disagrees with the event declaration writes a record
-/// of one shape under a selector that publishes another, so anything decoding the log by
-/// the published ABI, the explorer included, reads a shape the chain never wrote.
 fn check_emit_arity(model: &Model) -> Result<(), TypeError> {
     let mut events: HashMap<&str, usize> = HashMap::new();
     for item in &model.contract.items {
@@ -161,12 +158,6 @@ fn check_emit_arity_in(body: &[Stmt], events: &HashMap<&str, usize>) -> Result<(
     Ok(())
 }
 
-/// A name that means one thing to the checker and another to the code generator is how a
-/// compiled contract ends up enforcing less than its source says. The checker resolves a
-/// bare name as parameter then state field; the code generator resolves it as local, then
-/// state field, then parameter. Where those orders disagree, an invariant can silently
-/// read a local instead of the state field it names, and a signed parameter can be
-/// replaced by a public state field of the same name. Refuse the overlap outright.
 fn check_no_shadowed_names(model: &Model) -> Result<(), TypeError> {
     let mut fields: HashSet<&str> = HashSet::new();
     for item in &model.contract.items {

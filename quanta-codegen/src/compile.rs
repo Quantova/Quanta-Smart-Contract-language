@@ -266,8 +266,6 @@ fn compile_entries(
         });
     }
 
-    // EVERY state block, in source order. Taking only the first silently dropped the
-    // defaults of the rest, so a field that reads as armed in the source deployed at zero.
     let state_block = contract.items.iter().find_map(|item| match item {
         Item::State(sb) => Some(sb),
         _ => None,
@@ -290,7 +288,6 @@ fn compile_entries(
             })
         })
         .collect();
-    // Every genesis block too, for the same reason.
     let genesis_blocks: Vec<_> = contract
         .items
         .iter()

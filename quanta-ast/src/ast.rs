@@ -221,8 +221,6 @@ pub enum Expr {
     Caller {
         span: Span,
     },
-    /// The native asset. Compares equal to `in_asset` only when the call carried
-    /// native value, which is how a contract states it will not take a foreign token.
     Native {
         span: Span,
     },

@@ -111,9 +111,6 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     {
         return Err(no_asset_authority_error(entry));
     }
-    // `send(caller, pool.split(n))` moves the NATIVE pool and never reaches
-    // `entry_moves_asset`, so a membership guard licensed an arbitrary native
-    // withdrawal while the same shape over `send_asset` was refused.
     if (entry_moves_asset(entry) || entry_moves_ledger_value(model, entry))
         && authority_is_membership_only(model, entry, &signed)
         && (moved_amount_is_caller_chosen(model, entry)
@@ -125,13 +122,6 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     Ok(())
 }
 
-/// Whether a value this entry moves out is an amount the caller simply named.
-///
-/// The paid exemptions exist for a pool that pays out a price it computed from what
-/// it was actually paid. They were never meant to cover an entry that hands the
-/// caller whatever number the caller passed in. The asset parameter is excluded from
-/// the taint set because the chain really did move that asset, so `funds.amount` is a
-/// fact rather than a caller claim, while a plain `n: u64` is only a request.
 fn moved_amount_is_caller_chosen(model: &Model, entry: &EntryDecl) -> bool {
     let free: Vec<&str> = entry
         .params
@@ -144,10 +134,6 @@ fn moved_amount_is_caller_chosen(model: &Model, entry: &EntryDecl) -> bool {
     }
     let signed: HashSet<&str> = HashSet::new();
 
-    // A parameter the caller names is legitimate as an amount when the caller's own
-    // row is debited by it, which is what remove_liquidity does when it burns shares
-    // for a payout. A debit of a literal, or of an unrelated map by nothing, backs
-    // nothing and is exactly the shape that bought free authority.
     let mut backed: HashSet<&str> = HashSet::new();
     for name in &free {
         let one: HashSet<&str> = std::iter::once(*name).collect();
@@ -166,9 +152,6 @@ fn moved_amount_is_caller_chosen(model: &Model, entry: &EntryDecl) -> bool {
                                 })
                                 .unwrap_or(false)
                         {
-                            // A debit the same entry gives straight back costs nothing.
-                            // `bal.credit(caller, n); bal.debit(caller, n)` leaves the
-                            // row byte identical and the asset still leaves.
                             if let Expr::Field { base, .. } = callee.as_ref() {
                                 if let Expr::Ident(map) = base.as_ref() {
                                     if credit_cancels_the_debit(entry, map.text.as_str(), name) {
@@ -193,7 +176,6 @@ fn moved_amount_is_caller_chosen(model: &Model, entry: &EntryDecl) -> bool {
         return false;
     }
     let mut derived = param_derived_locals(entry, &unbacked, &signed);
-    // A value parked in a state field is still the caller's number.
     for field in tainted_state_fields(entry, &unbacked, &signed, &derived) {
         derived.insert(field);
     }
@@ -213,12 +195,6 @@ fn moved_amount_is_caller_chosen(model: &Model, entry: &EntryDecl) -> bool {
                     _ => None,
                 };
                 if let Some(a) = amount {
-                    // Naming WHICH stored amount to move is not naming the amount.
-                    // `send(caller, vault.split(tx_amount.get(id)))` lets the caller
-                    // pick a proposal; the figure itself was written by an authorised
-                    // entry. Treating the KEY as the value made a multisig execute, a
-                    // DAO execution, an auction settle and an order fill all
-                    // impossible to write.
                     if !amount_is_a_trusted_state_read(model, entry, a)
                         && taints_from_param(a, &unbacked, &signed, &derived)
                     {
@@ -231,14 +207,6 @@ fn moved_amount_is_caller_chosen(model: &Model, entry: &EntryDecl) -> bool {
     caller_chosen
 }
 
-/// Whether an expression reads a row keyed by the caller, such as `pending.get(caller)`.
-/// Whether the value reads a caller row that could actually hold something.
-///
-/// A row of a map NO entry ever writes is zero for everybody forever, so reading
-/// it earns nothing: `ranks.set(caller, seen.get(caller) + 1)` against an unwritten
-/// `seen` handed every address a rank of exactly one for free, and that rank then
-/// passed as a protected authority anchor. The map has to be written somewhere
-/// before a read of it counts as having earned anything.
 fn reads_a_caller_row(model: &Model, expr: &Expr) -> bool {
     let mut found = false;
     walk(expr, &mut |e| {
@@ -261,10 +229,6 @@ fn reads_a_caller_row(model: &Model, expr: &Expr) -> bool {
     found
 }
 
-/// State fields this entry assigns from a caller named expression.
-///
-/// `pending = n; send_asset(t, caller, pending)` moved the taint out of the parameter
-/// and into state, where the parameter based check could no longer see it.
 fn tainted_state_fields(
     entry: &EntryDecl,
     free: &HashSet<&str>,
@@ -284,9 +248,6 @@ fn tainted_state_fields(
     out
 }
 
-/// A swap has no owner to check. The authority is that the caller paid an asset
-/// in, and the only place value can leave is back to that same caller. Minting is
-/// deliberately excluded, since creating units is never paid for by an inflow.
 fn asset_outflow_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> bool {
     let paid_in = entry.params.iter().any(crate::model::is_asset_param);
     let mut burns_its_own_row = false;
@@ -332,9 +293,6 @@ fn asset_outflow_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> 
     saw_send && sends_only_to_caller
 }
 
-/// The caller paid an asset in and every ledger row this entry touches is under
-/// the caller's own key, so it can neither credit itself from nothing nor reach
-/// anybody else's row. This is what a pool does when it books what you provided.
 fn ledger_move_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> bool {
     if moved_amount_is_caller_chosen(model, entry) {
         return false;
@@ -366,15 +324,6 @@ fn ledger_move_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> bo
     saw && all_caller_keyed
 }
 
-/// A first claim must prove the slot was free.
-///
-/// `owner_of.set(label, caller)` under a caller supplied key is how every registry
-/// takes ownership, and it is only sound if something already established that
-/// nobody else holds `label`. An honest registry guards the slot it is about to
-/// take, `guard expiry_of.get(label) == 0 || now >= expiry_of.get(label) + grace`.
-/// With no such guard the same call seizes a name somebody else is using, and
-/// every later `owner_of.get(label) == caller` gate reads a row the attacker just
-/// wrote, so the anchor is forgeable no matter how carefully it is checked.
 fn unconditional_self_claim(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
     let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
     let mut claimed: Option<(String, String)> = None;
@@ -402,9 +351,6 @@ fn unconditional_self_claim(model: &Model, entry: &EntryDecl) -> Option<TypeErro
         });
     }
     let (map, key) = claimed?;
-    // Any guard that reads state under the same key is enough. Deciding whether it
-    // is the RIGHT condition is the author's business; the point is that the slot
-    // was consulted at all before being taken.
     let mut conditioned = false;
     for stmt in &entry.body {
         if let Stmt::Guard { expr, .. } = stmt {
@@ -412,12 +358,6 @@ fn unconditional_self_claim(model: &Model, entry: &EntryDecl) -> Option<TypeErro
                 if let Expr::Call { callee, args, .. } = e {
                     if let Expr::Field { base, name, .. } = callee.as_ref() {
                         if let Expr::Ident(m) = base.as_ref() {
-                            // The guard has to be on state this entry then RESTAMPS
-                            // under the same key. `guard banned.get(label) == 0`
-                            // against a map no entry ever writes is true for every
-                            // label forever, so it reads like a check and gates
-                            // nothing: the name is seizable from its owner and every
-                            // later `owner_of.get(label) == caller` reads a forged row.
                             if matches!(name.text.as_str(), "get" | "contains" | "has")
                                 && model.state.contains_key(m.text.as_str())
                             {
@@ -438,9 +378,6 @@ fn unconditional_self_claim(model: &Model, entry: &EntryDecl) -> Option<TypeErro
     if conditioned {
         return None;
     }
-    // An unguarded self claim only matters if the map is later trusted as authority.
-    // A registry nobody gates on is just data, and refusing it would put a limit on
-    // contracts that harm no one.
     if !map_is_read_as_caller_authority(model, &map) {
         return None;
     }
@@ -456,23 +393,11 @@ fn unconditional_self_claim(model: &Model, entry: &EntryDecl) -> Option<TypeErro
     ))
 }
 
-/// Whether the only thing standing between the caller and the asset is membership.
-///
-/// `guard members.get(caller) > 0` proves WHO is calling, never HOW MUCH they may
-/// take. An owner equality is different: `owner == caller` names one account, so
-/// what it authorises is bounded by who holds the office. A threshold read of a
-/// caller keyed row is open to anyone who has ever paid anything, so on its own it
-/// authorises an identity, not an amount.
 fn authority_is_membership_only(model: &Model, entry: &EntryDecl, signed: &HashSet<&str>) -> bool {
     if has_protected_signed_authority(model, entry) || entry.params.iter().any(is_quorum_param) {
         return false;
     }
     let mut caller_keyed = false;
-    // A `denies` clause states when to REJECT, so its sense is inverted and it cannot
-    // share a list with guards and `limits`. Mixing them made `denies caller ==
-    // treasury`, which merely excludes one account and grants nothing, read as an
-    // office and switch this whole rule off; and made `denies caller != owner`, the
-    // canonical owner only clause, read as no office at all.
     let mut required: Vec<&Expr> = Vec::new();
     let mut denied: Vec<&Expr> = Vec::new();
     for clause in &entry.clauses {
@@ -489,8 +414,6 @@ fn authority_is_membership_only(model: &Model, entry: &EntryDecl, signed: &HashS
     }
     for expr in required.iter().chain(denied.iter()) {
         let is_office = if denied.iter().any(|d| std::ptr::eq(*d, *expr)) {
-            // The entry proceeds when the denial does NOT hold, so the office test
-            // applies to the negation.
             denied_office(model, expr)
         } else {
             office_equality(model, expr)
@@ -502,9 +425,6 @@ fn authority_is_membership_only(model: &Model, entry: &EntryDecl, signed: &HashS
             if let Expr::Call { callee, args, .. } = e {
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
                     if let Expr::Ident(m) = base.as_ref() {
-                        // `.contains(caller)` and `.has(caller)` are the same
-                        // membership question as `.get(caller)`, and spelling it either
-                        // of the other two ways turned this whole rule off.
                         if matches!(name.text.as_str(), "get" | "contains" | "has")
                             && model.state.contains_key(m.text.as_str())
                             && matches!(args.first(), Some(Expr::Caller { .. }))
@@ -519,17 +439,8 @@ fn authority_is_membership_only(model: &Model, entry: &EntryDecl, signed: &HashS
     caller_keyed && entry_binds_caller(model, entry, signed)
 }
 
-/// `caller == owner` or `owner_of.get(k) == caller`: an equality that names one
-/// account. `anchor_of` deliberately also counts a caller keyed membership map,
-/// which is the case this has to tell apart, so it cannot be reused here.
 fn office_equality(model: &Model, expr: &Expr) -> bool {
     match expr {
-        // A conjunction holds only if BOTH sides hold, so one office conjunct is
-        // enough to bind the caller. A DISJUNCTION holds if EITHER side does, so it
-        // only guarantees an office when both sides are offices. Treating them the
-        // same let `members.get(caller) > 0 || owner == caller` count as an office
-        // while a bare membership satisfied it, which switched the membership rule
-        // off and handed the vault to any member.
         Expr::Binary {
             op: BinOp::And,
             left,
@@ -555,7 +466,6 @@ fn office_equality(model: &Model, expr: &Expr) -> bool {
                     && (state_addr_ident(model, left).is_some()
                         || map_value_addr(model, left).is_some()))
         }
-        // `guard !(caller != owner)` is the same office written the long way round.
         Expr::Unary {
             op: UnaryOp::Not,
             expr,
@@ -578,8 +488,6 @@ fn unbacked_membership_error(entry: &EntryDecl) -> TypeError {
     )
 }
 
-/// Whether any entry gates on `field.get(k) == caller`, which is what turns a row
-/// of `field` into authority rather than data.
 fn map_is_read_as_caller_authority(model: &Model, field: &str) -> bool {
     for entry in &model.entries {
         let mut guards: Vec<&Expr> = Vec::new();
@@ -604,13 +512,6 @@ fn map_is_read_as_caller_authority(model: &Model, field: &str) -> bool {
     false
 }
 
-/// Whether a map's value is ever spent, paid out or moved as an amount.
-///
-/// The rule that a caller keyed write of an amount is minting only makes sense for a
-/// map that is actually a balance. A schedule, a timestamp, a tier or a counter is
-/// address keyed and integer valued too, and writing one for another account moves no
-/// value at all. Requiring a map to be paid out somewhere before that rule applies is
-/// what keeps an honest vesting or subscription contract compiling.
 fn map_is_ever_paid_out(model: &Model, field: &str) -> bool {
     let reads_field = |e: &Expr| {
         let mut hit = false;
@@ -638,7 +539,6 @@ fn map_is_ever_paid_out(model: &Model, field: &str) -> bool {
                 }
                 if let Expr::Call { callee, args, .. } = e {
                     match callee.as_ref() {
-                        // The amount handed to a transfer.
                         Expr::Ident(id) if id.text == "send_asset" || id.text == "mint_asset" => {
                             if args.get(2).is_some_and(reads_field) {
                                 found = true;
@@ -649,11 +549,8 @@ fn map_is_ever_paid_out(model: &Model, field: &str) -> bool {
                                 found = true;
                             }
                         }
-                        // Debited, or used as the amount moved on some other ledger.
                         Expr::Field { base, name, .. } => {
                             if let Expr::Ident(m) = base.as_ref() {
-                                // Either this map is debited, or its value is the amount
-                                // moved on some other ledger. Both mean it pays out.
                                 if (m.text == field && name.text == "debit")
                                     || (matches!(name.text.as_str(), "credit" | "debit")
                                         && args.get(1).is_some_and(reads_field))
@@ -674,13 +571,6 @@ fn map_is_ever_paid_out(model: &Model, field: &str) -> bool {
     false
 }
 
-/// Scalar state fields that only ever hold an amount the chain really moved in.
-///
-/// `high = funds.amount` in an auction records a bid the contract is holding, so
-/// refunding `high` to the previous leader pays out money that is already in the
-/// vault. Treating that read as unbacked is what stopped every refund shaped
-/// contract from compiling. The rule is deliberately exact: the assignment has to be
-/// the asset amount itself, with no arithmetic, so nothing can inflate it.
 fn asset_backed_scalars(model: &Model) -> HashSet<String> {
     let mut candidate: HashSet<String> = HashSet::new();
     let mut disqualified: HashSet<String> = HashSet::new();
@@ -707,12 +597,6 @@ fn asset_backed_scalars(model: &Model) -> HashSet<String> {
     candidate
 }
 
-/// A writer that can only ever fill a slot that was empty, and never clear one.
-///
-/// `guard start.get(who) == 0; start.set(who, now)` is write once: it cannot touch a
-/// row somebody already holds, so it cannot forge anyone else's authority and the map
-/// stays a sound anchor. Without this, every write once shape is unbuildable, which
-/// rules out vesting, subscriptions, one shot registration and commit reveal.
 fn writes_field_only_into_an_empty_slot(model: &Model, entry: &EntryDecl, field: &str) -> bool {
     let mut guards: Vec<&Expr> = Vec::new();
     for clause in &entry.clauses {
@@ -726,11 +610,6 @@ fn writes_field_only_into_an_empty_slot(model: &Model, entry: &EntryDecl, field:
             guards.push(expr);
         }
     }
-    // Whether some guard proves this exact key is free. A registry proves it through
-    // a SIBLING map keyed the same way, `guard expiry_of.get(label) == 0`, not
-    // through the owner map itself, so any state map counts. To stop that becoming a
-    // loophole the entry must also WRITE that sibling under the same key, which is
-    // what makes the guard false on every later call and the claim genuinely one shot.
     let proves_empty = |key: &Expr| {
         let mut found = false;
         for expr in &guards {
@@ -787,20 +666,12 @@ fn writes_field_only_into_an_empty_slot(model: &Model, entry: &EntryDecl, field:
                         if m.text != field {
                             return;
                         }
-                        // Clearing a slot would let it be claimed again, so it is not
-                        // write once however carefully the fill is guarded.
                         if name.text == "remove" {
                             all_proven = false;
                             return;
                         }
                         if matches!(name.text.as_str(), "set" | "insert" | "credit" | "debit") {
                             saw = true;
-                            // Write once says nobody can take a slot somebody else
-                            // holds. It says nothing about granting yourself one: with
-                            // the key `caller`, every caller can still write their own
-                            // row exactly once, which is a self grant with a limit of
-                            // one, not an authority. Those writes are judged by the
-                            // value rule instead, which refuses a literal.
                             if matches!(args.first(), Some(Expr::Caller { .. })) {
                                 all_proven = false;
                                 return;
@@ -817,7 +688,6 @@ fn writes_field_only_into_an_empty_slot(model: &Model, entry: &EntryDecl, field:
     saw && all_proven
 }
 
-/// `<map>.get(k)` for any map, returning the map name and the key.
 fn any_map_get(e: &Expr) -> Option<(&str, &Expr)> {
     if let Expr::Call { callee, args, .. } = e {
         if let Expr::Field { base, name, .. } = callee.as_ref() {
@@ -844,8 +714,6 @@ fn any_map_contains(e: &Expr) -> Option<(&str, &Expr)> {
     None
 }
 
-/// Whether the entry writes `field` under exactly `key`, which is what turns a
-/// sibling emptiness guard into a one shot claim rather than a decoration.
 fn entry_writes_field_under_key(entry: &EntryDecl, field: &str, key: &Expr) -> bool {
     let mut hit = false;
     for stmt in &entry.body {
@@ -867,16 +735,9 @@ fn entry_writes_field_under_key(entry: &EntryDecl, field: &str, key: &Expr) -> b
     hit
 }
 
-/// Whether debiting the caller by `e` really costs them at least `param`.
-///
-/// A WHITELIST on purpose: a blacklist of shapes that reach zero can never be
-/// complete. Only a form that cannot shrink below the parameter backs an amount, so
-/// anything not named here backs nothing.
 fn debit_covers_the_parameter(e: &Expr, param: &str) -> bool {
     match e {
-        // The parameter itself, or a local that is exactly it.
         Expr::Ident(id) => id.text == param,
-        // Scaling UP by a literal of at least one, either operand order.
         Expr::Binary {
             op: BinOp::Mul,
             left,
@@ -886,10 +747,6 @@ fn debit_covers_the_parameter(e: &Expr, param: &str) -> bool {
             (debit_covers_the_parameter(left, param) && literal_at_least_one(right))
                 || (debit_covers_the_parameter(right, param) && literal_at_least_one(left))
         }
-        // Adding only ever costs more, and only under TRAPPING arithmetic. Both
-        // operands have to be examined: `wrapping(n + (0 - n))` is zero, and letting
-        // one side alone satisfy the rule re-admitted the exact shape the whitelist
-        // was written to block.
         Expr::Binary {
             op: BinOp::Add,
             left,
@@ -900,10 +757,6 @@ fn debit_covers_the_parameter(e: &Expr, param: &str) -> bool {
                 || (debit_covers_the_parameter(right, param) && non_negative(left))
         }
         Expr::Checked { expr, .. } => debit_covers_the_parameter(expr, param),
-        // `Wrapping` is deliberately absent: wrapping arithmetic can carry any
-        // expression to zero, so nothing inside it can be said to cover anything.
-        // Subtraction, division, remainder and shifts can all reach zero while still
-        // mentioning the parameter, which is exactly how the fold was defeated.
         _ => false,
     }
 }
@@ -920,14 +773,6 @@ fn literal_at_least_one(e: &Expr) -> bool {
     }
 }
 
-/// Whether some entry can write this anchor while carrying no authority at all.
-///
-/// This is the precise shape of a forged ownership check: `entry join() {
-/// members.set(caller, 1); }` moves no value so it needs no authority of its own,
-/// and then `guard members.get(caller) > 0` licenses reassigning every slot in the
-/// registry. Requiring the anchor to be fully protected instead is too strong: an
-/// expiry gated Dutch auction re-claim is authorised by payment and time, not by a
-/// caller binding, and demanding protection would make a real registry unbuildable.
 fn anchor_writable_without_authority(model: &Model, field: &str) -> bool {
     for entry in &model.entries {
         if !entry_writes_field(entry, field) {
@@ -939,11 +784,6 @@ fn anchor_writable_without_authority(model: &Model, field: &str) -> bool {
             .filter(|p| p.signed_by.is_some())
             .map(|p| p.name.text.as_str())
             .collect();
-        // Declaring an asset parameter is not payment. `entry join(fee: Q_Asset<TOK>)`
-        // with no floor is satisfied by paying nothing, and the writer still looked
-        // authorised. A guard must also gate WHO may write rather than merely exist:
-        // `guard 1 > 0` satisfied the old presence test and made a self grantable map
-        // look protected, which is the whole shape this predicate exists to catch.
         let paid = entry
             .params
             .iter()
@@ -951,11 +791,6 @@ fn anchor_writable_without_authority(model: &Model, field: &str) -> bool {
             .any(|p| entry_requires_a_positive_amount(entry, p.name.text.as_str()));
         let quorum = entry.params.iter().any(is_quorum_param);
         let bound = entry_binds_caller(model, entry, &signed);
-        // An entry whose authority is a HOLDER check on the very map it writes cannot
-        // self grant: it requires you to already hold the slot. This is the canonical
-        // registry transfer, and asking `entry_binds_caller` about it recurses back
-        // through this same map, so it has to be recognised directly or every honest
-        // registry reads as writable by anyone.
         let holds_the_slot = entry_guards_on_holding(model, entry, field);
         if !bound && !paid && !quorum && signed.is_empty() && !holds_the_slot {
             return true;
@@ -964,13 +799,6 @@ fn anchor_writable_without_authority(model: &Model, field: &str) -> bool {
     false
 }
 
-/// Whether the amount leaving is read out of a caller row the caller can set.
-///
-/// `request_payout(n) { request.set(caller, n); }` then `take() { send_asset(token,
-/// caller, request.get(caller)); }` launders a caller chosen number across two
-/// entries, so no single entry ever shows a free parameter reaching a transfer and
-/// the within entry taint sees nothing. If the map the amount is read from is not a
-/// protected anchor, the number in it is still whatever the caller last wrote.
 fn outflow_amount_is_a_self_written_row(model: &Model, entry: &EntryDecl) -> bool {
     let mut found = false;
     for stmt in &entry.body {
@@ -1012,29 +840,20 @@ fn outflow_amount_is_a_self_written_row(model: &Model, entry: &EntryDecl) -> boo
     found
 }
 
-/// Whether DENYING this condition binds the caller to an office.
-///
-/// A `denies` clause fires when its condition holds, so the entry proceeds under the
-/// negation. `denies caller != owner` therefore requires `caller == owner` and is a
-/// real office; `denies caller == treasury` merely excludes one account and grants
-/// nothing. De Morgan flips the connectives with the comparison.
 fn denied_office(model: &Model, expr: &Expr) -> bool {
     match expr {
-        // !(A && B) is !A || !B, so both halves must be offices.
         Expr::Binary {
             op: BinOp::And,
             left,
             right,
             ..
         } => denied_office(model, left) && denied_office(model, right),
-        // !(A || B) is !A && !B, so either half is enough.
         Expr::Binary {
             op: BinOp::Or,
             left,
             right,
             ..
         } => denied_office(model, left) || denied_office(model, right),
-        // !(caller != X) is caller == X.
         Expr::Binary {
             op: BinOp::Ne,
             left,
@@ -1057,10 +876,6 @@ fn denied_office(model: &Model, expr: &Expr) -> bool {
     }
 }
 
-/// Whether an expression cannot make a sum smaller.
-///
-/// Only literals and plain reads qualify. A subtraction can carry a sum downward
-/// under wrapping arithmetic, so `n + (0 - n)` must not count as covering `n`.
 fn non_negative(e: &Expr) -> bool {
     match e {
         Expr::Int(_) | Expr::Ident(_) | Expr::Field { .. } => true,
@@ -1084,10 +899,6 @@ fn non_negative(e: &Expr) -> bool {
     }
 }
 
-/// Whether the entry refuses a zero amount for this asset parameter.
-///
-/// An asset parameter with no floor is satisfied by paying nothing, so treating its
-/// mere presence as payment let an entry that costs the caller nothing look paid for.
 fn entry_requires_a_positive_amount(entry: &EntryDecl, param: &str) -> bool {
     let mut required = false;
     let mut exprs: Vec<&Expr> = Vec::new();
@@ -1101,9 +912,6 @@ fn entry_requires_a_positive_amount(entry: &EntryDecl, param: &str) -> bool {
             exprs.push(expr);
         }
     }
-    // Any bound the caller must clear counts, whether it is a literal or a computed
-    // price: `payment.amount >= base * years` is a real charge. What does not count is
-    // a bound of literal zero, which every payment satisfies, and no bound at all.
     let real_bound = |b: &Expr| match b {
         Expr::Int(n) => n
             .text
@@ -1122,9 +930,6 @@ fn entry_requires_a_positive_amount(entry: &EntryDecl, param: &str) -> bool {
                 let amount_left = is_asset_amount_expr(left, param);
                 let amount_right = is_asset_amount_expr(right, param);
                 match op {
-                    // amount > 0, amount >= 1
-                    // amount > anything is always a real floor, since the smallest
-                    // thing it can exceed is zero.
                     BinOp::Gt if amount_left => required = true,
                     BinOp::Ge if amount_left && real_bound(right) => required = true,
                     BinOp::Lt if amount_right => required = true,
@@ -1137,11 +942,6 @@ fn entry_requires_a_positive_amount(entry: &EntryDecl, param: &str) -> bool {
     required
 }
 
-/// Whether the entry requires the caller to already hold a row of this very map.
-///
-/// `guard owner_of.get(label) == caller` before writing `owner_of` is a handover by
-/// the current holder. It cannot forge anything, because passing it means already
-/// owning the slot, and it is the shape every registry transfer takes.
 fn entry_guards_on_holding(model: &Model, entry: &EntryDecl, field: &str) -> bool {
     let mut exprs: Vec<&Expr> = Vec::new();
     for clause in &entry.clauses {
@@ -1180,25 +980,7 @@ fn entry_guards_on_holding(model: &Model, entry: &EntryDecl, field: &str) -> boo
     holds
 }
 
-/// Whether a guard or `limits` clause bounds what leaves against state the caller
-/// cannot simply write for themselves.
-///
-/// This is the rule that matters, and the one the earlier shapes kept missing. They
-/// asked "is there a `debit(caller, <this parameter>)` somewhere", which is one way to
-/// establish an entitlement and not the only one. Every real contract of this kind
-/// states a bound instead:
-///
-///   lending    `guard collateral.get(caller) >= (debt.get(caller) + amount) * 2`
-///   vesting    `limits claimed.get(caller) + amount <= allocation.get(caller)`
-///   payroll    `limits spent_today + amount <= daily_cap`
-///   redemption `points.debit(caller, amount * points_per_coin)`
-///
-/// Refusing all of these made lending, vesting, payroll and loyalty redemption
-/// unbuildable, while catching nothing a bound would not also catch. What makes a
-/// bound real is the side it is measured against: it has to read state the caller
-/// cannot grant themselves, which is exactly `authority_anchor_protected`.
 fn outflow_is_bounded_by_an_entitlement(model: &Model, entry: &EntryDecl) -> bool {
-    // The names that actually leave. A bound on something else bounds nothing.
     let leaving = names_in_outflow_amounts(entry);
     if leaving.is_empty() {
         return false;
@@ -1216,12 +998,6 @@ fn outflow_is_bounded_by_an_entitlement(model: &Model, entry: &EntryDecl) -> boo
     }
     let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
     let mut bounded = false;
-    // Only the conjuncts that MUST hold can bound anything. Descending through `&&`
-    // is safe because every side of it holds; a `!` inverts what it wraps and a `||`
-    // need not hold at all, so neither is entered. Skipping a whole guard because it
-    // contained a negation anywhere was far too coarse: `guard !paused && n <=
-    // allocation.get(caller)` threw away a perfectly good bound because a pause flag
-    // sat beside it, and a pause flag is in every serious contract.
     let mut musts: Vec<&Expr> = Vec::new();
     for expr in exprs {
         collect_conjuncts(expr, &mut musts);
@@ -1237,8 +1013,6 @@ fn outflow_is_bounded_by_an_entitlement(model: &Model, entry: &EntryDecl) -> boo
             else {
                 return;
             };
-            // The amount must sit on the SMALL side of the comparison, and the other
-            // side must be state the caller cannot write.
             let (small, large) = match op {
                 BinOp::Le | BinOp::Lt => (left.as_ref(), right.as_ref()),
                 BinOp::Ge | BinOp::Gt => (right.as_ref(), left.as_ref()),
@@ -1247,8 +1021,6 @@ fn outflow_is_bounded_by_an_entitlement(model: &Model, entry: &EntryDecl) -> boo
             if !mentions_any_name(small, &leaving) {
                 return;
             }
-            // A term the caller types into the transaction bounds nothing:
-            // `collateral.get(caller) * factor` is whatever `factor` they pass.
             if mentions_any_name(
                 large,
                 &params
@@ -1261,16 +1033,6 @@ fn outflow_is_bounded_by_an_entitlement(model: &Model, entry: &EntryDecl) -> boo
             if !bound_is_trustworthy(model, large) {
                 return;
             }
-            // A bound that ignores what this entry is accumulating is a PER CALL
-            // bound, and the call can be made again. `guard collateral.get(caller) >=
-            // amount * 2` while crediting a separate `borrowed` row lets the same
-            // collateral be drawn against forever. Whatever the entry adds to must
-            // appear in the bound, which is what makes it cumulative.
-            // An entry that records NOTHING has a per call bound, and the call can
-            // simply be made again: `guard collateral.get(caller) >= amount` then
-            // sending `amount`, with the collateral untouched, drains the pool one
-            // call at a time. A withdrawal has to either reduce the entitlement it
-            // spends or accrue against it.
             let accrued = accumulating_state(entry);
             if accrued.is_empty() && !entry_reduces_a_caller_row(entry) {
                 return;
@@ -1299,10 +1061,6 @@ fn outflow_is_bounded_by_an_entitlement(model: &Model, entry: &EntryDecl) -> boo
     bounded
 }
 
-/// Names that appear inside an amount this entry hands to a transfer or a pool split.
-///
-/// Owned strings rather than borrowed expressions, because the statement walker only
-/// lends each node for the length of the callback.
 fn names_in_outflow_amounts(entry: &EntryDecl) -> HashSet<String> {
     let mut out: HashSet<String> = HashSet::new();
     for stmt in &entry.body {
@@ -1329,7 +1087,6 @@ fn names_in_outflow_amounts(entry: &EntryDecl) -> HashSet<String> {
     out
 }
 
-/// Whether the expression mentions any of these names.
 fn mentions_any_name(e: &Expr, names: &HashSet<String>) -> bool {
     let mut hit = false;
     walk(e, &mut |x| {
@@ -1342,83 +1099,54 @@ fn mentions_any_name(e: &Expr, names: &HashSet<String>) -> bool {
     hit
 }
 
-/// Whether a bounding term is state the caller cannot grant themselves.
-///
-/// A literal or a protected field or map read is trustworthy. A read of a map any
-/// caller can write to their own row is not: bounding an outflow by a number you
-/// wrote yourself bounds nothing at all.
 fn bound_is_trustworthy(model: &Model, e: &Expr) -> bool {
     let mut trustworthy = true;
     let mut saw_state = false;
-    walk(e, &mut |x| {
-        match x {
-            Expr::Call { callee, .. } => {
-                if let Expr::Field { base, name, .. } = callee.as_ref() {
-                    if let Expr::Ident(m) = base.as_ref() {
-                        if matches!(name.text.as_str(), "get" | "contains" | "has")
-                            && model.state.contains_key(m.text.as_str())
-                        {
-                            saw_state = true;
-                            // `authority_anchor_protected` answers WHO may write the
-                            // map, never WHAT they may write into it. A quota an
-                            // authorised member sets on their own row to any number
-                            // they please is protected by that test and bounds nothing
-                            // at all, which is exactly what this rule must exclude.
-                            if !authority_anchor_protected(model, m.text.as_str())
-                                || caller_sets_their_own_row(model, m.text.as_str())
-                            {
-                                trustworthy = false;
-                            }
-                        }
-                    }
-                }
-            }
-            Expr::Ident(id) => {
-                if model.state.contains_key(id.text.as_str()) {
-                    saw_state = true;
-                    // Same two questions as a map row: who may write it, and what may
-                    // they write. A ceiling any member sets to any number bounds
-                    // nothing, whether it is held in a map or in a plain scalar.
-                    if !authority_anchor_protected(model, id.text.as_str())
-                        || caller_sets_their_own_row(model, id.text.as_str())
+    walk(e, &mut |x| match x {
+        Expr::Call { callee, .. } => {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if let Expr::Ident(m) = base.as_ref() {
+                    if matches!(name.text.as_str(), "get" | "contains" | "has")
+                        && model.state.contains_key(m.text.as_str())
                     {
-                        trustworthy = false;
-                    }
-                }
-                // A pool balance read such as `pool.amount` is the contract's own
-                // holding and nobody can inflate it by asking.
-            }
-            Expr::Field { base, name, .. } => {
-                if name.text == "amount" {
-                    if let Expr::Ident(m) = base.as_ref() {
-                        if model.state.contains_key(m.text.as_str()) {
-                            // `amount <= pool.amount` is the most natural sanity check
-                            // a developer writes, and it says "you may take everything
-                            // in the pool". Nobody can inflate it by asking, but it is
-                            // the total of everybody's money, not this caller's share.
-                            saw_state = true;
+                        saw_state = true;
+                        if !authority_anchor_protected(model, m.text.as_str())
+                            || caller_sets_their_own_row(model, m.text.as_str())
+                        {
                             trustworthy = false;
                         }
                     }
                 }
             }
-            _ => {}
         }
+        Expr::Ident(id) => {
+            if model.state.contains_key(id.text.as_str()) {
+                saw_state = true;
+                if !authority_anchor_protected(model, id.text.as_str())
+                    || caller_sets_their_own_row(model, id.text.as_str())
+                {
+                    trustworthy = false;
+                }
+            }
+        }
+        Expr::Field { base, name, .. } => {
+            if name.text == "amount" {
+                if let Expr::Ident(m) = base.as_ref() {
+                    if model.state.contains_key(m.text.as_str()) {
+                        saw_state = true;
+                        trustworthy = false;
+                    }
+                }
+            }
+        }
+        _ => {}
     });
     saw_state && trustworthy
 }
 
-/// State this entry ADDS to, which any bound has to take account of.
-///
-/// A debt row, a claimed counter or a daily spend total records usage that persists
-/// after the call. A bound that does not mention it is a per call bound, and the call
-/// can simply be made again.
 fn accumulating_state(entry: &EntryDecl) -> HashSet<String> {
     let mut out: HashSet<String> = HashSet::new();
     for stmt in &entry.body {
-        // `spent_today += amount` is `Assign { op: Add, value: amount }`: the target
-        // does NOT appear in the value, so looking for a self reference missed the
-        // idiomatic spelling entirely. A compound assignment is accrual by definition.
         if let Stmt::Assign {
             target, op, value, ..
         } = stmt
@@ -1442,9 +1170,6 @@ fn accumulating_state(entry: &EntryDecl) -> HashSet<String> {
             if let Expr::Call { callee, args, .. } = e {
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
                     if let Expr::Ident(m) = base.as_ref() {
-                        // `credit` is one spelling of accrual. `set(caller, get(caller)
-                        // + n)` is the same accounting written out, and the rule has to
-                        // see both or the idiomatic form escapes the cumulative check.
                         if matches!(args.first(), Some(Expr::Caller { .. }))
                             && (name.text == "credit"
                                 || (matches!(name.text.as_str(), "set" | "insert")
@@ -1476,11 +1201,6 @@ fn accumulating_state(entry: &EntryDecl) -> HashSet<String> {
     out
 }
 
-/// Whether the expression adds a non zero constant, giving it a floor nobody earned.
-///
-/// An anchor value has to come from something the caller actually has. A sum with a
-/// literal in it clears any `> 0` gate on its own, whatever the rest of the
-/// expression reads, so the read contributes nothing to the authority.
 fn adds_a_constant_floor(e: &Expr) -> bool {
     match e {
         Expr::Binary {
@@ -1495,8 +1215,6 @@ fn adds_a_constant_floor(e: &Expr) -> bool {
                 || adds_a_constant_floor(left)
                 || adds_a_constant_floor(right)
         }
-        // A constant can hide behind any arithmetic: `+ (1000000 - 1)` still lands a
-        // floor of 999999 on the value. Recursing only through Add missed all of it.
         Expr::Binary {
             op: BinOp::Sub,
             left,
@@ -1520,13 +1238,6 @@ fn adds_a_constant_floor(e: &Expr) -> bool {
     }
 }
 
-/// Whether the same entry credits the caller's row of this map by the same parameter
-/// it debits, leaving the row unchanged.
-///
-/// The backing scan looks for one debit and stops. It never asks what else happens to
-/// the row, so a credit of the same amount in the same entry cancels the cost while
-/// the asset still leaves. The row is byte identical before and after, so nothing on
-/// chain records that value was ever given up for it.
 fn credit_cancels_the_debit(entry: &EntryDecl, field: &str, param: &str) -> bool {
     let mut credited = false;
     for stmt in &entry.body {
@@ -1551,12 +1262,6 @@ fn credit_cancels_the_debit(entry: &EntryDecl, field: &str, param: &str) -> bool
     credited
 }
 
-/// Whether any entry lets the caller put a number of their own choosing into their
-/// own row of this map.
-///
-/// This is the difference between "who may write it" and "what may be written".
-/// A collateral row credited by an asset amount the chain really moved is an
-/// entitlement; a quota the caller sets to whatever they like is a wish.
 fn caller_sets_their_own_row(model: &Model, field: &str) -> bool {
     for entry in &model.entries {
         let free: HashSet<&str> = entry
@@ -1572,9 +1277,6 @@ fn caller_sets_their_own_row(model: &Model, field: &str) -> bool {
         let derived = param_derived_locals(entry, &free, &signed);
         let mut settable = false;
         for stmt in &entry.body {
-            // A scalar the caller assigns from a parameter is the same wish written
-            // without a map: `entry set_cap(v) { guard members.get(caller) > 0;
-            // cap = v; }` then bounding an outflow by `cap`.
             if let Stmt::Assign {
                 target, op, value, ..
             } = stmt
@@ -1592,9 +1294,6 @@ fn caller_sets_their_own_row(model: &Model, field: &str) -> bool {
                                 }
                             }
                         });
-                        // `spent_today = spent_today + amount` accrues usage, and a
-                        // compound `+=` is accrual too. Neither sets a ceiling, so
-                        // neither is a self chosen bound.
                         if !accumulates {
                             settable = true;
                         }
@@ -1626,8 +1325,6 @@ fn caller_sets_their_own_row(model: &Model, field: &str) -> bool {
     false
 }
 
-/// Whether the entry reduces a row of the caller's own, which is what makes a bound
-/// spend down rather than merely be consulted.
 fn entry_reduces_a_caller_row(entry: &EntryDecl) -> bool {
     let mut reduces = false;
     for stmt in &entry.body {
@@ -1653,19 +1350,6 @@ fn entry_reduces_a_caller_row(entry: &EntryDecl) -> bool {
     reduces
 }
 
-/// Whether writing your own row of this map only ever authorises spending your own
-/// holdings, which is what makes an allowance grant safe.
-///
-/// `allowance.set(caller, v)` looks like minting: `allowance` is a ledger map because
-/// `transfer_from` debits it, and the value written is a number the caller chose. It
-/// creates nothing, because every entry that spends against the allowance ALSO debits
-/// the balance of the very account the allowance was read for. An infinite allowance
-/// still moves nothing beyond what that account already holds.
-///
-/// The check is exactly that: every guard read of this map must be paired, in the same
-/// entry, with a debit of some OTHER map under the same key. A quota the caller sets
-/// and then draws against with no such debit fails it, which is the drain this has to
-/// keep refusing.
 fn writing_your_own_row_only_spends_your_own(model: &Model, field: &str) -> bool {
     let mut saw_a_spender = false;
     let mut all_backed = true;
@@ -1704,7 +1388,6 @@ fn writing_your_own_row_only_spends_your_own(model: &Model, field: &str) -> bool
     saw_a_spender && all_backed
 }
 
-/// Whether the entry debits some map OTHER than `field` under exactly `key`.
 fn entry_debits_another_map_under(entry: &EntryDecl, field: &str, key: &Expr) -> bool {
     let mut backed = false;
     for stmt in &entry.body {
@@ -1726,11 +1409,6 @@ fn entry_debits_another_map_under(entry: &EntryDecl, field: &str, key: &Expr) ->
     backed
 }
 
-/// Whether the entry debits the same map it gated on, under a key it also gated on.
-///
-/// Gating on a row and then spending that row down is not a forged authority: the
-/// value has to have been there, and it is gone afterwards. This is how a spender
-/// draws on an allowance and how any custodial ledger pays out.
 fn entry_debits_the_row_it_gated_on(entry: &EntryDecl, field: &str) -> bool {
     let mut debited = false;
     for stmt in &entry.body {
@@ -1749,20 +1427,7 @@ fn entry_debits_the_row_it_gated_on(entry: &EntryDecl, field: &str) -> bool {
     debited
 }
 
-/// Whether this entry spends an allowance on behalf of the account it debits.
-///
-/// Three things together make it safe, and all three are required:
-///   - it CONSERVES the ledger: the same amount is debited from one row and credited
-///     to another, so nothing is created,
-///   - it is gated on a row of some other map that it also debits, so the permission
-///     is spent and cannot be replayed,
-///   - every GRANTING write to that gating map lands under the writer's own key, so
-///     the permission can only ever have been given by the account being debited.
-///
-/// Without this a delegated spend cannot be expressed at all, and with any one of
-/// the three missing it would be a licence to move somebody else's money.
 fn spends_an_allowance_its_owner_granted(model: &Model, entry: &EntryDecl) -> bool {
-    // The map this entry debits and credits by the same amount.
     let mut conserved: Option<String> = None;
     for stmt in &entry.body {
         stmt_exprs(stmt, &mut |e| {
@@ -1808,8 +1473,6 @@ fn spends_an_allowance_its_owner_granted(model: &Model, entry: &EntryDecl) -> bo
         return false;
     };
 
-    // A gating map, other than the ledger, that this entry also debits and whose
-    // grants are all own keyed.
     let mut guards: Vec<&Expr> = Vec::new();
     for clause in &entry.clauses {
         match clause {
@@ -1846,11 +1509,6 @@ fn spends_an_allowance_its_owner_granted(model: &Model, entry: &EntryDecl) -> bo
     permitted
 }
 
-/// Whether every GRANTING write to this map lands under the writing caller's own key.
-///
-/// Debits and removes only ever reduce, so they are spends rather than grants and do
-/// not make the map forgeable. What matters is that nobody can hand THEMSELVES a
-/// permission over somebody else's account.
 fn every_grant_is_under_the_granters_own_key(model: &Model, field: &str) -> bool {
     let mut saw_grant = false;
     let mut all_own = true;
@@ -1877,10 +1535,6 @@ fn every_grant_is_under_the_granters_own_key(model: &Model, field: &str) -> bool
     saw_grant && all_own
 }
 
-/// The parts of a condition that all have to hold.
-///
-/// Descends through `&&` only. A `!` inverts its operand and a `||` is satisfied by
-/// either side, so neither can contribute something that must be true.
 fn collect_conjuncts<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
     match e {
         Expr::Binary {
@@ -1900,19 +1554,11 @@ fn collect_conjuncts<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
     }
 }
 
-/// Whether the amount leaving is read straight out of state the caller cannot set.
-///
-/// The parameter in `tx_amount.get(id)` selects a row; it is not the number. What
-/// matters is whether the row's contents could have been chosen by this caller, which
-/// is the same question `bound_is_trustworthy` asks of a bound.
 fn amount_is_a_trusted_state_read(model: &Model, entry: &EntryDecl, amount: &Expr) -> bool {
-    // `let out = vault.split(tx_amount.get(id)); send(caller, out);` hands `out` to the
-    // transfer, so the amount has to be followed back to what it was bound from.
     if let Expr::Ident(id) = amount {
         for stmt in &entry.body {
             if let Stmt::Let { name, value, .. } = stmt {
                 if name.text == id.text {
-                    // A split carries its amount as the first argument.
                     if let Expr::Call { callee, args, .. } = value {
                         if let Expr::Field { name: m, .. } = callee.as_ref() {
                             if m.text == "split" {
@@ -1943,14 +1589,9 @@ fn amount_is_a_trusted_state_read(model: &Model, entry: &EntryDecl, amount: &Exp
     model.state.contains_key(m.text.as_str())
         && authority_anchor_protected(model, m.text.as_str())
         && !caller_sets_their_own_row(model, m.text.as_str())
-        // And the row must be CONSUMED here. A stored figure the entry leaves in place
-        // can be drawn again on the next call, so a proposal that is never cleared
-        // empties the vault one execution at a time.
         && entry_consumes_the_row(entry, m.text.as_str())
 }
 
-/// Whether the entry clears or reduces a row of this map, so the same figure cannot be
-/// drawn twice.
 fn entry_consumes_the_row(entry: &EntryDecl, field: &str) -> bool {
     let mut consumed = false;
     for stmt in &entry.body {
@@ -1964,7 +1605,6 @@ fn entry_consumes_the_row(entry: &EntryDecl, field: &str) -> bool {
                         if matches!(name.text.as_str(), "remove" | "debit") {
                             consumed = true;
                         }
-                        // `m.set(k, m.get(k) - n)` is the same consumption written out.
                         if matches!(name.text.as_str(), "set" | "insert") {
                             let zeroed = matches!(args.get(1), Some(Expr::Int(n)) if n.text.replace('_', "") == "0");
                             if zeroed || row_reduction(field, args) {
@@ -1979,13 +1619,6 @@ fn entry_consumes_the_row(entry: &EntryDecl, field: &str) -> bool {
     consumed
 }
 
-/// Whether every write this entry makes to the field is a credit of an amount the
-/// chain actually moved in.
-///
-/// `proceeds.credit(seller_of.get(id), funds.amount)` books what the buyer just paid
-/// against the seller's name. Nothing is created: the same asset arrived in the same
-/// call. A credit of a caller named number, or of anything not tied to the inflow, is
-/// not this and stays refused.
 fn credits_only_what_was_paid_in(model: &Model, entry: &EntryDecl, field: &str) -> bool {
     let assets: HashSet<&str> = entry
         .params
@@ -2014,9 +1647,6 @@ fn credits_only_what_was_paid_in(model: &Model, entry: &EntryDecl, field: &str) 
                         }
                         if name.text == "credit" {
                             saw = true;
-                            // Either the inflow itself, or a scalar that only ever
-                            // holds an inflow. An auction refunds the outbid leader
-                            // the PREVIOUS high, which the vault is still holding.
                             let backed = args.get(1).is_some_and(|v| {
                                 asset_amount_backer(v, &assets).is_some()
                                     || matches!(v, Expr::Ident(id)
@@ -2034,11 +1664,6 @@ fn credits_only_what_was_paid_in(model: &Model, entry: &EntryDecl, field: &str) 
     saw && all_paid
 }
 
-/// Whether every write this entry makes to the field reduces it.
-///
-/// Reducing a row cannot forge authority: a smaller balance passes fewer gates, not
-/// more. Whether the reduction is JUSTIFIED is a separate question, answered by the
-/// rules that govern the entry doing it.
 fn row_reduction(field: &str, args: &[Expr]) -> bool {
     let (
         Some(key),
@@ -2081,8 +1706,6 @@ fn only_reduces_the_field(entry: &EntryDecl, field: &str) -> bool {
                             "debit" | "remove" => saw = true,
                             "credit" | "set" | "insert" => {
                                 saw = true;
-                                // A set that subtracts from the same row is a
-                                // reduction written out; anything else is not.
                                 let reduces = name.text != "credit" && row_reduction(field, args);
                                 if !reduces {
                                     all_reduce = false;
@@ -2098,13 +1721,6 @@ fn only_reduces_the_field(entry: &EntryDecl, field: &str) -> bool {
     saw && all_reduce
 }
 
-/// Whether every foreign row this entry touches is paid for, at par, by an asset the
-/// caller handed over in the same call.
-///
-/// This is a forced sale, and it is what liquidation is: the caller pays the debt and
-/// takes the collateral that secured it, one for one. Nobody profits, so nothing is
-/// drained. A debit of somebody else's row for a number the caller merely NAMED is a
-/// different thing entirely and stays refused, because then the caller pays nothing.
 fn foreign_rows_are_paid_for_at_par(entry: &EntryDecl) -> bool {
     let assets: HashSet<&str> = entry
         .params
@@ -2127,9 +1743,7 @@ fn foreign_rows_are_paid_for_at_par(entry: &EntryDecl) -> bool {
                     if !matches!(name.text.as_str(), "credit" | "debit" | "set" | "insert") {
                         return;
                     }
-                    // Only rows that are NOT the caller's own are in question.
                     if matches!(args.first(), Some(Expr::Caller { .. })) {
-                        // Crediting yourself still has to be paid for.
                         if name.text == "credit"
                             && !args
                                 .get(1)
@@ -2140,7 +1754,6 @@ fn foreign_rows_are_paid_for_at_par(entry: &EntryDecl) -> bool {
                         return;
                     }
                     saw_foreign = true;
-                    // A set or insert on a foreign row is not a priced move at all.
                     if matches!(name.text.as_str(), "set" | "insert") {
                         all_paid = false;
                         return;
@@ -2158,11 +1771,6 @@ fn foreign_rows_are_paid_for_at_par(entry: &EntryDecl) -> bool {
     saw_foreign && all_paid
 }
 
-/// State scalars that can only ever have grown from value the chain really moved in.
-///
-/// `treasury = checked(treasury + funds.amount)` accumulates an asset amount and
-/// nothing else. Such a total is a faithful record of what the contract holds, so
-/// drawing it down is spending real value rather than inventing it.
 fn inflow_only_totals(model: &Model) -> HashSet<String> {
     let mut candidate: HashSet<String> = HashSet::new();
     let mut disqualified: HashSet<String> = HashSet::new();
@@ -2181,7 +1789,6 @@ fn inflow_only_totals(model: &Model) -> HashSet<String> {
                 continue;
             };
             let Expr::Ident(id) = target else { continue };
-            // Does the assigned value grow the total, and by how much?
             let mut grows_by_asset = false;
             let shrinks = matches!(op, AssignOp::Sub)
                 || matches!(value, Expr::Binary { op: BinOp::Sub, left, .. }
@@ -2192,7 +1799,6 @@ fn inflow_only_totals(model: &Model) -> HashSet<String> {
                 }
             });
             if shrinks {
-                // A decrement is spending, not growth, and does not disqualify.
                 continue;
             }
             if grows_by_asset {
@@ -2206,19 +1812,11 @@ fn inflow_only_totals(model: &Model) -> HashSet<String> {
     candidate
 }
 
-/// Whether every credit this entry makes is matched by drawing down a total that only
-/// ever grew from real inflows.
-///
-/// This is a treasury paying out what it was given: members fund it, a vote commits an
-/// amount, the beneficiary collects later. The value arrived in an earlier call, so
-/// there is no inflow in THIS one, and requiring one made every deferred payout, grant
-/// and governance execution impossible to express.
 fn credits_drawn_from_an_inflow_only_total(model: &Model, entry: &EntryDecl) -> bool {
     let totals = inflow_only_totals(model);
     if totals.is_empty() {
         return false;
     }
-    // What this entry draws down, and by what expression.
     let mut drawn: Vec<&Expr> = Vec::new();
     for stmt in &entry.body {
         if let Stmt::Assign {
@@ -2245,7 +1843,6 @@ fn credits_drawn_from_an_inflow_only_total(model: &Model, entry: &EntryDecl) -> 
     if drawn.is_empty() {
         return false;
     }
-    // And every credit must be for exactly one of those amounts.
     let mut saw = false;
     let mut all_drawn = true;
     for stmt in &entry.body {
@@ -2319,23 +1916,9 @@ fn forged_ownership_transfer(
     if entry_binds_caller(model, entry, signed) || has_protected_signed_authority(model, entry) {
         return None;
     }
-    // A guard that merely MENTIONS `caller` used to switch this check off entirely,
-    // so `guard caller != someone` was enough to hand ownership to a parameter. Only
-    // a guard that actually binds `caller` to a protected anchor counts, which is
-    // what `owner_of.get(label) == caller` does and an inequality does not.
     let mut bound_to_caller = false;
     for stmt in &entry.body {
         if let Stmt::Guard { expr, .. } = stmt {
-            // An equality that binds `caller` to a state address, such as
-            // `owner_of.get(label) == caller`, is a real ownership check. Whether that
-            // anchor is itself forgeable is judged separately by forged_caller_anchor,
-            // so requiring protection here would reject an honest claim check too.
-            // The anchor must be PROTECTED, not merely present. `anchor_of` also
-            // returns membership maps, so a `members` map any caller writes to
-            // itself counted as a real ownership check: join once, then reassign
-            // every name in the registry. Every other consumer of `anchor_of` in
-            // this file pairs it with `authority_anchor_protected`; this one did
-            // not, and that was the whole hole.
             if let Some(a) = anchor_of(model, expr) {
                 if !anchor_writable_without_authority(model, a) {
                     bound_to_caller = true;
@@ -2348,15 +1931,8 @@ fn forged_ownership_transfer(
     }
     let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
     let empty: HashSet<&str> = HashSet::new();
-    // Follow `let` aliases, otherwise `let a = to; owner.set(k, a)` slips past a check
-    // that only recognises the parameter by its own name.
     let derived = param_derived_locals(entry, &params, &empty);
-    // Parking a parameter in a state field and reading it back is the same handover
-    // written in two statements, so the taint has to survive the round trip.
     let parked = tainted_state_fields(entry, &params, &empty, &derived);
-    // Follow a field chain of ANY depth to its root. Matching only one level meant
-    // `owner_of.set(order.label, order.inner.to)` was not seen as handing over a
-    // parameter, so nesting the address one struct deeper reassigned every slot.
     fn root_ident(e: &Expr) -> Option<&str> {
         match e {
             Expr::Ident(id) => Some(id.text.as_str()),
@@ -2380,11 +1956,6 @@ fn forged_ownership_transfer(
                         if matches!(name.text.as_str(), "set" | "insert" | "remove")
                             && is_addr_valued(model, map.text.as_str())
                         {
-                            // Writing YOUR OWN row is delegation, not seizure:
-                            // `delegate_of.set(caller, to)` nominates somebody to act
-                            // for you and touches nobody else's slot. Ignoring the key
-                            // meant no contract could record a delegate, an approval
-                            // or a payout address at all.
                             if matches!(args.first(), Some(Expr::Caller { .. })) {
                                 return;
                             }
@@ -2659,39 +2230,20 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
     let mut tainted = false;
     for entry in &model.entries {
         if entry_writes_field(entry, field) {
-            // A write under the caller's own key is only harmless if the VALUE it
-            // writes is not one the caller simply named. `shares.credit(caller, priced)`
-            // cannot forge authority, `flags.set(caller, v)` can, because the row it
-            // forges is exactly the one a `caller` gate reads.
             if writes_field_only_under_the_caller_key(entry, field)
                 && credits_caller_only_by_the_paid_amount(model, entry, field, prot)
             {
                 continue;
             }
-            // A write that can only fill an empty slot cannot overwrite anyone else's
-            // row, so it leaves the map usable as an anchor.
             if writes_field_only_into_an_empty_slot(model, entry, field) {
                 continue;
             }
-            // Crediting somebody by exactly the asset that just came in is a PULL
-            // PAYMENT: the payer gave up that value and the payee can now draw it. It
-            // forges nothing, because the credit cannot exceed the inflow. Refusing it
-            // made a marketplace, an auction refund, an escrow release and a royalty
-            // split all impossible, since each pays a third party who collects later.
             if credits_only_what_was_paid_in(model, entry, field) {
                 continue;
             }
-            // A credit drawn down from a total that only ever grew from real inflows is
-            // a treasury paying out what it was given. It cannot exceed what arrived,
-            // so the map it credits stays a faithful record.
             if credits_drawn_from_an_inflow_only_total(model, entry) {
                 continue;
             }
-            // A writer that only ever REDUCES the field cannot forge it. A debit makes
-            // every `field.get(x) >= n` gate harder to pass, never easier, so it can
-            // take value away but it cannot manufacture authority. Treating a debit as
-            // poisoning the anchor made liquidation, slashing and any clawback
-            // impossible to write beside the gate they protect.
             if only_reduces_the_field(entry, field) {
                 continue;
             }
@@ -2714,9 +2266,6 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
     (true, tainted)
 }
 
-/// A write that can only ever land under the caller's own key cannot forge
-/// anybody else's entry, so it does not make the map an unsafe anchor. This is
-/// what lets a pool credit what you paid in and then gate on it later.
 fn writes_field_only_under_the_caller_key(entry: &EntryDecl, field: &str) -> bool {
     let mut saw = false;
     let mut all_caller_keyed = true;
@@ -2751,23 +2300,12 @@ fn writes_field_only_under_the_caller_key(entry: &EntryDecl, field: &str) -> boo
     saw && all_caller_keyed
 }
 
-/// A write authorised by payment rather than by a gate.
-///
-/// An entry that credits the caller's own row by exactly the amount of an asset the
-/// chain actually moved cannot be used to self grant anything, because the row only
-/// grows by what was really paid. That is what a pool deposit does. A free write like
-/// `flags.set(caller, v)` is not this, so it still has to prove authority some other
-/// way.
 fn credits_caller_only_by_the_paid_amount(
     model: &Model,
     entry: &EntryDecl,
     field: &str,
     _prot: &mut Prot,
 ) -> bool {
-    // A write to this field is safe as the ground of a `caller` gate when it is keyed
-    // by the caller AND its amount is not a number the caller simply named. An amount
-    // computed from an asset the chain really moved, or from contract state, cannot be
-    // used to self grant. `flags.set(caller, v)` can, and is what this refuses.
     let free: HashSet<&str> = entry
         .params
         .iter()
@@ -2785,7 +2323,6 @@ fn credits_caller_only_by_the_paid_amount(
                     if !matches!(base.as_ref(), Expr::Ident(id) if id.text == field) {
                         return;
                     }
-                    // Reads are not writes.
                     if !matches!(
                         name.text.as_str(),
                         "credit" | "debit" | "set" | "insert" | "remove"
@@ -2797,16 +2334,9 @@ fn credits_caller_only_by_the_paid_amount(
                         all_safe = false;
                         return;
                     }
-                    // Shrinking your own row cannot grant anything.
                     if name.text == "debit" {
                         return;
                     }
-                    // For an anchor the value must be EARNED, not merely not named by
-                    // the caller. A literal is the purest self grant there is, so
-                    // `flags.set(caller, 1)` cannot make `flags` a trustworthy ground
-                    // for `guard flags.get(caller) == 1`. Earned means derived from an
-                    // asset the chain moved, or read out of another row of the
-                    // caller's own.
                     let assets: HashSet<&str> = entry
                         .params
                         .iter()
@@ -2816,10 +2346,6 @@ fn credits_caller_only_by_the_paid_amount(
                     let no_locals: HashSet<String> = HashSet::new();
                     let earned = match args.get(1) {
                         Some(a) => {
-                            // Adding a constant manufactures value from nothing:
-                            // `ranks.set(caller, seen.get(caller) + 1)` is 1 for
-                            // everybody when `seen` holds nothing, so the read is
-                            // decoration and the literal is the whole grant.
                             !adds_a_constant_floor(a)
                                 && (taints_from_param(a, &assets, &signed, &no_locals)
                                     || reads_a_caller_row(model, a))
@@ -3007,16 +2533,6 @@ fn forged_map_authority(
     if !entry_moves_value(model, entry) || entry_binds_caller(model, entry, signed) {
         return None;
     }
-    // Looking up a caller supplied key is self declared data only when somebody else
-    // could have written that row. If every write to the map lands under the WRITER's
-    // own key, then `allowance.get(owner)` is the named account's own prior statement,
-    // which is exactly how a delegated spender is authorised. Without this the spend
-    // cannot be written at all.
-    // Looking up a caller supplied key is self declared data only when the caller gets
-    // something for free. `transfer_from(owner, ..)` guards `allowance.get(owner)` and
-    // `balances.get(owner)` and then DEBITS both of those very rows: it spends the
-    // named account down, cannot be repeated, and only succeeds if the balance was
-    // really there. Without this exemption a delegated spend cannot be written.
     let gate_expr = |expr: &Expr| {
         map_lookup_on_param(model, params, signed, derived, expr)
             .filter(|(map, _, _)| !entry_debits_the_row_it_gated_on(entry, map))
@@ -3291,12 +2807,6 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                     }
                     Expr::Field { base, name, .. } if name.text == "credit" => {
                         if let Expr::Ident(map) = base.as_ref() {
-                            // A tally keyed by a proposal or an item id, that nothing
-                            // ever debits or pays out, is a counter and not a per account
-                            // balance. Crediting one moves no value, so requiring it to be
-                            // backed only stops vote counts, reputation and statistics
-                            // from being written at all. Address keyed maps keep the full
-                            // strictness: those are where a forged credit becomes money.
                             if ledgers.contains(&map.text)
                                 && map_is_ever_paid_out(model, map.text.as_str())
                             {
@@ -3333,14 +2843,6 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                 if ledgers.contains(&map.text) {
                                     moves = true;
                                 }
-                                // A write that can only fill an EMPTY slot, on a map
-                                // nothing ever debits or pays out, is a schedule or a
-                                // registration, not a balance: it cannot overwrite what
-                                // anyone holds and no value can ever leave through it.
-                                // Both halves are required. Write once alone would still
-                                // let a fresh account mint into its own empty row and
-                                // withdraw it, and never paid out alone would still let
-                                // an existing row be overwritten.
                                 let schedule_write =
                                     writes_field_only_into_an_empty_slot(
                                         model,
@@ -3390,12 +2892,6 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                     let decrement = reads && expr_has_sub(value, &sub_locals);
                                     let backed = asset_amount_backer(value, &asset_params)
                                         .is_some_and(|a| used_asset_backers.insert(a));
-                                    // Setting your OWN row of a map that only ever
-                                    // authorises spending your own balance is an
-                                    // allowance grant, not a mint: an unlimited
-                                    // allowance still moves nothing past what you
-                                    // hold. Refusing it made delegated spending
-                                    // impossible to express.
                                     let approves_own_holdings =
                                         writing_your_own_row_only_spends_your_own(
                                             model,
@@ -3843,9 +3339,6 @@ fn caller_necessary(model: &Model, expr: &Expr) -> bool {
             right,
             ..
         } => caller_necessary(model, left) && caller_necessary(model, right),
-        // `guard !(caller != owner)` is an owner check written the long way round, and
-        // is exactly what a `denies caller != owner` clause means, so it is judged the
-        // same way rather than falling through as no binding at all.
         Expr::Unary {
             op: UnaryOp::Not,
             expr,
@@ -4007,14 +3500,6 @@ fn caller_membership_present(model: &Model, expr: &Expr) -> bool {
     };
     let lookup_left = is_caller_membership(model, left);
     match (op, lookup_left) {
-        // The threshold used to have to be a positive literal, so a guard comparing a
-        // caller's own row against a COMPUTED amount was not recognised as binding the
-        // caller at all. That is the shape of every collateral check, every tiered
-        // limit and every partial withdrawal, so lending, credit and fee bearing
-        // withdrawals were unbuildable. A computed threshold is safe to accept here
-        // because the amount side is policed separately: an outflow of a caller named
-        // amount that is not debited from the caller's own row is refused by
-        // `authority_is_membership_only`, whatever the guard compares against.
         (BinOp::Ge, true) | (BinOp::Le, false) => {
             is_positive_int(threshold) || !is_int_literal(threshold)
         }
@@ -4066,8 +3551,6 @@ fn map_lookup_on_param(
                         if is_addr_keyed(model, map_id.text.as_str()) {
                             for a in args {
                                 if let Some(field) = param_field(params, signed, derived, a) {
-                                    // The map is what gets debited; the parameter is
-                                    // what the message names. Both are needed.
                                     found = Some((map_id.text.clone(), field, *span));
                                 }
                             }
@@ -4297,8 +3780,6 @@ mod tests {
     fn the_credit_debit_form_of_the_same_mint_is_also_rejected() {
         let src = "contract C { state { balances: Map<Q_Address, u64>; pool: Q_Asset<QTOV>; } \
                    entry inflate(amount: u64) writes(balances) { balances.credit(caller, amount); } entry withdraw(n: u64) conserves QTOV reads(balances, pool) writes(balances, pool) { guard balances.get(caller) >= n; balances.debit(caller, n); let out = pool.split(n); send(caller, out); } }";
-        // This asserted nothing at all before: `let _ =` discarded the result, so the
-        // test passed whatever the checker did.
         assert!(
             error_for(src).contains("no authority") || error_for(src).contains("forgeable"),
             "minting a balance that can be withdrawn must be refused"
@@ -4803,9 +4284,6 @@ mod tests {
 
     #[test]
     fn a_genuine_caller_membership_check_is_real_authority() {
-        // Membership is real authority for GATING, and it still is: the amount here
-        // is debited from the caller's own row, so belonging decides who may act and
-        // the row decides how much.
         let src = r#"import { Q_Asset } from "quantova/primitives";
             contract C {
                 state { members: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
@@ -4820,9 +4298,6 @@ mod tests {
 
     #[test]
     fn spelling_membership_with_contains_does_not_licence_an_arbitrary_amount() {
-        // `.contains(caller)` is the same membership question as `.get(caller) > 0`,
-        // and spelling it the other way used to switch the whole rule off, so any one
-        // member could send any amount anywhere.
         let src = r#"import { Q_Asset } from "quantova/primitives";
             contract C {
                 state { members: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
@@ -4879,9 +4354,6 @@ mod tests {
 
     #[test]
     fn a_caller_membership_value_check_is_real_authority() {
-        // Membership is real authority for GATING, and it still is: the amount here
-        // is debited from the caller's own row, so belonging decides who may act and
-        // the row decides how much.
         let src = r#"import { Q_Asset } from "quantova/primitives";
             contract C {
                 state { allowed: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
@@ -4895,8 +4367,6 @@ mod tests {
 
     #[test]
     fn a_caller_membership_does_not_authorise_an_arbitrary_amount() {
-        // The same entry without the debit lets any one member name any number and
-        // empty the vault. Belonging is an identity, never an entitlement.
         let src = r#"import { Q_Asset } from "quantova/primitives";
             contract C {
                 state { allowed: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }

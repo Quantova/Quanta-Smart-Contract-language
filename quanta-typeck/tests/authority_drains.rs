@@ -1,13 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Contracts that a caller could drain must not compile.
-//!
-//! Each of these was accepted by the analysis at one point and each hands an
-//! attacker the contract's holdings. They are kept here as source so a future
-//! loosening of the authority rules fails loudly instead of silently reopening a
-//! drain.
-
 fn rejected(src: &str) -> bool {
     match quanta_parser::parse(src) {
         Ok(program) => quanta_typeck::check(&program).is_err(),
@@ -149,8 +142,6 @@ fn a_registry_that_guards_the_slot_before_claiming_it_still_compiles() {
 
 #[test]
 fn a_tally_nothing_ever_pays_out_is_not_a_balance() {
-    // Crediting a counter that no entry ever debits or pays out moves no value, so
-    // refusing it only stops vote counts, reputation and statistics from existing.
     assert!(!rejected(
         r#"contract Dao {
   asset TOK;
@@ -164,8 +155,6 @@ fn a_tally_nothing_ever_pays_out_is_not_a_balance() {
 
 #[test]
 fn a_write_once_slot_is_a_sound_anchor() {
-    // Vesting, subscriptions and commit reveal all need this: a write that can only
-    // fill an empty row cannot overwrite anybody else's, so the map stays trustworthy.
     assert!(!rejected(
         r#"contract Vesting {
   asset TOK;
@@ -179,8 +168,6 @@ fn a_write_once_slot_is_a_sound_anchor() {
 
 #[test]
 fn resetting_a_vesting_clock_for_somebody_else_is_still_refused() {
-    // The same contract without the write once guard lets anyone push a victim's
-    // cliff forward forever, so it must stay rejected.
     assert!(rejected(
         r#"contract Vesting2 {
   asset TOK;
@@ -194,8 +181,6 @@ fn resetting_a_vesting_clock_for_somebody_else_is_still_refused() {
 
 #[test]
 fn a_collateral_guard_against_a_computed_amount_binds_the_caller() {
-    // Lending, tiered limits and fee bearing withdrawals all compare a caller's own
-    // row against a computed amount. That has to count as binding the caller.
     assert!(!rejected(
         r#"contract Lend {
   asset TOK;
@@ -210,7 +195,6 @@ fn a_collateral_guard_against_a_computed_amount_binds_the_caller() {
 
 #[test]
 fn borrowing_without_locking_the_collateral_is_still_refused() {
-    // The same shape with the collateral left untouched can be drawn against forever.
     assert!(rejected(
         r#"contract Lend2 {
   asset TOK;
@@ -238,8 +222,6 @@ fn an_auction_may_refund_the_previous_leader_from_state() {
 
 #[test]
 fn a_disjunct_office_does_not_switch_the_membership_rule_off() {
-    // `A || B` holds when either side does, so the membership half alone satisfies
-    // it and the office half guarantees nothing.
     assert!(rejected(
         r#"contract Club {
   asset TOK;
@@ -264,8 +246,6 @@ fn a_caller_inequality_does_not_switch_the_membership_rule_off() {
 
 #[test]
 fn every_zero_shape_backs_nothing_not_just_a_product() {
-    // A blacklist of zero spellings can never win. Only a form that cannot shrink
-    // below the parameter backs an amount.
     for zero in [
         "amount - amount",
         "amount % 1",
@@ -288,8 +268,6 @@ fn every_zero_shape_backs_nothing_not_just_a_product() {
 
 #[test]
 fn reading_a_row_of_a_map_nobody_writes_earns_nothing() {
-    // `seen` is never written, so it is zero for everyone and the +1 hands every
-    // address a rank for free, which then passes as a protected anchor.
     assert!(rejected(
         r#"contract Vaultish {
   asset TOK;
@@ -324,8 +302,6 @@ fn a_nested_field_still_counts_as_handing_over_a_parameter() {
 
 #[test]
 fn a_membership_guard_does_not_license_draining_the_native_pool() {
-    // `send(caller, pool.split(n))` moves the native pool and never reaches the
-    // asset path, so the same drain was allowed in native form.
     assert!(rejected(
         r#"contract A1 {
   state { pool: Q_Asset<QTOV>; stakes: Map<Q_Address, u128>; }
@@ -350,8 +326,6 @@ fn an_amount_parked_in_a_self_written_row_by_another_entry_is_still_the_callers(
 
 #[test]
 fn a_guard_on_a_map_the_claim_never_restamps_is_not_a_check() {
-    // `banned` is never written by anybody, so the guard is true for every label
-    // forever and the name is seizable from its owner.
     assert!(rejected(
         r#"contract Names {
   state { owner_of: Map<Q_Address, Q_Address>; resolved_of: Map<Q_Address, Q_Address>; banned: Map<Q_Address, u64>; }
@@ -363,7 +337,6 @@ fn a_guard_on_a_map_the_claim_never_restamps_is_not_a_check() {
 
 #[test]
 fn an_owner_signed_allocation_with_a_real_debit_still_compiles() {
-    // The sound shape of the same contract must keep working.
     assert!(!rejected(
         r#"contract Payouts {
   asset TOK;
@@ -377,8 +350,6 @@ fn an_owner_signed_allocation_with_a_real_debit_still_compiles() {
 
 #[test]
 fn a_denies_clause_excluding_one_account_is_not_an_office() {
-    // `denies caller == treasury` rejects the treasury and grants nobody anything, so
-    // it must not switch the membership rule off.
     assert!(rejected(
         r#"contract Club {
   asset TOK;
@@ -392,8 +363,6 @@ fn a_denies_clause_excluding_one_account_is_not_an_office() {
 
 #[test]
 fn the_canonical_owner_only_clause_still_compiles() {
-    // `denies caller != owner` REQUIRES caller == owner. Reading it with the wrong
-    // polarity made the standard owner only clause unbuildable.
     assert!(!rejected(
         r#"contract Payroll {
   asset TOK;
@@ -418,8 +387,6 @@ fn an_owner_check_written_with_a_negation_still_compiles() {
 
 #[test]
 fn declaring_an_asset_parameter_is_not_payment_without_a_floor() {
-    // `join(fee)` with no floor is satisfied by paying nothing, so the writer is still
-    // self grantable and must not protect an ownership handover.
     assert!(rejected(
         r#"contract Reg {
   asset TOK;
@@ -444,8 +411,6 @@ fn a_guard_that_gates_nothing_does_not_protect_an_anchor() {
 
 #[test]
 fn a_write_once_self_join_is_still_a_self_grant() {
-    // Write once stops you taking somebody else's slot. It does not stop you taking
-    // your own, so a caller keyed write once join is a self grant with a limit of one.
     assert!(rejected(
         r#"contract Base {
   state { members: Map<Q_Address, u64>; owner_of: Map<Q_Address, Q_Address>; }
@@ -457,8 +422,6 @@ fn a_write_once_self_join_is_still_a_self_grant() {
 
 #[test]
 fn adding_a_constant_to_a_read_does_not_earn_an_anchor() {
-    // `seen.get(caller) + 1` is one for everybody when `seen` holds nothing, so the
-    // read is decoration and the literal is the whole grant.
     assert!(rejected(
         r#"contract Loyalty {
   state { ranks: Map<Q_Address, u64>; seen: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; }
@@ -472,7 +435,6 @@ fn adding_a_constant_to_a_read_does_not_earn_an_anchor() {
 
 #[test]
 fn wrapping_arithmetic_never_backs_an_amount() {
-    // `wrapping(n + (0 - n))` is zero. Add is only monotonic over trapping arithmetic.
     assert!(rejected(
         r#"contract W {
   asset TOK;
@@ -485,9 +447,6 @@ fn wrapping_arithmetic_never_backs_an_amount() {
 
 #[test]
 fn over_collateralised_lending_is_buildable() {
-    // The bound is stated as a guard against collateral the caller cannot write, and
-    // it accounts for the debt already outstanding. Refusing this made lending, and
-    // every other entitlement shaped contract, impossible to express.
     assert!(!rejected(
         r#"contract Lend {
   state { pool: Q_Asset<QTOV>; collateral: Map<Q_Address, u128>; debt: Map<Q_Address, u128>; }
@@ -508,8 +467,6 @@ fn vesting_against_an_allocation_is_buildable() {
 
 #[test]
 fn a_priced_redemption_is_buildable() {
-    // The multiplier is a configured price held in state, not a literal. Demanding a
-    // literal made every priced purchase and every rate based charge unbuildable.
     assert!(!rejected(
         r#"contract Loyalty2 {
   state { pool: Q_Asset<QTOV>; points: Map<Q_Address, u128>; points_per_coin: u128; }
@@ -533,8 +490,6 @@ fn a_delegated_office_with_a_spend_cap_is_buildable() {
 
 #[test]
 fn a_credit_that_cancels_the_debit_backs_nothing() {
-    // `bal.credit(caller, n); bal.debit(caller, n)` leaves the row byte identical and
-    // the asset still leaves, so nothing on chain records value given up for it.
     assert!(rejected(
         r#"contract Club {
   asset TOK;
@@ -548,8 +503,6 @@ fn a_credit_that_cancels_the_debit_backs_nothing() {
 
 #[test]
 fn a_genuine_debit_still_backs_a_withdrawal() {
-    // The same contract without the cancelling credit is the honest shape and must
-    // keep working.
     assert!(!rejected(
         r#"contract Club2 {
   asset TOK;
@@ -563,10 +516,6 @@ fn a_genuine_debit_still_backs_a_withdrawal() {
 
 #[test]
 fn a_per_caller_counter_is_not_money() {
-    // The simplest contract there is. `hits.credit(caller, 1)` is a visit counter, and
-    // nothing can ever leave through it. Treating every address keyed integer map as a
-    // ledger made this basic contract unbuildable, which is the plainest possible sign
-    // the chain could not host ordinary applications.
     assert!(!rejected(
         r#"contract Counter {
   state { owner: Q_Address; hits: Map<Q_Address, u64>; total: u64; }
@@ -578,7 +527,6 @@ fn a_per_caller_counter_is_not_money() {
 
 #[test]
 fn a_counter_that_can_be_cashed_out_is_money_again() {
-    // The same shape with a payout path is a balance, and forging it must be refused.
     assert!(rejected(
         r#"contract Counter2 {
   state { hits: Map<Q_Address, u64>; pool: Q_Asset<QTOV>; }
@@ -590,9 +538,6 @@ fn a_counter_that_can_be_cashed_out_is_money_again() {
 
 #[test]
 fn a_token_with_approve_and_transfer_from_is_buildable() {
-    // A token that lets a holder authorise a spender. `approve` writes the caller's
-    // own allowance row and `transfer_from` spends it: both were refused, which meant
-    // the chain could not host a token with delegated spending at all.
     assert!(!rejected(
         r#"contract Token {
   state { balances: Map<Q_Address, u128>; allowance: Map<Q_Address, u128>; total: u128; minter: Q_Address; }
@@ -607,8 +552,6 @@ fn a_token_with_approve_and_transfer_from_is_buildable() {
 
 #[test]
 fn spending_a_permission_nobody_granted_is_still_refused() {
-    // The same shape with the allowance grant made writable for ANY key: now anybody
-    // can hand themselves permission over somebody else's balance.
     assert!(rejected(
         r#"contract Bad {
   state { balances: Map<Q_Address, u128>; allowance: Map<Q_Address, u128>; minter: Q_Address; }
@@ -622,8 +565,6 @@ fn spending_a_permission_nobody_granted_is_still_refused() {
 
 #[test]
 fn a_transfer_from_that_does_not_conserve_is_still_refused() {
-    // Debiting the owner and crediting MORE than was debited mints, whatever the
-    // permission says.
     assert!(rejected(
         r#"contract Bad2 {
   state { balances: Map<Q_Address, u128>; allowance: Map<Q_Address, u128>; minter: Q_Address; }
@@ -637,10 +578,6 @@ fn a_transfer_from_that_does_not_conserve_is_still_refused() {
 
 #[test]
 fn a_multisig_that_consumes_its_proposal_is_buildable() {
-    // The caller names WHICH proposal to execute, not how much it pays. The figure was
-    // written by an authorised entry and the row is cleared on the way out, so it
-    // cannot be executed twice. Treating the key as the amount made a multisig, a
-    // governance execution, an auction settle and an order fill all unwritable.
     assert!(!rejected(
         r#"contract MultiSig {
   state { admin: Q_Address; is_owner: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; tx_amount: Map<Q_Id, u128>; }
@@ -654,8 +591,6 @@ fn a_multisig_that_consumes_its_proposal_is_buildable() {
 
 #[test]
 fn a_proposal_that_is_never_consumed_is_still_refused() {
-    // The same multisig without the `remove` can be executed for the same id over and
-    // over until the vault is empty.
     assert!(rejected(
         r#"contract Bad {
   state { admin: Q_Address; is_owner: Map<Q_Address, u64>; vault: Q_Asset<QTOV>; tx_amount: Map<Q_Id, u128>; }
@@ -669,9 +604,6 @@ fn a_proposal_that_is_never_consumed_is_still_refused() {
 
 #[test]
 fn a_pause_flag_beside_a_bound_does_not_destroy_it() {
-    // `guard !paused && n <= allocation.get(caller)` must keep its bound. Skipping any
-    // guard that contained a negation threw the bound away with the flag, and a pause
-    // switch is in every serious contract.
     assert!(!rejected(
         r#"contract S {
   state { owner: Q_Address; pool: Q_Asset<QTOV>; members: Map<Q_Address, u64>; allocation: Map<Q_Address, u128>; paused: bool; }
@@ -685,7 +617,6 @@ fn a_pause_flag_beside_a_bound_does_not_destroy_it() {
 
 #[test]
 fn an_allocation_that_is_never_reduced_is_still_refused() {
-    // The same shape without the debit lets one member claim their allocation forever.
     assert!(rejected(
         r#"contract Bad2 {
   state { owner: Q_Address; pool: Q_Asset<QTOV>; members: Map<Q_Address, u64>; allocation: Map<Q_Address, u128>; }
@@ -699,9 +630,6 @@ fn an_allocation_that_is_never_reduced_is_still_refused() {
 
 #[test]
 fn a_marketplace_can_pay_the_seller_and_let_them_collect() {
-    // The buyer pays and the seller's credit rises by exactly what arrived. Refusing
-    // that as a forged anchor made a marketplace, an escrow release and a royalty
-    // split all impossible, because each pays somebody who collects later.
     assert!(!rejected(
         r#"contract Market {
   state { listing_price: Map<Q_Id, u128>; listing_seller: Map<Q_Id, Q_Address>; proceeds: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }
@@ -714,8 +642,6 @@ fn a_marketplace_can_pay_the_seller_and_let_them_collect() {
 
 #[test]
 fn an_auction_can_refund_the_outbid_leader() {
-    // The refund is the PREVIOUS high, which the vault is still holding, so the credit
-    // is backed by an inflow that already happened.
     assert!(!rejected(
         r#"contract Auction {
   state { high: u128; leader: Q_Address; refunds: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }
@@ -727,7 +653,6 @@ fn an_auction_can_refund_the_outbid_leader() {
 
 #[test]
 fn crediting_a_third_party_more_than_arrived_is_still_refused() {
-    // The credit has to be the inflow, not a number beside it.
     assert!(rejected(
         r#"contract Bad {
   state { proceeds: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }
@@ -751,8 +676,6 @@ fn crediting_with_no_inflow_at_all_is_still_refused() {
 
 #[test]
 fn a_liquidation_that_repays_the_debt_is_buildable() {
-    // A forced sale at par: the caller pays the debt and takes the collateral that
-    // secured it, one for one. Nobody profits, so nothing is drained.
     assert!(!rejected(
         r#"contract Lend {
   state { pool: Q_Asset<QTOV>; collateral: Map<Q_Address, u128>; debt: Map<Q_Address, u128>; bounty: Map<Q_Address, u128>; }
@@ -766,8 +689,6 @@ fn a_liquidation_that_repays_the_debt_is_buildable() {
 
 #[test]
 fn seizing_a_row_without_paying_for_it_is_still_refused() {
-    // The same liquidation with no inflow: the caller names a number and takes
-    // somebody else's collateral for nothing.
     assert!(rejected(
         r#"contract Bad {
   state { pool: Q_Asset<QTOV>; collateral: Map<Q_Address, u128>; debt: Map<Q_Address, u128>; bounty: Map<Q_Address, u128>; }
@@ -806,10 +727,6 @@ fn a_crowdfund_with_refunds_is_buildable() {
 
 #[test]
 fn a_treasury_that_accounts_for_what_it_commits_is_buildable() {
-    // Members fund the treasury, a vote commits an amount, the beneficiary collects
-    // later. The value arrived in an EARLIER call, so there is no inflow in this one,
-    // and demanding one made every deferred payout, grant and governance execution
-    // impossible to express.
     assert!(!rejected(
         r#"contract Dao {
   state { power: Map<Q_Address, u128>; votes: Map<u64, u128>; voted: Map<Q_Address, u64>; payout: Map<u64, u128>; beneficiary: Map<u64, Q_Address>; owed: Map<Q_Address, u128>; treasury: u128; vault: Q_Asset<QTOV>; }
@@ -825,8 +742,6 @@ fn a_treasury_that_accounts_for_what_it_commits_is_buildable() {
 
 #[test]
 fn a_treasury_that_commits_more_than_it_holds_is_still_refused() {
-    // The same governance without the treasury accounting: `execute` credits a
-    // beneficiary out of nothing, so the contract can promise more than it was given.
     assert!(rejected(
         r#"contract BadDao {
   state { power: Map<Q_Address, u128>; votes: Map<u64, u128>; voted: Map<Q_Address, u64>; payout: Map<u64, u128>; beneficiary: Map<u64, Q_Address>; owed: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }

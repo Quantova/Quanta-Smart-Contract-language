@@ -25,8 +25,6 @@ fn ent<'a>(cc: &'a CompiledContract, name: &str) -> &'a EntryArtifact {
     cc.entries.iter().find(|e| e.name == name).expect("entry")
 }
 
-// Word 0 of the id is identical in both runs. Only the unused tail differs, and that
-// tail is attacker controlled because the caller supplies the whole argument slot.
 fn claim(
     cc: &CompiledContract,
     tail: u8,

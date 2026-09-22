@@ -56,7 +56,6 @@ fn call(
         .map(|out| out.storage)
 }
 
-// A removed row has to read as empty, or the record can never be claimed again.
 #[test]
 fn removing_an_address_row_clears_the_word_the_reader_checks() {
     let cc = compile(SRC);

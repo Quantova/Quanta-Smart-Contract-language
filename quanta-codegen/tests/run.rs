@@ -56,9 +56,6 @@ fn meter_advance_runs_metered_and_writes_state() {
         Some(&12),
         "reading must become twelve"
     );
-    // Includes clearing the scalar key scratch head, without which the key preimage
-    // carries whatever the caller left there, and the eight byte event payload at the
-    // durable event byte price.
     assert_eq!(
         out.meter_used, 1760,
         "metered meter cost of the advance entry"

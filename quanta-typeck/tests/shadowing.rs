@@ -9,8 +9,6 @@ fn refused(src: &str) -> String {
     }
 }
 
-// A local of the same name wins in the code generator, so the invariant reads the local
-// and the cap it names is never loaded. The supply becomes unbounded.
 #[test]
 fn a_local_may_not_shadow_the_state_field_an_invariant_names() {
     let text = refused(
@@ -26,7 +24,6 @@ fn a_local_may_not_shadow_the_state_field_an_invariant_names() {
     assert!(text.contains("max_supply"), "got {text}");
 }
 
-// The signed parameter is verified and then discarded for a public state field.
 #[test]
 fn a_parameter_may_not_shadow_a_state_field() {
     let text = refused(
@@ -39,7 +36,6 @@ fn a_parameter_may_not_shadow_a_state_field() {
     assert!(text.contains("amount"), "got {text}");
 }
 
-// One slot is allocated but the selector advertises two arguments.
 #[test]
 fn a_duplicate_parameter_name_is_refused() {
     let text = refused(
@@ -49,8 +45,6 @@ fn a_duplicate_parameter_name_is_refused() {
     assert!(text.contains("more than once"), "got {text}");
 }
 
-// Mentioning in_asset is not binding it. Both of these constrain nothing, so a caller
-// still pays with an asset they minted themselves and is credited at the real price.
 #[test]
 fn a_vacuous_asset_kind_guard_is_refused() {
     for guard in [
@@ -68,7 +62,6 @@ fn a_vacuous_asset_kind_guard_is_refused() {
     }
 }
 
-// A binding guard still compiles.
 #[test]
 fn a_binding_asset_kind_guard_is_accepted() {
     let src = "contract Vault { state { owner: Q_Address; pool: Q_Asset<QTOV>; } \

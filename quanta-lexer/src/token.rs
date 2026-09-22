@@ -39,7 +39,6 @@ pub enum TokenKind {
     Genesis,
     Caller,
     InAsset,
-    /// The native asset, which the host stamps into the call context as zero.
     Native,
     Now,
     State,
