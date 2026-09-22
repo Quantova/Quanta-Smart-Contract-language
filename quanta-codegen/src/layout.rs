@@ -26,6 +26,18 @@ pub struct Layout {
     map_value_addr: HashSet<String>,
     map_value_wide: HashSet<String>,
     guardian_sets: HashMap<String, u64>,
+    narrow: HashMap<String, u64>,
+    map_value_narrow: HashMap<String, u64>,
+}
+
+pub fn narrow_max(ty: &str) -> Option<u64> {
+    match ty {
+        "bool" => Some(1),
+        "u8" => Some(u64::from(u8::MAX)),
+        "u16" => Some(u64::from(u16::MAX)),
+        "u32" => Some(u64::from(u32::MAX)),
+        _ => None,
+    }
 }
 
 impl Layout {
@@ -39,6 +51,8 @@ impl Layout {
         let mut map_value_addr = HashSet::new();
         let mut map_value_wide = HashSet::new();
         let mut guardian_sets = HashMap::new();
+        let mut narrow = HashMap::new();
+        let mut map_value_narrow = HashMap::new();
         let mut next = 0u64;
         let mut keyed = 0u64;
         for item in &contract.items {
@@ -77,6 +91,11 @@ impl Layout {
                         ) {
                             map_value_wide.insert(field.name.text.clone());
                         }
+                        if let Some(quanta_ast::GenericArg::Type(t)) = field.ty.args.get(1) {
+                            if let Some(max) = narrow_max(&t.name.text) {
+                                map_value_narrow.insert(field.name.text.clone(), max);
+                            }
+                        }
                         next += 1;
                     } else if ty == WIDE_TYPE {
                         wide.insert(field.name.text.clone());
@@ -95,6 +114,9 @@ impl Layout {
                         guardian_sets.insert(field.name.text.clone(), n);
                         next += n.saturating_mul(ADDR_WORDS);
                     } else {
+                        if let Some(max) = narrow_max(ty) {
+                            narrow.insert(field.name.text.clone(), max);
+                        }
                         next += 1;
                     }
                 }
@@ -110,6 +132,8 @@ impl Layout {
             map_value_addr,
             map_value_wide,
             guardian_sets,
+            narrow,
+            map_value_narrow,
         }
     }
 
@@ -129,6 +153,14 @@ impl Layout {
 
     pub fn map_value_is_addr(&self, name: &str) -> bool {
         self.map_value_addr.contains(name)
+    }
+
+    pub fn narrow_max(&self, name: &str) -> Option<u64> {
+        self.narrow.get(name).copied()
+    }
+
+    pub fn map_value_narrow_max(&self, name: &str) -> Option<u64> {
+        self.map_value_narrow.get(name).copied()
     }
 
     pub fn map_value_is_wide(&self, name: &str) -> bool {

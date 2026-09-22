@@ -230,6 +230,7 @@ pub struct Ctx<'a> {
     name_params: HashSet<String>,
     quorum_params: HashSet<String>,
     addr_params: HashSet<String>,
+    narrow_params: HashMap<String, u64>,
     wide_keys: HashSet<String>,
     name_keys: HashMap<String, u64>,
     state_addr_scratch: HashMap<String, u64>,
@@ -261,6 +262,7 @@ impl<'a> Ctx<'a> {
             name_params: HashSet::new(),
             quorum_params: HashSet::new(),
             addr_params: HashSet::new(),
+            narrow_params: HashMap::new(),
             wide_keys: HashSet::new(),
             name_keys: HashMap::new(),
             state_addr_scratch: HashMap::new(),
@@ -442,7 +444,11 @@ fn lower_ident(ctx: &mut Ctx, name: &str, span: Span) -> Result<Reg, CodegenErro
         } else {
             ctx.args.offset_of(name)
         };
-        load_arg(ctx, off, span)
+        let value = load_arg(ctx, off, span)?;
+        if let Some(max) = ctx.narrow_params.get(name).copied() {
+            trap_above(ctx, value, max, span)?;
+        }
+        Ok(value)
     } else {
         Err(CodegenError::Unsupported {
             what: format!("the value `{name}`"),
@@ -620,6 +626,19 @@ fn lower_let(ctx: &mut Ctx, name: &str, value: &Expr, span: Span) -> Result<(), 
     let amt = asset_amount(ctx, value, span)?;
     store_mem_word(ctx, off, amt);
     ctx.regs.free(amt);
+    Ok(())
+}
+
+fn trap_above(ctx: &mut Ctx, value: Reg, max: u64, span: Span) -> Result<(), CodegenError> {
+    let over = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi { d: over, imm: max });
+    ctx.b.op(Instr::GtU {
+        d: over,
+        a: value,
+        b: over,
+    });
+    ctx.b.jnz(over, ctx.trap);
+    ctx.regs.free(over);
     Ok(())
 }
 
@@ -1624,6 +1643,13 @@ pub fn lower_entry(
             .iter()
             .filter(|p| p.ty.name.text == ADDR_TYPE)
             .map(|p| p.name.text.clone())
+            .collect();
+        ctx.narrow_params = entry
+            .params
+            .iter()
+            .filter_map(|p| {
+                crate::layout::narrow_max(&p.ty.name.text).map(|max| (p.name.text.clone(), max))
+            })
             .collect();
         ctx.wide_keys = collect_wide_keys(layout, &params, &asset_params, events, entry);
         ctx.args.offset_of_width(CALLER_KEY, ADDR_BYTES);
@@ -4381,6 +4407,9 @@ fn lower_map_credit(
             b: value,
         });
     }
+    if let Some(max) = map_base_name(base).and_then(|m| ctx.layout.map_value_narrow_max(m)) {
+        trap_above(ctx, cur, max, span)?;
+    }
     ctx.b.op(Instr::SStore { a: key, b: cur });
     ctx.regs.free(key);
     ctx.regs.free(cur);
@@ -4599,6 +4628,13 @@ fn lower_map_read(
     Ok(d)
 }
 
+fn map_base_name(base: &Expr) -> Option<&str> {
+    match base {
+        Expr::Ident(id) => Some(id.text.as_str()),
+        _ => None,
+    }
+}
+
 fn map_name_is_value_addr(ctx: &Ctx, base: &Expr) -> bool {
     matches!(base, Expr::Ident(id) if ctx.layout.map_value_is_addr(&id.text))
 }
@@ -4648,6 +4684,9 @@ fn lower_map_set(
         return Ok(());
     }
     let v = lower_expr(ctx, value_expr, false)?;
+    if let Some(max) = map_base_name(base).and_then(|m| ctx.layout.map_value_narrow_max(m)) {
+        trap_above(ctx, v, max, span)?;
+    }
     compute_map_key(ctx, mbase, key_off, span)?;
     let key = map_key_ptr(ctx, span)?;
     ctx.b.op(Instr::SStore { a: key, b: v });
@@ -4987,9 +5026,13 @@ fn lower_assign(
         return Ok(());
     }
 
+    let narrow = ctx.layout.narrow_max(name);
     match op {
         AssignOp::Set => {
             let rv = lower_expr(ctx, value, false)?;
+            if let Some(max) = narrow {
+                trap_above(ctx, rv, max, span)?;
+            }
             store_slot(ctx, slot, rv, span)?;
             ctx.regs.free(rv);
         }
@@ -5007,6 +5050,9 @@ fn lower_assign(
                     a: rf,
                     b: rv,
                 }),
+            }
+            if let Some(max) = narrow {
+                trap_above(ctx, rf, max, span)?;
             }
             store_slot(ctx, slot, rf, span)?;
             ctx.regs.free(rf);
