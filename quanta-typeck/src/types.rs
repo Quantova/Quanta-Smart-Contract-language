@@ -484,13 +484,13 @@ impl<'a> Env<'a> {
                 Ok(Ty::Bool)
             }
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem | BinOp::Shr => {
-                expect_numeric_or(l, Ty::Int, left, "arithmetic needs a number")?;
-                expect_numeric_or(r, Ty::Int, right, "arithmetic needs a number")?;
+                expect_number(l, left, "arithmetic needs a number")?;
+                expect_number(r, right, "arithmetic needs a number")?;
                 Ok(Ty::Int)
             }
             BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => {
-                expect_numeric_or(l, Ty::Int, left, "an ordering needs numbers")?;
-                expect_numeric_or(r, Ty::Int, right, "an ordering needs numbers")?;
+                expect_number(l, left, "an ordering needs numbers")?;
+                expect_number(r, right, "an ordering needs numbers")?;
                 Ok(Ty::Bool)
             }
             BinOp::Eq | BinOp::Ne => {
@@ -633,6 +633,14 @@ fn declared_arg(ty: &Type, index: usize) -> Ty {
     match ty.args.get(index) {
         Some(GenericArg::Type(inner)) => ty_of_decl(inner),
         _ => Ty::Unknown,
+    }
+}
+
+fn expect_number(ty: Ty, at: &Expr, message: &str) -> Result<(), TypeError> {
+    if numeric(ty) {
+        Ok(())
+    } else {
+        Err(TypeError::new(message, at.span()))
     }
 }
 
@@ -937,6 +945,10 @@ mod tests {
             "contract C { state { paused: bool; } entry p() writes(paused) { paused = 2; } }";
         assert!(error_for(wide_flag).contains("does not fit"));
         ok("contract C { state { level: u8 = 255; paused: bool = 1; } }");
+        ok("contract C { state { owner: Q_Address; unlock: Time; opened: u64; } \
+            genesis { owner = deployer; unlock = 2030-01-01; } \
+            entry open(order: OpenOrder signed by owner) writes(opened) \
+            { guard now >= unlock; guard now < 2040-01-01; guard now >= unlock + 86400; opened = 1; } }");
         let mistyped = "contract C { state { owner: Q_Address; count: u64 = owner; } }";
         assert!(error_for(mistyped).contains("cannot be stored"));
         ok("contract C { state { cap: u64 = 50_000; paused: bool = 0; } }");

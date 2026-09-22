@@ -3,7 +3,7 @@
 
 use crate::error::TypeError;
 use crate::model::{is_asset_type, is_quorum_param, Model};
-use quanta_ast::{AfterTarget, BinOp, Clause, EntryDecl, Expr, Stmt};
+use quanta_ast::{AfterTarget, AssignOp, BinOp, Clause, EntryDecl, Expr, Stmt};
 use quanta_lexer::Span;
 use std::collections::HashSet;
 
@@ -12,7 +12,139 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
         check_after_anchors(entry)?;
         check_anchor_liveness(model, entry)?;
     }
+    check_guard_anchors(model)
+}
+
+fn check_guard_anchors(model: &Model) -> Result<(), TypeError> {
+    for entry in &model.entries {
+        let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
+        let mut gates: Vec<&Expr> = Vec::new();
+        for clause in &entry.clauses {
+            if let Clause::Limits { expr, .. } | Clause::Denies { expr, .. } = clause {
+                gates.push(expr);
+            }
+        }
+        for stmt in &entry.body {
+            if let Stmt::Guard { expr, .. } = stmt {
+                gates.push(expr);
+            }
+        }
+        for gate in gates {
+            let mut anchors: Vec<(&str, Span)> = Vec::new();
+            time_compared_fields(model, &params, gate, &mut anchors);
+            for (field, span) in anchors {
+                if writes_other_than_time(model, field)
+                    && !crate::signature::authority_anchor_protected(model, field)
+                {
+                    return Err(TypeError::new(
+                        format!(
+                            "a time gate compares `now` with `{field}`, which an entry with no \
+                             authority can set to any value, so the delay can be skipped; record \
+                             `{field}` with `now` or write it only from an authorized entry"
+                        ),
+                        span,
+                    ));
+                }
+            }
+        }
+    }
     Ok(())
+}
+
+fn mentions_now(expr: &Expr) -> bool {
+    match expr {
+        Expr::Now { .. } => true,
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            mentions_now(expr)
+        }
+        Expr::Binary { left, right, .. } => mentions_now(left) || mentions_now(right),
+        _ => false,
+    }
+}
+
+fn time_compared_fields<'a>(
+    model: &Model,
+    params: &HashSet<&str>,
+    expr: &'a Expr,
+    out: &mut Vec<(&'a str, Span)>,
+) {
+    match expr {
+        Expr::Binary {
+            op, left, right, ..
+        } => {
+            if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge) {
+                for (side, other) in [(left, right), (right, left)] {
+                    if mentions_now(side) {
+                        let mut reads: Vec<&Expr> = Vec::new();
+                        collect_anchor_reads(model, params, other, &mut reads);
+                        for read in reads {
+                            if let Some(field) = anchor_field(read) {
+                                out.push((field, read.span()));
+                            }
+                        }
+                    }
+                }
+            }
+            time_compared_fields(model, params, left, out);
+            time_compared_fields(model, params, right, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            time_compared_fields(model, params, expr, out)
+        }
+        _ => {}
+    }
+}
+
+fn is_time_or_constant(value: &Expr) -> bool {
+    match value {
+        Expr::Now { .. } | Expr::Int(_) | Expr::Date { .. } => true,
+        Expr::Checked { expr, .. } => is_time_or_constant(expr),
+        Expr::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        } => {
+            matches!(left.as_ref(), Expr::Now { .. }) || matches!(right.as_ref(), Expr::Now { .. })
+        }
+        _ => false,
+    }
+}
+
+fn writes_other_than_time(model: &Model, field: &str) -> bool {
+    let mut other = false;
+    for entry in &model.entries {
+        for stmt in &entry.body {
+            match stmt {
+                Stmt::Assign {
+                    target, op, value, ..
+                } => {
+                    if matches!(target, Expr::Ident(id) if id.text == field)
+                        && (!matches!(op, AssignOp::Set) || !is_time_or_constant(value))
+                    {
+                        other = true;
+                    }
+                }
+                Stmt::Expr {
+                    expr: Expr::Call { callee, args, .. },
+                    ..
+                } => {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if matches!(base.as_ref(), Expr::Ident(id) if id.text == field) {
+                            let timed =
+                                name.text == "set" && args.get(1).is_some_and(is_time_or_constant);
+                            let clears = name.text == "remove";
+                            if !timed && !clears {
+                                other = true;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    other
 }
 
 fn check_anchor_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
@@ -460,6 +592,26 @@ mod tests {
         let program = quanta_parser::parse(src).expect("source parses");
         let model = Model::build(&program.contracts[0]);
         super::check(&model).expect("checker should accept");
+    }
+
+    const GATED: &str = "contract C { state { owner: Q_Address; unlock: Time; opened: u64; } \
+        genesis { owner = deployer; } ARM \
+        entry open(order: OpenOrder signed by owner) writes(opened) \
+        { guard now >= unlock + 86400; opened = 1; } }";
+
+    #[test]
+    fn a_time_guard_on_a_field_anyone_can_set_is_refused() {
+        let src = GATED.replace("ARM", "entry arm(t: u64) writes(unlock) { unlock = t; }");
+        assert!(error_for(&src).contains("a time gate compares `now` with `unlock`"));
+    }
+
+    #[test]
+    fn a_time_guard_on_a_recorded_or_authorized_field_is_accepted() {
+        ok(&GATED.replace("ARM", "entry arm() writes(unlock) { unlock = now; }"));
+        ok(&GATED.replace(
+            "ARM",
+            "entry arm(order: ArmOrder signed by owner) writes(unlock) { unlock = order.at; }",
+        ));
     }
 
     #[test]
