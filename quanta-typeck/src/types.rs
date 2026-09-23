@@ -232,6 +232,25 @@ impl<'a> Env<'a> {
                         target.span(),
                     ));
                 }
+                if *op == AssignOp::Set && given == Ty::Name && slot == Ty::Address {
+                    if let Expr::Ident(id) = target {
+                        let scalar_address = self
+                            .model
+                            .state
+                            .get(id.text.as_str())
+                            .is_some_and(|field| field.ty.name.text == "Q_Address");
+                        if scalar_address {
+                            return Err(TypeError::new(
+                                format!(
+                                    "a name cannot become an address; `{}` authorises signatures \
+                                     and receives sends, and a name window is not a key anyone holds",
+                                    id.text
+                                ),
+                                value.span(),
+                            ));
+                        }
+                    }
+                }
                 let fits = match op {
                     AssignOp::Set => compatible(slot, given),
                     AssignOp::Add | AssignOp::Sub => numeric(slot) && numeric(given),

@@ -3690,9 +3690,18 @@ fn forged(
         }
     }
     match expr {
-        Expr::Unary { expr, .. } => forged(model, params, signed, derived, expr),
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            forged(model, params, signed, derived, expr)
+        }
         Expr::Binary { left, right, .. } => forged(model, params, signed, derived, left)
             .or_else(|| forged(model, params, signed, derived, right)),
+        Expr::Field { base, .. } => forged(model, params, signed, derived, base),
+        Expr::Call { callee, args, .. } => {
+            forged(model, params, signed, derived, callee).or_else(|| {
+                args.iter()
+                    .find_map(|arg| forged(model, params, signed, derived, arg))
+            })
+        }
         _ => None,
     }
 }

@@ -15,24 +15,30 @@ fn canonical_signed_fields(entry: &quanta_ast::EntryDecl, param: &str) -> Vec<St
         .collect();
     let raw = collect_signed_fields(entry, param);
     let mut out: Vec<String> = Vec::new();
-    for key in &raw {
-        let canonical = match key.split_once('.') {
-            Some((base, "len")) if names.contains(&base) => {
-                if raw.iter().any(|k| k == base) {
-                    continue;
-                }
-                format!("{base}#len")
-            }
-            _ => key.clone(),
-        };
+    let push = |canonical: String, out: &mut Vec<String>| {
         if !out.contains(&canonical) {
             out.push(canonical);
         }
+    };
+    for key in &raw {
+        if names.contains(&key.as_str()) {
+            push(key.clone(), &mut out);
+            push(format!("{key}#len"), &mut out);
+            continue;
+        }
+        let canonical = match key.split_once('.') {
+            Some((base, "len")) if names.contains(&base) => format!("{base}#len"),
+            _ => key.clone(),
+        };
+        push(canonical, &mut out);
     }
     out
 }
 use crate::selector::{entry_selector, entry_signature, event_selector, event_signature};
-use qtv_vm::container::{Container, Entry, SELECTOR_BYTES};
+use qtv_vm::container::{
+    Container, Entry, VerifyError, MAX_ACCESS_SLOTS, MAX_CODE_BYTES, MAX_CONSTS, MAX_ENTRIES,
+    SELECTOR_BYTES,
+};
 use qtv_vm::isa::Instr;
 use quanta_ast::{
     AssignOp, Contract, EntryDecl, EventDecl, Expr, Ident, Item, Program, Stmt, Type,
@@ -390,13 +396,64 @@ fn compile_entries(
         })
         .collect();
 
+    let container = Container::new(code, Vec::new(), container_entries);
+    if let Err(err) = container.verify() {
+        return Err(CodegenError::Rejected {
+            what: unloadable(&err),
+            span: contract.span,
+        });
+    }
+
     Ok(CompiledContract {
         name: contract.name.text.clone(),
-        container: Container::new(code, Vec::new(), container_entries),
+        container,
         entries: artifacts,
         events,
         deploy_params,
     })
+}
+
+fn selector_text(selector: &[u8; SELECTOR_BYTES]) -> String {
+    selector.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn unloadable(err: &VerifyError) -> String {
+    match err {
+        VerifyError::CodeTooLarge => format!(
+            "this contract because its code is larger than the {MAX_CODE_BYTES} bytes a \
+             container may hold; no entry would be callable once it is deployed"
+        ),
+        VerifyError::ConstsTooLarge => format!(
+            "this contract because it carries more than the {MAX_CONSTS} constants a container \
+             may hold"
+        ),
+        VerifyError::EntriesTooLarge => format!(
+            "this contract because it declares more than the {MAX_ENTRIES} entries a container \
+             may hold"
+        ),
+        VerifyError::AccessListTooLarge(selector) => format!(
+            "entry {} because it declares more than the {MAX_ACCESS_SLOTS} state slots a container \
+             may name; the entry would never be callable once it is deployed",
+            selector_text(selector)
+        ),
+        VerifyError::UndecodableCode(at) => {
+            format!("this contract because its code does not decode at byte {at}")
+        }
+        VerifyError::ConstIndexOutOfRange(index) => {
+            format!("this contract because it reads constant {index}, which it does not carry")
+        }
+        VerifyError::MisalignedTarget(target) => {
+            format!("this contract because it branches to byte {target}, which is not an instruction boundary")
+        }
+        VerifyError::EntryOffsetMisaligned(selector) => format!(
+            "entry {} because it starts at a byte that is not an instruction boundary",
+            selector_text(selector)
+        ),
+        VerifyError::DuplicateSelector(selector) => format!(
+            "this contract because two entries share the selector {}",
+            selector_text(selector)
+        ),
+    }
 }
 
 #[cfg(test)]
