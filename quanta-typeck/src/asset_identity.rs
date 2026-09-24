@@ -427,8 +427,8 @@ fn amount_credited_while_sent(
     for stmt in &entry.body {
         for_each_expr(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
-                if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") {
-                    if let Some(value) = args.get(1) {
+                {
+                    if let Some(value) = crate::model::outflow_value(callee.as_ref(), args) {
                         if let Some(asset) = sent_asset(value, kinds) {
                             sent.insert(asset);
                         }
@@ -538,21 +538,24 @@ fn asset_flow_in_expr(
                 }
             }
         }
-        if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") && args.len() == 2 {
-            return sent_value_error(model, kinds, mint_kind, &args[1], *span);
+        if let Some(value) = crate::model::outflow_value(callee.as_ref(), args) {
+            let native_send = matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send");
+            return sent_value_error_by(model, kinds, mint_kind, value, *span, native_send);
         }
     }
     None
 }
 
-fn sent_value_error(
+fn sent_value_error_by(
     model: &Model,
     kinds: &HashMap<String, String>,
     mint_kind: Option<&str>,
     value: &Expr,
     span: Span,
+    native_send: bool,
 ) -> Option<TypeError> {
     match expr_asset_kind(model, kinds, mint_kind, value) {
+        None if !native_send => None,
         None => Some(TypeError::new(
             "a value that is not an asset cannot be sent; send an asset, a split, or a mint"
                 .to_string(),
@@ -562,12 +565,16 @@ fn sent_value_error(
             "an asset pool cannot be sent directly; split the amount to send".to_string(),
             span,
         )),
-        Some(kind) if kind != NATIVE_ASSET || model.is_declared_asset(&kind) => Some(TypeError::new(
-            format!(
-                "a non native asset `{kind}` cannot be moved with send which transfers the native token, move it with send_asset naming its issuer"
-            ),
-            span,
-        )),
+        Some(kind)
+            if native_send && (kind != NATIVE_ASSET || model.is_declared_asset(&kind)) =>
+        {
+            Some(TypeError::new(
+                format!(
+                    "a non native asset `{kind}` cannot be moved with send which transfers the native token, move it with send_asset naming its issuer"
+                ),
+                span,
+            ))
+        }
         Some(_) => None,
     }
 }

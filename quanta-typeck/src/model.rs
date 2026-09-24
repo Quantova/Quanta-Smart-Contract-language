@@ -66,6 +66,36 @@ impl<'a> Model<'a> {
     }
 }
 
+pub fn outflow_value<'e>(
+    callee: &quanta_ast::Expr,
+    args: &'e [quanta_ast::Expr],
+) -> Option<&'e quanta_ast::Expr> {
+    let quanta_ast::Expr::Ident(id) = callee else {
+        return None;
+    };
+    match id.text.as_str() {
+        "send" if args.len() == 2 => args.get(1),
+        "send_asset" if args.len() == 3 => args.get(2),
+        "mint_asset" if args.len() == 2 => args.get(1),
+        _ => None,
+    }
+}
+
+pub fn outflow_recipient<'e>(
+    callee: &quanta_ast::Expr,
+    args: &'e [quanta_ast::Expr],
+) -> Option<&'e quanta_ast::Expr> {
+    let quanta_ast::Expr::Ident(id) = callee else {
+        return None;
+    };
+    match id.text.as_str() {
+        "send" if args.len() == 2 => args.first(),
+        "send_asset" if args.len() == 3 => args.get(1),
+        "mint_asset" if args.len() == 2 => args.first(),
+        _ => None,
+    }
+}
+
 pub fn is_asset_type(ty: &Type) -> bool {
     ty.name.text == "Q_Asset"
 }

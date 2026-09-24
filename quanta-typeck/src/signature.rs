@@ -300,6 +300,13 @@ fn ledger_move_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> bo
     if !entry.params.iter().any(crate::model::is_asset_param) {
         return false;
     }
+    let assets: HashSet<&str> = entry
+        .params
+        .iter()
+        .filter(|p| crate::model::is_asset_param(p))
+        .map(|p| p.name.text.as_str())
+        .collect();
+    let backed_scalars = asset_backed_scalars(model);
     let mut saw = false;
     let mut all_caller_keyed = true;
     for stmt in &entry.body {
@@ -315,6 +322,16 @@ fn ledger_move_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> bo
                         saw = true;
                         if !matches!(args.first(), Some(Expr::Caller { .. })) {
                             all_caller_keyed = false;
+                        }
+                        if matches!(name.text.as_str(), "credit" | "set" | "insert") {
+                            let paid = args.get(1).is_some_and(|v| {
+                                asset_amount_backer(v.peel(), &assets).is_some()
+                                    || matches!(v.peel(), Expr::Ident(id)
+                                        if backed_scalars.contains(id.text.as_str()))
+                            });
+                            if !paid {
+                                all_caller_keyed = false;
+                            }
                         }
                     }
                 }
@@ -813,11 +830,8 @@ fn outflow_amount_is_a_self_written_row(model: &Model, entry: &EntryDecl) -> boo
             }
             if let Expr::Call { callee, args, .. } = e {
                 let amount = match callee.as_ref() {
-                    Expr::Ident(id) if id.text == "send_asset" => args.get(2),
-                    Expr::Ident(id) if id.text == "mint_asset" => args.get(1),
-                    Expr::Ident(id) if id.text == "send" => args.get(1),
                     Expr::Field { name, .. } if name.text == "split" => args.first(),
-                    _ => None,
+                    other => crate::model::outflow_value(other, args),
                 };
                 let Some(a) = amount else { return };
                 walk(a, &mut |x| {
@@ -1071,11 +1085,8 @@ fn names_in_outflow_amounts(entry: &EntryDecl) -> HashSet<String> {
         stmt_exprs(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
                 let amount = match callee.as_ref() {
-                    Expr::Ident(id) if id.text == "send_asset" => args.get(2),
-                    Expr::Ident(id) if id.text == "mint_asset" => args.get(1),
-                    Expr::Ident(id) if id.text == "send" => args.get(1),
                     Expr::Field { name, .. } if name.text == "split" => args.first(),
-                    _ => None,
+                    other => crate::model::outflow_value(other, args),
                 };
                 if let Some(a) = amount {
                     walk(a, &mut |x| {
@@ -2154,13 +2165,8 @@ fn forged_recipient(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
                 return;
             }
             if let Expr::Call { callee, args, span } = e {
-                if let Expr::Ident(id) = callee.as_ref() {
-                    let recip = match id.text.as_str() {
-                        "send" => args.first(),
-                        "send_asset" => args.get(1),
-                        "mint_asset" => args.first(),
-                        _ => None,
-                    };
+                {
+                    let recip = crate::model::outflow_recipient(callee.as_ref(), args);
                     if let Some(recip) = recip {
                         let field = recipient_state_field(model, recip).or_else(|| match recip {
                             Expr::Ident(rid) => alias.get(rid.text.as_str()).copied(),
@@ -2388,10 +2394,11 @@ fn credits_caller_only_by_the_paid_amount(
                         .map(|p| p.name.text.as_str())
                         .collect();
                     let no_locals: HashSet<String> = HashSet::new();
+                    let _ = &no_locals;
                     let earned = match args.get(1) {
                         Some(a) => {
                             !adds_a_constant_floor(a)
-                                && (taints_from_param(a, &assets, &signed, &no_locals)
+                                && (asset_amount_backer(a.peel(), &assets).is_some()
                                     || reads_a_caller_row(model, a))
                         }
                         None => false,

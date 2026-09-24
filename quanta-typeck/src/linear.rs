@@ -121,11 +121,11 @@ fn bump(linears: &mut [Linear], name: &str) {
 }
 
 fn is_asset_alias(value: &Expr, asset_names: &HashSet<String>) -> bool {
-    matches!(value, Expr::Ident(id) if asset_names.contains(id.text.as_str()))
+    matches!(value.peel(), Expr::Ident(id) if asset_names.contains(id.text.as_str()))
 }
 
 fn produces_asset(value: &Expr) -> bool {
-    match value {
+    match value.peel() {
         Expr::Call { callee, .. } => match callee.as_ref() {
             Expr::Field { name, .. } => name.text == "split",
             Expr::Ident(id) => id.text == "mint",
@@ -138,7 +138,7 @@ fn produces_asset(value: &Expr) -> bool {
 fn count_consumes(expr: &Expr, names: &HashMap<&str, usize>, counts: &mut [usize]) {
     if let Expr::Call { args, .. } = expr {
         for arg in args {
-            if let Expr::Ident(id) = arg {
+            if let Expr::Ident(id) = arg.peel() {
                 if let Some(&i) = names.get(id.text.as_str()) {
                     counts[i] += 1;
                 }
