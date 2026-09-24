@@ -80,15 +80,38 @@ fn pooled_settles_order(entry: &EntryDecl, pooled: &str, param: &str) -> bool {
     settles
 }
 
+fn param_derived_locals(entry: &EntryDecl, param: &str) -> std::collections::HashSet<String> {
+    let mut derived: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for stmt in &entry.body {
+        if let Stmt::Let { name, value, .. } = stmt {
+            let mut carries = false;
+            walk(value, &mut |e| {
+                if let Expr::Ident(id) = e {
+                    if id.text == param || derived.contains(&id.text) {
+                        carries = true;
+                    }
+                }
+            });
+            if carries {
+                derived.insert(name.text.clone());
+            }
+        }
+    }
+    derived
+}
+
 fn order_field_gates(entry: &EntryDecl, param: &str) -> bool {
+    let derived = param_derived_locals(entry, param);
     let mut gates = false;
     let mut scan = |expr: &Expr| {
-        walk(expr, &mut |e| {
-            if let Expr::Field { base, .. } = e {
+        walk(expr, &mut |e| match e {
+            Expr::Field { base, .. } => {
                 if matches!(base.as_ref(), Expr::Ident(id) if id.text == param) {
                     gates = true;
                 }
             }
+            Expr::Ident(id) if derived.contains(&id.text) => gates = true,
+            _ => {}
         });
     };
     for clause in &entry.clauses {
