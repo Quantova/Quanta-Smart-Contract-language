@@ -96,7 +96,7 @@ fn undeclared_write(model: &Model, declared: &HashSet<&str>, stmt: &Stmt) -> Opt
 }
 
 fn root_ident(expr: &Expr) -> Option<&str> {
-    match expr {
+    match expr.peel() {
         Expr::Ident(id) => Some(&id.text),
         Expr::Field { base, .. } => root_ident(base),
         _ => None,

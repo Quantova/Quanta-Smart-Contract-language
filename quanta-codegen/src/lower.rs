@@ -3088,12 +3088,12 @@ pub fn check_anchor_state_writes(contract: &Contract, layout: &Layout) -> Result
         match item {
             Item::Entry(entry) => {
                 for stmt in &entry.body {
-                    check_anchor_assign(stmt, &anchors)?;
+                    check_anchor_assign(stmt, &anchors, true)?;
                 }
             }
             Item::Genesis(g) => {
                 for stmt in &g.body {
-                    check_anchor_assign(stmt, &anchors)?;
+                    check_anchor_assign(stmt, &anchors, false)?;
                 }
             }
             Item::State(sb) => {
@@ -3141,7 +3141,18 @@ fn collect_anchor_idents(
     }
 }
 
-fn check_anchor_assign(stmt: &Stmt, anchors: &HashSet<String>) -> Result<(), CodegenError> {
+fn check_anchor_assign(
+    stmt: &Stmt,
+    anchors: &HashSet<String>,
+    in_entry: bool,
+) -> Result<(), CodegenError> {
+    let arms = |value: &Expr| {
+        if in_entry {
+            is_clock_reading(value)
+        } else {
+            is_recorded_time_or_const(value)
+        }
+    };
     match stmt {
         Stmt::Assign {
             target,
@@ -3155,7 +3166,7 @@ fn check_anchor_assign(stmt: &Stmt, anchors: &HashSet<String>) -> Result<(), Cod
             if !anchors.contains(&id.text) {
                 return Ok(());
             }
-            if !matches!(op, AssignOp::Set) || !is_recorded_time_or_const(value) {
+            if !matches!(op, AssignOp::Set) || !arms(value) {
                 return Err(anchor_write_rejection(&id.text, *span));
             }
             Ok(())
@@ -3163,7 +3174,7 @@ fn check_anchor_assign(stmt: &Stmt, anchors: &HashSet<String>) -> Result<(), Cod
         Stmt::Expr {
             expr: Expr::Call { callee, args, span },
             ..
-        } => check_anchor_map_write(callee, args, anchors, *span),
+        } => check_anchor_map_write(callee, args, anchors, *span, in_entry),
         _ => Ok(()),
     }
 }
@@ -3173,7 +3184,15 @@ fn check_anchor_map_write(
     args: &[Expr],
     anchors: &HashSet<String>,
     span: Span,
+    in_entry: bool,
 ) -> Result<(), CodegenError> {
+    let arms = |value: &Expr| {
+        if in_entry {
+            is_clock_reading(value)
+        } else {
+            is_recorded_time_or_const(value)
+        }
+    };
     let Expr::Field { base, name, .. } = callee else {
         return Ok(());
     };
@@ -3185,7 +3204,7 @@ fn check_anchor_map_write(
     }
     match name.text.as_str() {
         "set" => {
-            if args.len() != 2 || !is_recorded_time_or_const(&args[1]) {
+            if args.len() != 2 || !arms(&args[1]) {
                 return Err(anchor_write_rejection(&id.text, span));
             }
             Ok(())
@@ -3194,14 +3213,25 @@ fn check_anchor_map_write(
     }
 }
 
+fn is_clock_reading(value: &Expr) -> bool {
+    match value.peel() {
+        Expr::Now { .. } => true,
+        Expr::Int(n) => n.text.replace('_', "").trim_start_matches('0').is_empty(),
+        _ => false,
+    }
+}
+
 fn is_recorded_time_or_const(value: &Expr) -> bool {
-    matches!(value, Expr::Now { .. } | Expr::Int(_) | Expr::Date { .. })
+    matches!(
+        value.peel(),
+        Expr::Now { .. } | Expr::Int(_) | Expr::Date { .. }
+    )
 }
 
 fn anchor_write_rejection(field: &str, span: Span) -> CodegenError {
     CodegenError::Rejected {
         what: format!(
-            "a write to `{field}`, a state field a time gate anchors on, from a value that is not `now` or a constant; record the anchor with `now` so no caller can pre-date the delay"
+            "a write to `{field}`, a state field a time gate anchors on, from a value that is not `now`; record the anchor with `now` so no caller can pre-date the delay"
         ),
         span,
     }
@@ -4772,7 +4802,7 @@ enum AddrLoc {
 }
 
 fn is_scalar_addr(ctx: &Ctx, expr: &Expr) -> bool {
-    match expr {
+    match expr.peel() {
         Expr::Caller { .. } => true,
         Expr::InAsset { .. } => true,
         Expr::Native { .. } => true,
@@ -4790,6 +4820,7 @@ fn is_scalar_addr(ctx: &Ctx, expr: &Expr) -> bool {
 }
 
 fn scalar_addr_loc(ctx: &mut Ctx, expr: &Expr, span: Span) -> Result<AddrLoc, CodegenError> {
+    let expr = expr.peel();
     if let Expr::Ident(id) = expr {
         if ctx.layout.is_addr(&id.text) {
             let slot = ctx

@@ -262,6 +262,18 @@ pub enum Expr {
 }
 
 impl Expr {
+    pub fn peel(&self) -> &Expr {
+        let mut expr = self;
+        loop {
+            match expr {
+                Expr::Checked { expr: inner, .. } | Expr::Wrapping { expr: inner, .. } => {
+                    expr = inner
+                }
+                _ => return expr,
+            }
+        }
+    }
+
     pub fn span(&self) -> Span {
         match self {
             Expr::Int(v) => v.span,

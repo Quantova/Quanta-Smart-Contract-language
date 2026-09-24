@@ -2183,7 +2183,7 @@ fn forged_recipient(model: &Model, entry: &EntryDecl) -> Option<TypeError> {
 }
 
 fn recipient_state_field<'e>(model: &Model, recip: &'e Expr) -> Option<&'e str> {
-    match recip {
+    match recip.peel() {
         Expr::Ident(id) if model.state.contains_key(id.text.as_str()) => Some(id.text.as_str()),
         Expr::Field { base, .. } => match base.as_ref() {
             Expr::Ident(id) if model.state.contains_key(id.text.as_str()) => Some(id.text.as_str()),
@@ -3468,7 +3468,7 @@ fn anchor_of_denied<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
 }
 
 fn state_addr_ident<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
-    if let Expr::Ident(id) = expr {
+    if let Expr::Ident(id) = expr.peel() {
         if model
             .state
             .get(id.text.as_str())
@@ -3499,7 +3499,7 @@ fn membership_map<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
 }
 
 fn map_value_addr<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
-    if let Expr::Call { callee, args, .. } = expr {
+    if let Expr::Call { callee, args, .. } = expr.peel() {
         if let Expr::Field { base, name, .. } = callee.as_ref() {
             if name.text == "get" && args.len() == 1 {
                 if let Expr::Ident(map_id) = base.as_ref() {
@@ -3725,6 +3725,7 @@ fn param_field(
     derived: &HashSet<String>,
     expr: &Expr,
 ) -> Option<String> {
+    let expr = expr.peel();
     match expr {
         Expr::Field { .. } => {
             let root = root_ident(expr)?;
@@ -3763,7 +3764,10 @@ fn field_path(expr: &Expr) -> Option<String> {
 }
 
 fn is_state_address(model: &Model, expr: &Expr) -> bool {
-    matches!(expr, Expr::Ident(id) if model.state.get(id.text.as_str()).is_some_and(|f| f.ty.name.text == "Q_Address"))
+    if map_value_addr(model, expr).is_some() {
+        return true;
+    }
+    matches!(expr.peel(), Expr::Ident(id) if model.state.get(id.text.as_str()).is_some_and(|f| f.ty.name.text == "Q_Address"))
 }
 
 #[cfg(test)]

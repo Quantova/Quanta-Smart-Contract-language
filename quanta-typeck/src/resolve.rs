@@ -372,7 +372,7 @@ fn address_names<'a>(model: &'a Model, entry: &'a EntryDecl) -> HashSet<&'a str>
 }
 
 fn is_external_address(expr: &Expr, addresses: &HashSet<&str>) -> bool {
-    match expr {
+    match expr.peel() {
         Expr::Caller { .. } => true,
         Expr::Ident(id) => addresses.contains(id.text.as_str()),
         Expr::Field { base, .. } => is_external_address(base, addresses),

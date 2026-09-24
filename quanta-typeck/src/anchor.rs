@@ -97,8 +97,8 @@ fn time_compared_fields<'a>(
 
 fn is_time_or_constant(value: &Expr) -> bool {
     match value {
-        Expr::Now { .. } | Expr::Int(_) | Expr::Date { .. } => true,
-        Expr::Checked { expr, .. } => is_time_or_constant(expr),
+        Expr::Now { .. } => true,
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => is_time_or_constant(expr),
         Expr::Binary {
             op: BinOp::Add,
             left,
