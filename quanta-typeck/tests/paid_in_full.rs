@@ -86,3 +86,35 @@ fn a_row_the_caller_wrote_for_itself_cannot_pay_the_caller_out() {
 }"#
     ));
 }
+
+#[test]
+fn ownership_cannot_be_handed_over_through_a_wrapper() {
+    for recipient in ["to", "checked(to)", "wrapping(to)"] {
+        let src = format!(
+            r#"contract Reg {{
+  state {{ owner_of: Map<Q_Address, Q_Address>; }}
+  entry hand(label: Q_Address, to: Q_Address) writes(owner_of) {{ owner_of.set(label, {recipient}); }}
+}}"#
+        );
+        assert!(
+            rejected(&src),
+            "handing ownership to `{recipient}` with no authority must be refused"
+        );
+    }
+}
+
+#[test]
+fn authority_cannot_be_laundered_through_an_unguarded_scratch_map() {
+    assert!(rejected(
+        r#"import { Q_Asset } from "quantova/primitives";
+contract Heist {
+  asset TOK;
+  state { token: Q_Address; hits: Map<Q_Address, u64>; members: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
+  genesis { token = deployer; }
+  entry deposit(funds: Q_Asset<TOK>) conserves TOK reads(token) writes(vault) { guard in_asset == token; vault.merge(funds); }
+  entry ping() writes(hits) { hits.set(caller, 1000000000); }
+  entry join() writes(members) { members.credit(caller, hits.get(caller)); }
+  entry drain() reads(token, members) { guard members.get(caller) > 0; send_asset(token, caller, 999999999); }
+}"#
+    ));
+}

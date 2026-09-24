@@ -214,11 +214,7 @@ fn reads_a_caller_row(model: &Model, expr: &Expr) -> bool {
             if let Expr::Field { base, name, .. } = callee.as_ref() {
                 if name.text == "get" && matches!(args.first(), Some(Expr::Caller { .. })) {
                     if let Expr::Ident(m) = base.as_ref() {
-                        if model
-                            .entries
-                            .iter()
-                            .any(|w| entry_writes_field(w, m.text.as_str()))
-                        {
+                        if authority_anchor_protected(model, m.text.as_str()) {
                             found = true;
                         }
                     }
@@ -1947,13 +1943,6 @@ fn forged_ownership_transfer(
     let empty: HashSet<&str> = HashSet::new();
     let derived = param_derived_locals(entry, &params, &empty);
     let parked = tainted_state_fields(entry, &params, &empty, &derived);
-    fn root_ident(e: &Expr) -> Option<&str> {
-        match e {
-            Expr::Ident(id) => Some(id.text.as_str()),
-            Expr::Field { base, .. } => root_ident(base),
-            _ => None,
-        }
-    }
     let handed = |value: &Expr| {
         root_ident(value)
             .is_some_and(|r| params.contains(r) || derived.contains(r) || parked.contains(r))
@@ -3755,7 +3744,7 @@ fn param_field(
 }
 
 fn root_ident(expr: &Expr) -> Option<&str> {
-    match expr {
+    match expr.peel() {
         Expr::Ident(id) => Some(id.text.as_str()),
         Expr::Field { base, .. } => root_ident(base),
         _ => None,
