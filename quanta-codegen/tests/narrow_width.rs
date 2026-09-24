@@ -82,3 +82,16 @@ fn a_narrow_map_value_refuses_a_value_past_its_width() {
         "a u8 map value cannot hold 256"
     );
 }
+
+const KEYED: &str = "contract K { state { flags: Map<u8, u64>; } \
+    entry mark(k: u8) writes(flags) { flags.set(k, 1); } }";
+
+#[test]
+fn a_narrow_map_key_refuses_a_key_past_its_width() {
+    let cc = compile(KEYED);
+    call(&cc, "mark", &[("k", 255)]).expect("the widest u8 key is accepted");
+    assert!(
+        call(&cc, "mark", &[("k", 256)]).is_err(),
+        "a u8 key cannot reach row 256, or the map holds more rows than it declares"
+    );
+}

@@ -4214,6 +4214,16 @@ fn map_key_region_named(
     promote_id_key(ctx, id_off, span)
 }
 
+fn trap_narrow_key(ctx: &mut Ctx, name: &str, off: u64, span: Span) -> Result<(), CodegenError> {
+    let Some(max) = ctx.narrow_params.get(name).copied() else {
+        return Ok(());
+    };
+    let value = load_arg(ctx, off, span)?;
+    trap_above(ctx, value, max, span)?;
+    ctx.regs.free(value);
+    Ok(())
+}
+
 fn id_word_offset(ctx: &mut Ctx, key_expr: &Expr, span: Span) -> Result<u64, CodegenError> {
     match key_expr {
         Expr::Ident(id) if ctx.params.contains(&id.text) => {
@@ -4223,7 +4233,9 @@ fn id_word_offset(ctx: &mut Ctx, key_expr: &Expr, span: Span) -> Result<u64, Cod
                     span,
                 });
             }
-            Ok(ctx.args.offset_of(&id.text))
+            let off = ctx.args.offset_of(&id.text);
+            trap_narrow_key(ctx, &id.text.clone(), off, span)?;
+            Ok(off)
         }
         Expr::Field { base, name, .. } => match base.as_ref() {
             Expr::Ident(id) if ctx.params.contains(&id.text) => {
@@ -4234,7 +4246,9 @@ fn id_word_offset(ctx: &mut Ctx, key_expr: &Expr, span: Span) -> Result<u64, Cod
                         span,
                     });
                 }
-                Ok(ctx.args.offset_of(&key))
+                let off = ctx.args.offset_of(&key);
+                trap_narrow_key(ctx, &key, off, span)?;
+                Ok(off)
             }
             _ => id_key_into_scratch(ctx, key_expr, span),
         },
@@ -4662,6 +4676,15 @@ fn lower_map_read(
     let key = map_key_ptr(ctx, span)?;
     ctx.b.op(Instr::SLoad { d, a: key });
     ctx.regs.free(key);
+    if op == "contains" || op == "has" {
+        ctx.b.op(Instr::Ldi { d: SCRATCH, imm: 0 });
+        ctx.b.op(Instr::Eq {
+            d,
+            a: d,
+            b: SCRATCH,
+        });
+        logical_not(ctx, d);
+    }
     Ok(d)
 }
 
