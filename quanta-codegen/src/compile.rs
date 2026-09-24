@@ -99,6 +99,13 @@ fn event_field_words(ev: &EventDecl) -> Vec<u64> {
     ev.params.iter().map(|p| type_words(&p.ty)).collect()
 }
 
+fn event_field_narrow_max(ev: &EventDecl) -> Vec<Option<u64>> {
+    ev.params
+        .iter()
+        .map(|p| crate::layout::narrow_max(p.ty.name.text.as_str()))
+        .collect()
+}
+
 fn type_words(ty: &Type) -> u64 {
     match ty.name.text.as_str() {
         "Q_Address" | "Q_Name" => ADDR_WORDS,
@@ -188,6 +195,7 @@ fn compile_entries(
                 EventSig {
                     selector: u32::from_be_bytes(event_selector(ev)),
                     field_words: event_field_words(ev),
+                    field_narrow_max: event_field_narrow_max(ev),
                 },
             )),
             _ => None,

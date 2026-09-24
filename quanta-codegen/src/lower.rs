@@ -135,6 +135,7 @@ pub struct DeployParamSlot {
 pub struct EventSig {
     pub selector: u32,
     pub field_words: Vec<u64>,
+    pub field_narrow_max: Vec<Option<u64>>,
 }
 
 #[derive(Default)]
@@ -3786,6 +3787,9 @@ fn lower_emit(ctx: &mut Ctx, name: &str, args: &[Expr], span: Span) -> Result<()
             offset += 2 * WORD;
         } else {
             let r = lower_expr(ctx, arg, false)?;
+            if let Some(Some(max)) = sig.field_narrow_max.get(i).copied() {
+                trap_above(ctx, r, max, span)?;
+            }
             store_mem_word(ctx, offset, r);
             ctx.regs.free(r);
             offset += WORD;
