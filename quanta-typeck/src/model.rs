@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use quanta_ast::{Contract, EntryDecl, FieldDecl, GenericArg, Item, Param, Type};
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
 const NATIVE_ASSETS: &[&str] = &["QTOV"];
@@ -12,6 +13,8 @@ pub struct Model<'a> {
     pub entries: Vec<&'a EntryDecl>,
     declared_assets: HashSet<&'a str>,
     asset_universe: HashSet<String>,
+    pub(crate) protection: RefCell<HashMap<String, bool>>,
+    pub(crate) protection_steps: Cell<u64>,
 }
 
 impl<'a> Model<'a> {
@@ -50,6 +53,8 @@ impl<'a> Model<'a> {
             entries,
             declared_assets,
             asset_universe,
+            protection: RefCell::new(HashMap::new()),
+            protection_steps: Cell::new(0),
         }
     }
 

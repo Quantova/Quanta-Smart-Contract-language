@@ -2308,13 +2308,29 @@ struct Prot {
     steps: u64,
 }
 
+const COMPILE_STEP_BUDGET: u64 = 2_000_000;
+
 pub(crate) fn authority_anchor_protected(model: &Model, field: &str) -> bool {
+    if let Some(&known) = model.protection.borrow().get(field) {
+        return known;
+    }
+    if model.protection_steps.get() > COMPILE_STEP_BUDGET {
+        return false;
+    }
     let mut prot = Prot {
         stack: HashSet::new(),
         memo: HashMap::new(),
         steps: 0,
     };
-    anchor_protected(model, field, &mut prot).0
+    let protected = anchor_protected(model, field, &mut prot).0;
+    model
+        .protection_steps
+        .set(model.protection_steps.get().saturating_add(prot.steps));
+    model
+        .protection
+        .borrow_mut()
+        .insert(field.to_string(), protected);
+    protected
 }
 
 fn signer_field(param: &Param) -> Option<&str> {
