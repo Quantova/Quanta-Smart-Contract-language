@@ -85,6 +85,13 @@ fn contracts_json(contracts: &[CompiledContract]) -> String {
                 }
                 out.push_str("]}");
             }
+            out.push_str("],\"sealed_params\":[");
+            for (k, name) in entry.sealed_params.iter().enumerate() {
+                if k > 0 {
+                    out.push(',');
+                }
+                json_str(&mut out, name);
+            }
             out.push_str("]}");
         }
         out.push_str("],\"events\":[");
