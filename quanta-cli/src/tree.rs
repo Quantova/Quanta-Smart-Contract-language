@@ -10,7 +10,7 @@ pub fn render(program: &Program) -> String {
     for import in &program.imports {
         let names = join(import.names.iter().map(|n| n.text.clone()));
         t.line(1, &format!("Import {} {}", names, at(import.span)));
-        t.line(2, &format!("from \"{}\"", import.path.value));
+        t.line(2, &format!("from {:?}", import.path.value));
     }
     for c in &program.contracts {
         t.contract(c, 1);
@@ -184,7 +184,7 @@ impl Tree {
         match e {
             Expr::Int(v) => self.line(ind, &format!("Int {} {}", v.text, at(v.span))),
             Expr::Date { text, span } => self.line(ind, &format!("Date {} {}", text, at(*span))),
-            Expr::Str(v) => self.line(ind, &format!("Str \"{}\" {}", v.value, at(v.span))),
+            Expr::Str(v) => self.line(ind, &format!("Str {:?} {}", v.value, at(v.span))),
             Expr::Ident(v) => self.line(ind, &format!("Ident {} {}", v.text, at(v.span))),
             Expr::Caller { span } => self.line(ind, &format!("Caller {}", at(*span))),
             Expr::InAsset { span } => self.line(ind, &format!("InAsset {}", at(*span))),
