@@ -92,7 +92,8 @@ pub struct EventArtifact {
 }
 
 pub fn compile(program: &Program) -> Result<Vec<CompiledContract>, CodegenError> {
-    program.contracts.iter().map(compile_contract).collect()
+    quanta_typeck::check(program)?;
+    program.contracts.iter().map(compile_checked).collect()
 }
 
 fn event_field_words(ev: &EventDecl) -> Vec<u64> {
@@ -159,6 +160,15 @@ fn check_supported_types(contract: &Contract) -> Result<(), CodegenError> {
 }
 
 pub fn compile_contract(contract: &Contract) -> Result<CompiledContract, CodegenError> {
+    quanta_typeck::check(&Program {
+        imports: Vec::new(),
+        contracts: vec![contract.clone()],
+        span: contract.span,
+    })?;
+    compile_checked(contract)
+}
+
+fn compile_checked(contract: &Contract) -> Result<CompiledContract, CodegenError> {
     let entries: Vec<&EntryDecl> = contract
         .items
         .iter()

@@ -11,6 +11,7 @@ pub enum CodegenError {
     RegisterExhausted { span: Span },
     IntegerTooWide { text: String, span: Span },
     Link(LinkError),
+    Unchecked { what: String, span: Span },
 }
 
 impl CodegenError {
@@ -19,7 +20,8 @@ impl CodegenError {
             CodegenError::Unsupported { span, .. }
             | CodegenError::Rejected { span, .. }
             | CodegenError::RegisterExhausted { span }
-            | CodegenError::IntegerTooWide { span, .. } => *span,
+            | CodegenError::IntegerTooWide { span, .. }
+            | CodegenError::Unchecked { span, .. } => *span,
             CodegenError::Link(_) => Span::default(),
         }
     }
@@ -47,6 +49,16 @@ impl std::fmt::Display for CodegenError {
                 )
             }
             CodegenError::Link(e) => write!(f, "internal link error: {e:?}"),
+            CodegenError::Unchecked { what, .. } => write!(f, "{what}"),
+        }
+    }
+}
+
+impl From<quanta_typeck::TypeError> for CodegenError {
+    fn from(error: quanta_typeck::TypeError) -> Self {
+        CodegenError::Unchecked {
+            what: error.message,
+            span: error.span,
         }
     }
 }

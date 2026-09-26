@@ -231,6 +231,7 @@ pub struct Ctx<'a> {
     name_params: HashSet<String>,
     quorum_params: HashSet<String>,
     addr_params: HashSet<String>,
+    struct_params: HashSet<String>,
     narrow_params: HashMap<String, u64>,
     wide_keys: HashSet<String>,
     name_keys: HashMap<String, u64>,
@@ -263,6 +264,7 @@ impl<'a> Ctx<'a> {
             name_params: HashSet::new(),
             quorum_params: HashSet::new(),
             addr_params: HashSet::new(),
+            struct_params: HashSet::new(),
             narrow_params: HashMap::new(),
             wide_keys: HashSet::new(),
             name_keys: HashMap::new(),
@@ -424,6 +426,11 @@ fn lower_call_value(
     })
 }
 
+const SCALAR_PARAM_TYPES: &[&str] = &[
+    "bool", "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", ADDR_TYPE,
+    NAME_TYPE, "Q_Asset", "Quorum", "Q_Hash", "Q_Id", "Time",
+];
+
 fn lower_ident(ctx: &mut Ctx, name: &str, span: Span) -> Result<Reg, CodegenError> {
     if name == "true" || name == "false" {
         let d = ctx.regs.alloc(span)?;
@@ -446,6 +453,13 @@ fn lower_ident(ctx: &mut Ctx, name: &str, span: Span) -> Result<Reg, CodegenErro
         load_arg(ctx, off, span)
     } else if let Some(slot) = ctx.layout.slot(name) {
         load_slot(ctx, slot, span)
+    } else if ctx.struct_params.contains(name) {
+        Err(CodegenError::Rejected {
+            what: format!(
+                "a bare reference to the structured parameter `{name}`; read one of its fields"
+            ),
+            span,
+        })
     } else if ctx.params.contains(name) {
         let off = if ctx.wide_keys.contains(name) {
             ctx.args.offset_of_width(name, 2 * WORD)
@@ -1650,6 +1664,12 @@ pub fn lower_entry(
             .params
             .iter()
             .filter(|p| p.ty.name.text == ADDR_TYPE)
+            .map(|p| p.name.text.clone())
+            .collect();
+        ctx.struct_params = entry
+            .params
+            .iter()
+            .filter(|p| !SCALAR_PARAM_TYPES.contains(&p.ty.name.text.as_str()))
             .map(|p| p.name.text.clone())
             .collect();
         ctx.narrow_params = entry
