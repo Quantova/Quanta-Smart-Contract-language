@@ -526,7 +526,7 @@ fn map_is_read_as_caller_authority(model: &Model, field: &str) -> bool {
 }
 
 fn map_is_ever_paid_out(model: &Model, field: &str) -> bool {
-    let reads_field = |e: &Expr| {
+    let reads_through = |e: &Expr, aliases: &HashSet<String>| {
         let mut hit = false;
         walk(e, &mut |x| {
             if let Expr::Call { callee, .. } = x {
@@ -540,10 +540,24 @@ fn map_is_ever_paid_out(model: &Model, field: &str) -> bool {
                     }
                 }
             }
+            if let Expr::Ident(id) = x {
+                if aliases.contains(id.text.as_str()) {
+                    hit = true;
+                }
+            }
         });
         hit
     };
     for entry in &model.entries {
+        let mut aliases: HashSet<String> = HashSet::new();
+        for stmt in &entry.body {
+            if let Stmt::Let { name, value, .. } = stmt {
+                if reads_through(value, &aliases) {
+                    aliases.insert(name.text.clone());
+                }
+            }
+        }
+        let reads_field = |e: &Expr| reads_through(e, &aliases);
         let mut found = false;
         for stmt in &entry.body {
             stmt_exprs(stmt, &mut |e| {
@@ -818,6 +832,36 @@ fn anchor_writable_without_authority(model: &Model, field: &str) -> bool {
 }
 
 fn outflow_amount_is_a_self_written_row(model: &Model, entry: &EntryDecl) -> bool {
+    let self_row = |x: &Expr, aliases: &HashSet<String>| {
+        if let Expr::Ident(id) = x {
+            return aliases.contains(id.text.as_str());
+        }
+        if let Expr::Call { callee, args, .. } = x {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if let Expr::Ident(m) = base.as_ref() {
+                    return name.text == "get"
+                        && matches!(args.first(), Some(Expr::Caller { .. }))
+                        && model.state.contains_key(m.text.as_str())
+                        && !authority_anchor_protected(model, m.text.as_str());
+                }
+            }
+        }
+        false
+    };
+    let mut aliases: HashSet<String> = HashSet::new();
+    for stmt in &entry.body {
+        if let Stmt::Let { name, value, .. } = stmt {
+            let mut hit = false;
+            walk(value, &mut |x| {
+                if !hit && self_row(x, &aliases) {
+                    hit = true;
+                }
+            });
+            if hit {
+                aliases.insert(name.text.clone());
+            }
+        }
+    }
     let mut found = false;
     for stmt in &entry.body {
         stmt_exprs(stmt, &mut |e| {
@@ -831,21 +875,8 @@ fn outflow_amount_is_a_self_written_row(model: &Model, entry: &EntryDecl) -> boo
                 };
                 let Some(a) = amount else { return };
                 walk(a, &mut |x| {
-                    if found {
-                        return;
-                    }
-                    if let Expr::Call { callee, args, .. } = x {
-                        if let Expr::Field { base, name, .. } = callee.as_ref() {
-                            if let Expr::Ident(m) = base.as_ref() {
-                                if name.text == "get"
-                                    && matches!(args.first(), Some(Expr::Caller { .. }))
-                                    && model.state.contains_key(m.text.as_str())
-                                    && !authority_anchor_protected(model, m.text.as_str())
-                                {
-                                    found = true;
-                                }
-                            }
-                        }
+                    if !found && self_row(x, &aliases) {
+                        found = true;
                     }
                 });
             }

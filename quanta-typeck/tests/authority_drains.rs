@@ -753,3 +753,38 @@ fn a_treasury_that_commits_more_than_it_holds_is_still_refused() {
 }"#
     ));
 }
+
+#[test]
+fn a_payout_routed_through_a_let_still_marks_the_map_as_paid_out() {
+    assert!(rejected(
+        r#"import { Q_Asset } from "quantova/primitives";
+import { Map } from "quantova/stdlib";
+contract F2 {
+  state {
+    owner: Q_Address;
+    members: Map<Q_Address, u64>;
+    rewards: Map<Q_Address, u64>;
+    vault: Q_Asset<QTOV>;
+  }
+  genesis { owner = deployer; }
+  entry join(who: Q_Address) writes(members) {
+    guard caller == owner;
+    members.set(who, 1);
+  }
+  entry fund(pay: Q_Asset<QTOV>) writes(vault) conserves QTOV {
+    guard in_asset == native;
+    vault.merge(pay);
+  }
+  entry accrue(to: Q_Address, n: u64) writes(rewards) {
+    rewards.credit(to, n);
+  }
+  entry claim() reads(members) writes(rewards, vault) conserves QTOV {
+    guard members.contains(caller);
+    let amt = rewards.get(caller);
+    rewards.set(caller, 0);
+    let out = vault.split(amt);
+    send(caller, out);
+  }
+}"#
+    ));
+}
