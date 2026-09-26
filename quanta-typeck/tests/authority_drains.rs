@@ -835,3 +835,18 @@ contract F5b {
 }"#
     ));
 }
+
+#[test]
+fn an_empty_slot_proof_under_an_or_never_counts() {
+    assert!(rejected(
+        r#"import { Q_Asset } from "quantova/primitives";
+import { Map } from "quantova/stdlib";
+contract F7 {
+  state { owners: Map<Q_Address, Q_Address>; vault: Q_Asset<QTOV>; }
+  genesis { }
+  entry fund(pay: Q_Asset<QTOV>) writes(vault) conserves QTOV { guard in_asset == native; vault.merge(pay); }
+  entry claim(name: Q_Address) writes(owners) { guard !owners.contains(name) || 1 == 1; owners.set(name, caller); }
+  entry cash(name: Q_Address, amount: u64) reads(owners) writes(vault) conserves QTOV { guard owners.get(name) == caller; send(caller, vault.split(amount)); }
+}"#
+    ));
+}

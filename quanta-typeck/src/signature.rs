@@ -642,15 +642,21 @@ fn writes_field_only_into_an_empty_slot(model: &Model, entry: &EntryDecl, field:
             guards.push(expr);
         }
     }
+    let mut parts: Vec<&Expr> = Vec::new();
+    for expr in &guards {
+        split_and(expr, &mut parts);
+    }
     let proves_empty = |key: &Expr| {
         let mut found = false;
-        for expr in &guards {
-            walk(expr, &mut |e| {
+        for e in &parts {
+            {
+                let e: &Expr = e;
                 if found {
-                    return;
+                    break;
                 }
                 let probe = |m: &str, k: &Expr| {
-                    expr_eq(k, key)
+                    m == field
+                        && expr_eq(k, key)
                         && model.state.contains_key(m)
                         && entry_writes_field_under_key(entry, m, key)
                 };
@@ -684,7 +690,7 @@ fn writes_field_only_into_an_empty_slot(model: &Model, entry: &EntryDecl, field:
                     }
                     _ => {}
                 }
-            });
+            }
         }
         found
     };
@@ -1603,6 +1609,21 @@ fn every_grant_is_under_the_granters_own_key(model: &Model, field: &str) -> bool
         }
     }
     saw_grant && all_own
+}
+
+fn split_and<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+    match e {
+        Expr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+            ..
+        } => {
+            split_and(left, out);
+            split_and(right, out);
+        }
+        other => out.push(other),
+    }
 }
 
 fn collect_conjuncts<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
