@@ -788,3 +788,17 @@ contract F2 {
 }"#
     ));
 }
+
+#[test]
+fn an_allowance_on_one_key_never_spends_the_balance_of_another() {
+    assert!(rejected(
+        r#"contract Token {
+  state { balances: Map<Q_Address, u128>; allowance: Map<Q_Address, u128>; total: u128; minter: Q_Address; }
+  genesis { minter = deployer; }
+  entry mint(to: Q_Address, amount: u128) reads(minter) writes(balances, total) { guard caller == minter; balances.credit(to, amount); total = checked(total + amount); }
+  entry transfer(to: Q_Address, amount: u128) reads(balances) writes(balances) { guard balances.get(caller) >= amount; balances.debit(caller, amount); balances.credit(to, amount); }
+  entry approve(amount: u128) writes(allowance) { allowance.set(caller, amount); }
+  entry steal(src: Q_Address, victim: Q_Address, amount: u128) reads(balances, allowance) writes(balances, allowance) { guard allowance.get(src) >= amount; guard balances.get(victim) >= amount; allowance.debit(src, amount); balances.debit(victim, amount); balances.credit(caller, amount); }
+}"#
+    ));
+}

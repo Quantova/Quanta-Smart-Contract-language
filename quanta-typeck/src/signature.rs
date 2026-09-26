@@ -1450,14 +1450,18 @@ fn entry_debits_another_map_under(entry: &EntryDecl, field: &str, key: &Expr) ->
     backed
 }
 
-fn entry_debits_the_row_it_gated_on(entry: &EntryDecl, field: &str) -> bool {
+fn entry_debits_the_row_it_gated_on(entry: &EntryDecl, field: &str, key: &Expr) -> bool {
     let mut debited = false;
     for stmt in &entry.body {
         stmt_exprs(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
                     if let Expr::Ident(m) = base.as_ref() {
-                        if m.text == field && name.text == "debit" && args.len() >= 2 {
+                        if m.text == field
+                            && name.text == "debit"
+                            && args.len() >= 2
+                            && expr_eq(&args[0], key)
+                        {
                             debited = true;
                         }
                     }
@@ -1526,18 +1530,43 @@ fn spends_an_allowance_its_owner_granted(model: &Model, entry: &EntryDecl) -> bo
             guards.push(expr);
         }
     }
+    let debit_keys = |map: &str| {
+        let mut keys: Vec<Expr> = Vec::new();
+        for stmt in &entry.body {
+            stmt_exprs(stmt, &mut |e| {
+                if let Expr::Call { callee, args, .. } = e {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if let Expr::Ident(m) = base.as_ref() {
+                            if m.text == map && name.text == "debit" {
+                                if let Some(key) = args.first() {
+                                    keys.push(key.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        keys
+    };
+    let ledger_keys = debit_keys(&ledger);
     let mut permitted = false;
     for g in guards {
         walk(g, &mut |e| {
             if permitted {
                 return;
             }
-            if let Expr::Call { callee, .. } = e {
+            if let Expr::Call { callee, args, .. } = e {
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
                     if let Expr::Ident(m) = base.as_ref() {
+                        let Some(key) = args.first() else { return };
+                        let allowance_keys = debit_keys(m.text.as_str());
                         if name.text == "get"
                             && m.text != ledger
-                            && entry_debits_the_row_it_gated_on(entry, m.text.as_str())
+                            && !allowance_keys.is_empty()
+                            && allowance_keys.iter().all(|k| expr_eq(k, key))
+                            && !ledger_keys.is_empty()
+                            && ledger_keys.iter().all(|k| expr_eq(k, key))
                             && every_grant_is_under_the_granters_own_key(model, m.text.as_str())
                         {
                             permitted = true;
@@ -2657,8 +2686,8 @@ fn forged_map_authority(
     }
     let gate_expr = |expr: &Expr| {
         map_lookup_on_param(model, params, signed, derived, expr)
-            .filter(|(map, _, _)| !entry_debits_the_row_it_gated_on(entry, map))
-            .map(|(_, field, span)| (field, span))
+            .filter(|(map, _, _, key)| !entry_debits_the_row_it_gated_on(entry, map, key))
+            .map(|(_, field, span, _)| (field, span))
     };
     for clause in &entry.clauses {
         if let Clause::Limits { expr, .. } | Clause::Denies { expr, .. } = clause {
@@ -3660,7 +3689,7 @@ fn map_lookup_on_param(
     signed: &HashSet<&str>,
     derived: &HashSet<String>,
     expr: &Expr,
-) -> Option<(String, String, Span)> {
+) -> Option<(String, String, Span, Expr)> {
     let mut found = None;
     walk(expr, &mut |e| {
         if found.is_some() {
@@ -3673,7 +3702,7 @@ fn map_lookup_on_param(
                         if is_addr_keyed(model, map_id.text.as_str()) {
                             for a in args {
                                 if let Some(field) = param_field(params, signed, derived, a) {
-                                    found = Some((map_id.text.clone(), field, *span));
+                                    found = Some((map_id.text.clone(), field, *span, a.clone()));
                                 }
                             }
                         }
