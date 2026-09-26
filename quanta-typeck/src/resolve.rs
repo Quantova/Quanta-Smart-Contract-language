@@ -196,8 +196,30 @@ fn check_no_shadowed_lets(
     fields: &HashSet<&str>,
     params: &HashSet<&str>,
 ) -> Result<(), TypeError> {
+    let declared: HashSet<&str> = body
+        .iter()
+        .filter_map(|stmt| match stmt {
+            Stmt::Let { name, .. } => Some(name.text.as_str()),
+            _ => None,
+        })
+        .collect();
     let mut locals: HashSet<&str> = HashSet::new();
     for stmt in body {
+        let mut early: Option<(String, Span)> = None;
+        for_each_expr(stmt, &mut |e| {
+            if let Expr::Ident(id) = e {
+                let text = id.text.as_str();
+                if early.is_none() && declared.contains(text) && !locals.contains(text) {
+                    early = Some((text.to_string(), id.span));
+                }
+            }
+        });
+        if let Some((text, span)) = early {
+            return Err(TypeError::new(
+                format!("the local `{text}` is read before its `let` has run"),
+                span,
+            ));
+        }
         if let Stmt::Let { name, span, .. } = stmt {
             let text = name.text.as_str();
             if !locals.insert(text) {

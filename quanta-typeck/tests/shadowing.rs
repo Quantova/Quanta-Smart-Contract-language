@@ -110,3 +110,25 @@ fn a_local_declared_twice_is_refused_so_the_checker_and_the_code_see_one_value()
         err.message
     );
 }
+
+#[test]
+fn a_local_that_reads_itself_is_refused_before_analysis_can_loop() {
+    let text = refused(
+        "contract C { state { owner: Q_Address; vault: Q_Asset<QTOV>; } \
+         genesis { owner = deployer; } \
+         entry f(x: u64) conserves QTOV writes(vault) { \
+           guard caller == owner; let b = b; send(caller, vault.split(b)); } }",
+    );
+    assert!(text.contains("before its `let`"), "got {text}");
+}
+
+#[test]
+fn a_local_read_before_its_let_is_refused() {
+    let text = refused(
+        "contract C { state { owner: Q_Address; vault: Q_Asset<QTOV>; } \
+         genesis { owner = deployer; } \
+         entry f(x: u64) conserves QTOV writes(vault) { \
+           guard caller == owner; guard c > 0; let c = x; send(caller, vault.split(c)); } }",
+    );
+    assert!(text.contains("before its `let`"), "got {text}");
+}
