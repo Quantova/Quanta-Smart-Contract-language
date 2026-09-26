@@ -77,6 +77,7 @@ fn time_compared_fields<'a>(
                     if mentions_now(side) {
                         let mut reads: Vec<&Expr> = Vec::new();
                         collect_anchor_reads(model, params, other, &mut reads);
+                        collect_anchor_reads(model, params, side, &mut reads);
                         for read in reads {
                             if let Some(field) = anchor_field(read) {
                                 out.push((field, read.span()));
@@ -98,7 +99,7 @@ fn time_compared_fields<'a>(
 fn is_time_or_constant(value: &Expr) -> bool {
     match value {
         Expr::Now { .. } => true,
-        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => is_time_or_constant(expr),
+        Expr::Checked { expr, .. } => is_time_or_constant(expr),
         Expr::Binary {
             op: BinOp::Add,
             left,

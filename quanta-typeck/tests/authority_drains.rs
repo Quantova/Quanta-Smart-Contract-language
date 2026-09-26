@@ -802,3 +802,36 @@ fn an_allowance_on_one_key_never_spends_the_balance_of_another() {
 }"#
     ));
 }
+
+#[test]
+fn a_wrapping_deadline_is_not_a_safe_time_anchor() {
+    assert!(rejected(
+        r#"import { Q_Asset } from "quantova/primitives";
+contract F5a {
+  state { owner: Q_Address; unlock: u64; vault: Q_Asset<QTOV>; }
+  genesis { owner = deployer; }
+  entry arm(p: u64) writes(unlock) { unlock = wrapping(now + p); }
+  entry release(order: Sweep signed by owner) reads(unlock) writes(vault) conserves QTOV {
+    guard now >= unlock;
+    guard unlock > 0;
+    send(order.to, vault.split(order.amount));
+  }
+}"#
+    ));
+}
+
+#[test]
+fn an_anchor_beside_now_in_a_time_gate_is_checked_too() {
+    assert!(rejected(
+        r#"import { Q_Asset } from "quantova/primitives";
+contract F5b {
+  state { owner: Q_Address; start: u64; vault: Q_Asset<QTOV>; }
+  genesis { owner = deployer; start = 0; }
+  entry arm(p: u64) writes(start) { start = p; }
+  entry release(order: Sweep signed by owner) reads(start) writes(vault) conserves QTOV {
+    guard now - start >= 86400;
+    send(order.to, vault.split(order.amount));
+  }
+}"#
+    ));
+}
