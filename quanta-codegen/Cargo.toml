@@ -10,9 +10,9 @@ license.workspace = true
 [dependencies]
 quanta-lexer = { path = "../quanta-lexer" }
 quanta-ast = { path = "../quanta-ast" }
-qtv-vm = { git = "https://github.com/Quantova/QVM.git", rev = "3e8d8f194f93dad40fed826b021f058e5728f513" }
+qtv-vm = { git = "https://github.com/Quantova/QVM.git", rev = "a98e42130d353ab563b8990df84ffb0b66676c4d" }
 
 [dev-dependencies]
 quanta-parser = { path = "../quanta-parser" }
 quanta-typeck = { path = "../quanta-typeck" }
-qtv-crypto = { git = "https://github.com/Quantova/Q-Crypto.git", rev = "e6652598dc3847189609a282128921824d55c10b" }
+qtv-crypto = { git = "https://github.com/Quantova/Q-Crypto.git", rev = "387c01dee92bd3a7e5a6bf5a1480745ccafa0d5f" }
