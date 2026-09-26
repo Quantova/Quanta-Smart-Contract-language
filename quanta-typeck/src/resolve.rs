@@ -196,9 +196,16 @@ fn check_no_shadowed_lets(
     fields: &HashSet<&str>,
     params: &HashSet<&str>,
 ) -> Result<(), TypeError> {
+    let mut locals: HashSet<&str> = HashSet::new();
     for stmt in body {
         if let Stmt::Let { name, span, .. } = stmt {
             let text = name.text.as_str();
+            if !locals.insert(text) {
+                return Err(TypeError::new(
+                    format!("the local `{text}` is declared more than once in this entry"),
+                    *span,
+                ));
+            }
             if fields.contains(text) {
                 return Err(TypeError::new(
                     format!(

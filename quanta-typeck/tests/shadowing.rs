@@ -90,3 +90,23 @@ fn two_contracts_of_one_name_are_refused() {
     );
     assert!(text.contains("more than once"), "got {text}");
 }
+
+#[test]
+fn a_local_declared_twice_is_refused_so_the_checker_and_the_code_see_one_value() {
+    let src = r#"contract Twice {
+  state { vault: Q_Asset<QTOV>; }
+  entry f(x: u64) writes(vault) conserves QTOV {
+    let b = x;
+    let b = x;
+    let out = vault.split(b);
+    send(caller, out);
+  }
+}"#;
+    let program = quanta_parser::parse(src).expect("the source parses");
+    let err = quanta_typeck::check(&program).expect_err("a repeated local is refused");
+    assert!(
+        err.message.contains("declared more than once"),
+        "{}",
+        err.message
+    );
+}
