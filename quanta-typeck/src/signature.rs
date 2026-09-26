@@ -2287,7 +2287,7 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
                 continue;
             }
             let (authorized, sub_tainted) = writer_authorized(model, entry, prot);
-            if !authorized {
+            if !authorized || copies_an_unprotected_field(model, entry, field, prot) {
                 protected = false;
                 break;
             }
@@ -2303,6 +2303,57 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
         prot.memo.insert(field.to_string(), true);
     }
     (true, tainted)
+}
+
+fn copies_an_unprotected_field(
+    model: &Model,
+    entry: &EntryDecl,
+    field: &str,
+    prot: &mut Prot,
+) -> bool {
+    let mut locals: HashMap<&str, HashSet<String>> = HashMap::new();
+    let reads = |expr: &Expr, locals: &HashMap<&str, HashSet<String>>| {
+        let mut out: HashSet<String> = HashSet::new();
+        walk(expr, &mut |e| {
+            if let Expr::Ident(id) = e {
+                let name = id.text.as_str();
+                if name != field && model.state.contains_key(name) {
+                    out.insert(name.to_string());
+                } else if let Some(from) = locals.get(name) {
+                    out.extend(from.iter().cloned());
+                }
+            }
+        });
+        out
+    };
+    let mut sources: HashSet<String> = HashSet::new();
+    for stmt in &entry.body {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                let from = reads(value, &locals);
+                locals.insert(name.text.as_str(), from);
+            }
+            Stmt::Assign { target, value, .. } if root_ident(target) == Some(field) => {
+                sources.extend(reads(value, &locals));
+            }
+            _ => stmt_exprs(stmt, &mut |e| {
+                if let Expr::Call { callee, args, .. } = e {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if matches!(base.as_ref(), Expr::Ident(id) if id.text == field)
+                            && matches!(name.text.as_str(), "set" | "insert")
+                        {
+                            for a in args.iter().skip(1) {
+                                sources.extend(reads(a, &locals));
+                            }
+                        }
+                    }
+                }
+            }),
+        }
+    }
+    sources
+        .iter()
+        .any(|source| !anchor_protected(model, source, prot).0)
 }
 
 fn writes_field_only_under_the_caller_key(entry: &EntryDecl, field: &str) -> bool {

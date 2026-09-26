@@ -82,22 +82,73 @@ fn pooled_settles_order(entry: &EntryDecl, pooled: &str, param: &str) -> bool {
 
 fn param_derived_locals(entry: &EntryDecl, param: &str) -> std::collections::HashSet<String> {
     let mut derived: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for stmt in &entry.body {
-        if let Stmt::Let { name, value, .. } = stmt {
-            let mut carries = false;
-            walk(value, &mut |e| {
-                if let Expr::Ident(id) = e {
-                    if id.text == param || derived.contains(&id.text) {
-                        carries = true;
+    loop {
+        let before = derived.len();
+        for stmt in &entry.body {
+            match stmt {
+                Stmt::Let { name, value, .. } => {
+                    if carries_param(value, param, &derived) {
+                        derived.insert(name.text.clone());
                     }
                 }
-            });
-            if carries {
-                derived.insert(name.text.clone());
+                Stmt::Assign { target, value, .. } => {
+                    if carries_order_field(value, param, &derived) {
+                        if let Some(root) = root_ident(target) {
+                            derived.insert(root.to_string());
+                        }
+                    }
+                }
+                Stmt::Expr { expr, .. } => walk(expr, &mut |e| {
+                    if let Expr::Call { callee, args, .. } = e {
+                        if let Expr::Field { base, name, .. } = callee.as_ref() {
+                            if matches!(name.text.as_str(), "set" | "insert" | "credit")
+                                && args
+                                    .iter()
+                                    .skip(1)
+                                    .any(|a| carries_order_field(a, param, &derived))
+                            {
+                                if let Some(root) = root_ident(base) {
+                                    derived.insert(root.to_string());
+                                }
+                            }
+                        }
+                    }
+                }),
+                _ => {}
             }
         }
+        if derived.len() == before {
+            return derived;
+        }
     }
-    derived
+}
+
+fn carries_order_field(
+    expr: &Expr,
+    param: &str,
+    derived: &std::collections::HashSet<String>,
+) -> bool {
+    let mut carries = false;
+    walk(expr, &mut |e| match e {
+        Expr::Field { base, .. } if matches!(base.as_ref(), Expr::Ident(id) if id.text == param) => {
+            carries = true
+        }
+        Expr::Ident(id) if derived.contains(&id.text) => carries = true,
+        _ => {}
+    });
+    carries
+}
+
+fn carries_param(expr: &Expr, param: &str, derived: &std::collections::HashSet<String>) -> bool {
+    let mut carries = false;
+    walk(expr, &mut |e| {
+        if let Expr::Ident(id) = e {
+            if id.text == param || derived.contains(&id.text) {
+                carries = true;
+            }
+        }
+    });
+    carries
 }
 
 fn order_field_gates(entry: &EntryDecl, param: &str) -> bool {
