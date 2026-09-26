@@ -302,7 +302,7 @@ fn ledger_move_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> bo
         .filter(|p| crate::model::is_asset_param(p))
         .map(|p| p.name.text.as_str())
         .collect();
-    let backed_scalars = asset_backed_scalars(model);
+    let backed_scalars = asset_backed_scalars(model, entry);
     let mut saw = false;
     let mut all_caller_keyed = true;
     for stmt in &entry.body {
@@ -603,9 +603,10 @@ fn map_is_ever_paid_out(model: &Model, field: &str) -> bool {
     false
 }
 
-fn asset_backed_scalars(model: &Model) -> HashSet<String> {
+fn asset_backed_scalars(model: &Model, here: &EntryDecl) -> HashSet<String> {
     let mut candidate: HashSet<String> = HashSet::new();
     let mut disqualified: HashSet<String> = HashSet::new();
+    let mut set_here: HashSet<String> = HashSet::new();
     for entry in &model.entries {
         let asset_params: HashSet<&str> = entry
             .params
@@ -614,10 +615,18 @@ fn asset_backed_scalars(model: &Model) -> HashSet<String> {
             .map(|p| p.name.text.as_str())
             .collect();
         for stmt in &entry.body {
-            if let Stmt::Assign { target, value, .. } = stmt {
+            if let Stmt::Assign {
+                target, op, value, ..
+            } = stmt
+            {
                 if let Expr::Ident(id) = target {
-                    if asset_amount_backer(value, &asset_params).is_some() {
+                    if matches!(op, AssignOp::Set)
+                        && asset_amount_backer(value, &asset_params).is_some()
+                    {
                         candidate.insert(id.text.clone());
+                        if std::ptr::eq(*entry, here) {
+                            set_here.insert(id.text.clone());
+                        }
                     } else {
                         disqualified.insert(id.text.clone());
                     }
@@ -625,7 +634,7 @@ fn asset_backed_scalars(model: &Model) -> HashSet<String> {
             }
         }
     }
-    candidate.retain(|f| !disqualified.contains(f));
+    candidate.retain(|f| !disqualified.contains(f) && set_here.contains(f));
     candidate
 }
 
@@ -1720,7 +1729,7 @@ fn credits_only_what_was_paid_in(model: &Model, entry: &EntryDecl, field: &str) 
     if assets.is_empty() {
         return false;
     }
-    let backed_scalars = asset_backed_scalars(model);
+    let backed_scalars = asset_backed_scalars(model, entry);
     let mut saw = false;
     let mut all_paid = true;
     for stmt in &entry.body {
@@ -2889,7 +2898,7 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
         .map(|p| p.name.text.as_str())
         .collect();
     let mut spends = self_spend_amounts(&ledgers, entry, &reads_of, &sub_locals);
-    let backed_scalars = asset_backed_scalars(model);
+    let backed_scalars = asset_backed_scalars(model, entry);
     let backs = |value: &Expr| match value {
         Expr::Ident(id) => backed_scalars.contains(id.text.as_str()),
         _ => false,

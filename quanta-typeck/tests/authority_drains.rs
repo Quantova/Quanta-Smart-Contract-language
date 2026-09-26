@@ -850,3 +850,18 @@ contract F7 {
 }"#
     ));
 }
+
+#[test]
+fn a_scalar_another_entry_recorded_never_backs_a_credit_here() {
+    assert!(rejected(
+        r#"import { Q_Asset } from "quantova/primitives";
+import { Map } from "quantova/stdlib";
+contract F8 {
+  state { bal: Map<Q_Address, u64>; last_deposit: u64; vault: Q_Asset<QTOV>; }
+  genesis { }
+  entry deposit(pay: Q_Asset<QTOV>) writes(vault, bal, last_deposit) conserves QTOV { guard in_asset == native; last_deposit = pay.amount; bal.credit(caller, pay.amount); vault.merge(pay); }
+  entry bonus(dust: Q_Asset<QTOV>) reads(last_deposit) writes(vault, bal) conserves QTOV { guard in_asset == native; vault.merge(dust); bal.credit(caller, last_deposit); }
+  entry withdraw(amount: u64) reads(bal) writes(bal, vault) conserves QTOV { guard bal.get(caller) >= amount; bal.debit(caller, amount); send(caller, vault.split(amount)); }
+}"#
+    ));
+}
