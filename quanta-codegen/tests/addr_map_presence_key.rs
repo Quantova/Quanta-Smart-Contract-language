@@ -64,7 +64,7 @@ fn a_dirty_key_tail_cannot_slip_past_the_presence_guard() {
     assert!(
         claim(&cc, 0x01, 0xBB, owned.clone()).is_err(),
         "a dirty argument tail queried an empty row while the write landed on the owned \
-         one, so the record was stolen from its holder"
+         one, so the record was taken from its holder"
     );
     assert!(
         claim(&cc, 0x00, 0xBB, owned).is_err(),
