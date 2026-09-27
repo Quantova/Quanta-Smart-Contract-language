@@ -168,11 +168,18 @@ fn check_anchor_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeErr
             if field_is_asset(model, field) {
                 continue;
             }
-            if read_starts_nonzero(model, read, field) {
-                continue;
-            }
-            if !entry_requires_nonzero(entry, read) {
+            if !read_starts_nonzero(model, read, field) && !entry_requires_nonzero(entry, read) {
                 return Err(liveness_rejection(field, *span));
+            }
+            if writes_other_than_time(model, field)
+                && !crate::signature::authority_anchor_protected(model, field)
+            {
+                return Err(TypeError::new(
+                    format!(
+                        "a time gate anchors on `{field}`, a state field an entry with no authority can set to any value; record the anchor with `now` so no caller can pre-date the delay"
+                    ),
+                    *span,
+                ));
             }
         }
     }
