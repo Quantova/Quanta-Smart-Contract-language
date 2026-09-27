@@ -3696,17 +3696,100 @@ fn caller_membership_present(model: &Model, expr: &Expr) -> bool {
         return false;
     };
     let lookup_left = is_caller_membership(model, left);
+    let bound = !is_int_literal(threshold) && !threshold_is_caller_chosen(model, threshold);
     match (op, lookup_left) {
-        (BinOp::Ge, true) | (BinOp::Le, false) => {
-            is_positive_int(threshold) || !is_int_literal(threshold)
-        }
-        (BinOp::Gt, true) | (BinOp::Lt, false) => {
-            is_nonnegative_int(threshold) || !is_int_literal(threshold)
-        }
+        (BinOp::Ge, true) | (BinOp::Le, false) => is_positive_int(threshold) || bound,
+        (BinOp::Gt, true) | (BinOp::Lt, false) => is_nonnegative_int(threshold) || bound,
         (BinOp::Ne, _) => is_zero_int(threshold),
         (BinOp::Eq, _) => is_positive_int(threshold),
         _ => false,
     }
+}
+
+fn threshold_is_caller_chosen(model: &Model, threshold: &Expr) -> bool {
+    if model.caller_chosen_thresholds.borrow().is_none() {
+        let found = caller_chosen_thresholds(model);
+        *model.caller_chosen_thresholds.borrow_mut() = Some(found);
+    }
+    model
+        .caller_chosen_thresholds
+        .borrow()
+        .as_ref()
+        .is_some_and(|set| set.contains(&threshold.span()))
+}
+
+fn caller_chosen_thresholds(model: &Model) -> HashSet<Span> {
+    let mut out: HashSet<Span> = HashSet::new();
+    for entry in &model.entries {
+        let signed: HashSet<&str> = entry
+            .params
+            .iter()
+            .filter(|p| p.signed_by.is_some())
+            .map(|p| p.name.text.as_str())
+            .collect();
+        let mut spent: HashSet<String> = HashSet::new();
+        for stmt in &entry.body {
+            stmt_exprs(stmt, &mut |e| {
+                if let Expr::Call { callee, args, .. } = e {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if matches!(base.as_ref(), Expr::Ident(_))
+                            && matches!(name.text.as_str(), "debit" | "credit")
+                            && matches!(args.first(), Some(Expr::Caller { .. }))
+                        {
+                            if let Some(amount) = args.get(1) {
+                                walk(amount, &mut |x| {
+                                    if let Expr::Ident(id) = x {
+                                        spent.insert(id.text.clone());
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        let mut gates: Vec<&Expr> = Vec::new();
+        for clause in &entry.clauses {
+            if let Clause::Limits { expr, .. } | Clause::Denies { expr, .. } = clause {
+                gates.push(expr);
+            }
+        }
+        for stmt in &entry.body {
+            if let Stmt::Guard { expr, .. } = stmt {
+                gates.push(expr);
+            }
+        }
+        for gate in gates {
+            walk(gate, &mut |e| {
+                let Expr::Binary { left, right, .. } = e else {
+                    return;
+                };
+                let threshold = if is_caller_membership(model, left) {
+                    right.as_ref()
+                } else if is_caller_membership(model, right) {
+                    left.as_ref()
+                } else {
+                    return;
+                };
+                let mut chosen = false;
+                walk(threshold, &mut |x| {
+                    if let Expr::Ident(id) = x {
+                        let name = id.text.as_str();
+                        if !model.state.contains_key(name)
+                            && !signed.contains(name)
+                            && !spent.contains(name)
+                        {
+                            chosen = true;
+                        }
+                    }
+                });
+                if chosen {
+                    out.insert(threshold.span());
+                }
+            });
+        }
+    }
+    out
 }
 
 fn is_int_literal(expr: &Expr) -> bool {

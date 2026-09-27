@@ -865,3 +865,18 @@ contract F8 {
 }"#
     ));
 }
+
+#[test]
+fn a_membership_bar_the_caller_sets_is_not_authority() {
+    assert!(rejected(
+        r#"import { Q_Asset } from "quantova/primitives";
+import { Map } from "quantova/stdlib";
+contract F6 {
+  state { stake: Map<Q_Address, u64>; fee_recipient: Q_Address; vault: Q_Asset<QTOV>; }
+  genesis { fee_recipient = deployer; }
+  entry fund(pay: Q_Asset<QTOV>) writes(vault) conserves QTOV { guard in_asset == native; vault.merge(pay); }
+  entry set_recipient(min: u64) reads(stake) writes(fee_recipient) { guard stake.get(caller) >= min; fee_recipient = caller; }
+  entry sweep(amount: u64) reads(fee_recipient) writes(vault) conserves QTOV { guard caller == fee_recipient; send(fee_recipient, vault.split(amount)); }
+}"#
+    ));
+}
