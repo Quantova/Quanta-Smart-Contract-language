@@ -537,8 +537,8 @@ fn a_counter_that_can_be_cashed_out_is_money_again() {
 }
 
 #[test]
-fn a_token_with_approve_and_transfer_from_is_buildable() {
-    assert!(!rejected(
+fn an_allowance_that_names_no_spender_is_refused() {
+    assert!(rejected(
         r#"contract Token {
   state { balances: Map<Q_Address, u128>; allowance: Map<Q_Address, u128>; total: u128; minter: Q_Address; }
   genesis { minter = deployer; }
