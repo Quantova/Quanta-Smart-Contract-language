@@ -2421,12 +2421,12 @@ fn lower_after_prologue(ctx: &mut Ctx, entry: &EntryDecl, trap: Label) -> Result
                     ctx.regs.free(addend);
                     reg
                 } else {
-                    let reg = ctx.regs.alloc(*span)?;
-                    ctx.b.op(Instr::Ldi {
-                        d: reg,
-                        imm: seconds,
+                    return Err(CodegenError::Unsupported {
+                        what: "a duration time gate without a `from` anchor, which would compare \
+                               against absolute time and be open from the epoch"
+                            .to_string(),
+                        span: *span,
                     });
-                    reg
                 }
             }
             AfterTarget::Expr(expr) => {
