@@ -53,6 +53,7 @@ dependencies = [
 name = "quanta-cli"
 version = "0.1.0"
 dependencies = [
+ "qtv-crypto",
  "quanta-ast",
  "quanta-codegen",
  "quanta-emit",

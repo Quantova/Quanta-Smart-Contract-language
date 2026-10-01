@@ -99,9 +99,33 @@ fn build(path: &str, contracts: &[quanta_codegen::CompiledContract]) {
     let dir = std::path::Path::new(path)
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
+    let seed = match provenance_seed() {
+        Ok(seed) => seed,
+        Err(e) => {
+            eprintln!("error: {e}");
+            exit(2);
+        }
+    };
     for cc in contracts {
         let out = dir.join(format!("{}.qbc", cc.name));
-        let bytes = cc.container.canonical_bytes();
+        let mut bytes = cc.container.canonical_bytes();
+        if let Some(seed) = &seed {
+            let (_, sk) = qtv_crypto::ml_dsa::keygen(seed);
+            match qtv_crypto::ml_dsa::sign_os(
+                &sk,
+                &cc.container.identifier(),
+                b"QUANTOVA/QVM/PROVENANCE/v1",
+            ) {
+                Some(sig) => {
+                    bytes.extend_from_slice(b"QPRV");
+                    bytes.extend_from_slice(&sig);
+                }
+                None => {
+                    eprintln!("error: cannot attest {}", out.display());
+                    exit(2);
+                }
+            }
+        }
         if let Err(e) = std::fs::write(&out, &bytes) {
             eprintln!("error: cannot write {}: {e}", out.display());
             exit(2);
@@ -114,6 +138,23 @@ fn build(path: &str, contracts: &[quanta_codegen::CompiledContract]) {
             println!("  event {}", event.signature);
         }
     }
+}
+
+fn provenance_seed() -> Result<Option<[u8; 32]>, String> {
+    let hex = match std::env::var("QUANTA_PROVENANCE_SEED") {
+        Ok(hex) => hex,
+        Err(_) => return Ok(None),
+    };
+    let hex = hex.trim();
+    if hex.len() != 64 {
+        return Err("QUANTA_PROVENANCE_SEED must be 64 hex characters".to_string());
+    }
+    let mut seed = [0u8; 32];
+    for (i, slot) in seed.iter_mut().enumerate() {
+        *slot = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|_| "QUANTA_PROVENANCE_SEED is not valid hex".to_string())?;
+    }
+    Ok(Some(seed))
 }
 
 fn report(path: &str, src: &str, message: &str, offset: usize) {
