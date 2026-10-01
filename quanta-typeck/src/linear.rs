@@ -136,7 +136,12 @@ fn produces_asset(value: &Expr) -> bool {
 }
 
 fn count_consumes(expr: &Expr, names: &HashMap<&str, usize>, counts: &mut [usize]) {
-    if let Expr::Call { args, .. } = expr {
+    if let Expr::Call { callee, args, .. } = expr {
+        if let Expr::Field { name, .. } = callee.as_ref() {
+            if matches!(name.text.as_str(), "get" | "contains" | "has") {
+                return;
+            }
+        }
         for arg in args {
             if let Expr::Ident(id) = arg.peel() {
                 if let Some(&i) = names.get(id.text.as_str()) {
