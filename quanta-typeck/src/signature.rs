@@ -96,6 +96,12 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if let Some(err) = forged_ownership_transfer(model, entry, &signed) {
         return Err(err);
     }
+    if (entry_moves_ledger_value(model, entry) || entry_moves_asset(entry))
+        && !entry_binds_caller(model, entry, &signed)
+        && inflow_backed_caller_moves_exceed_inflow(model, entry)
+    {
+        return Err(no_ledger_authority_error(entry));
+    }
     if entry_moves_ledger_value(model, entry)
         && !entry_binds_caller(model, entry, &signed)
         && !ledger_move_is_paid_for_by_the_caller(model, entry)
@@ -241,6 +247,50 @@ fn tainted_state_fields(
         }
     }
     out
+}
+
+fn inflow_backed_caller_moves_exceed_inflow(model: &Model, entry: &EntryDecl) -> bool {
+    let assets: HashSet<&str> = entry
+        .params
+        .iter()
+        .filter(|p| crate::model::is_asset_param(p))
+        .map(|p| p.name.text.as_str())
+        .collect();
+    if assets.is_empty() {
+        return false;
+    }
+    let backed_scalars = asset_backed_scalars(model, entry);
+    let mut moves = 0usize;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                let amount: Option<&Expr> = match callee.as_ref() {
+                    Expr::Field { name, .. }
+                        if matches!(name.text.as_str(), "credit" | "set" | "insert")
+                            && matches!(args.first(), Some(Expr::Caller { .. })) =>
+                    {
+                        args.get(1)
+                    }
+                    Expr::Ident(id)
+                        if id.text == "send_asset"
+                            && matches!(args.get(1), Some(Expr::Caller { .. })) =>
+                    {
+                        args.get(2)
+                    }
+                    _ => None,
+                };
+                if let Some(v) = amount {
+                    let backed = asset_amount_backer(v.peel(), &assets).is_some()
+                        || matches!(v.peel(), Expr::Ident(id)
+                            if backed_scalars.contains(id.text.as_str()));
+                    if backed {
+                        moves += 1;
+                    }
+                }
+            }
+        });
+    }
+    moves > assets.len()
 }
 
 fn asset_outflow_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> bool {
