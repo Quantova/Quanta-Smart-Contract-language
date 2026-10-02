@@ -78,6 +78,9 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if let Some(err) = forged_map_authority(model, entry, &params, &signed, &derived) {
         return Err(err);
     }
+    if let Some(err) = forged_guardian_authority(model, entry, &params, &signed, &derived) {
+        return Err(err);
+    }
     if let Some(err) = forged_meta_flow(model, entry) {
         return Err(err);
     }
@@ -2666,6 +2669,83 @@ fn forged_map_authority(
         }
     }
     None
+}
+
+fn is_guardian_set(model: &Model, ident: &str) -> bool {
+    model
+        .state
+        .get(ident)
+        .is_some_and(|f| f.ty.name.text == "GuardianSet")
+}
+
+fn guardian_membership_on_param(
+    model: &Model,
+    params: &HashSet<&str>,
+    signed: &HashSet<&str>,
+    derived: &HashSet<String>,
+    expr: &Expr,
+) -> Option<(String, Span)> {
+    let mut found = None;
+    walk(expr, &mut |e| {
+        if found.is_some() {
+            return;
+        }
+        if let Expr::Call { callee, args, span } = e {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if matches!(name.text.as_str(), "contains" | "has" | "get") {
+                    if let Expr::Ident(set_id) = base.as_ref() {
+                        if is_guardian_set(model, set_id.text.as_str()) {
+                            for a in args {
+                                if let Some(field) = param_field(params, signed, derived, a) {
+                                    found = Some((field, *span));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+    found
+}
+
+fn forged_guardian_authority(
+    model: &Model,
+    entry: &EntryDecl,
+    params: &HashSet<&str>,
+    signed: &HashSet<&str>,
+    derived: &HashSet<String>,
+) -> Option<TypeError> {
+    if entry_binds_caller(model, entry, signed) {
+        return None;
+    }
+    let gate = |expr: &Expr| guardian_membership_on_param(model, params, signed, derived, expr);
+    for clause in &entry.clauses {
+        if let Clause::Limits { expr, .. } | Clause::Denies { expr, .. } = clause {
+            if let Some((field, span)) = gate(expr) {
+                return Some(guardian_authority_error(&field, span));
+            }
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            if let Some((field, span)) = gate(expr) {
+                return Some(guardian_authority_error(&field, span));
+            }
+        }
+    }
+    None
+}
+
+fn guardian_authority_error(field: &str, span: Span) -> TypeError {
+    TypeError::new(
+        format!(
+            "forged authority: this entry authorises a guardian only operation by testing self \
+             declared parameter data `{field}` for membership in a GuardianSet, with no `caller` \
+             check or `signed by` binding; guardian authority must come from `caller` or a signature"
+        ),
+        span,
+    )
 }
 
 fn map_authority_error(field: &str, span: Span) -> TypeError {
