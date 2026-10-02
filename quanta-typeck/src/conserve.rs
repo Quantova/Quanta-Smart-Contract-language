@@ -4,11 +4,23 @@
 use crate::error::TypeError;
 use crate::model::Model;
 use crate::signature::has_protected_signed_authority;
-use quanta_ast::{Clause, EntryDecl, Expr, Stmt};
+use quanta_ast::{Clause, EntryDecl, Expr, Item, Stmt};
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
     for entry in &model.entries {
         check_entry(model, entry)?;
+    }
+    for item in &model.contract.items {
+        if let Item::Genesis(genesis) = item {
+            if let Some(span) = mint_call(&genesis.body) {
+                return Err(TypeError::new(
+                    "conservation: a genesis constructor cannot mint supply; create supply only \
+                     through an entry whose `mints` is gated by a signed party or quorum"
+                        .to_string(),
+                    span,
+                ));
+            }
+        }
     }
     Ok(())
 }
