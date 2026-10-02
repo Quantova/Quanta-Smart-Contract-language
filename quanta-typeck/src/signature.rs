@@ -268,18 +268,14 @@ fn inflow_backed_caller_moves_exceed_inflow(model: &Model, entry: &EntryDecl) ->
         stmt_exprs(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
                 let amount: Option<&Expr> = match callee.as_ref() {
+                    Expr::Field { name, .. } if name.text == "credit" => args.get(1),
                     Expr::Field { name, .. }
-                        if matches!(name.text.as_str(), "credit" | "set" | "insert")
+                        if matches!(name.text.as_str(), "set" | "insert")
                             && matches!(args.first(), Some(Expr::Caller { .. })) =>
                     {
                         args.get(1)
                     }
-                    Expr::Ident(id)
-                        if id.text == "send_asset"
-                            && matches!(args.get(1), Some(Expr::Caller { .. })) =>
-                    {
-                        args.get(2)
-                    }
+                    Expr::Ident(id) if id.text == "send_asset" => args.get(2),
                     _ => None,
                 };
                 if let Some(v) = amount {

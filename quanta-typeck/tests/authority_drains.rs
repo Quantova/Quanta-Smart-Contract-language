@@ -880,3 +880,14 @@ contract F6 {
 }"#
     ));
 }
+
+#[test]
+fn crediting_several_rows_each_for_one_inflow_is_refused() {
+    assert!(rejected(
+        r#"contract Split {
+  state { proceeds: Map<Q_Address, u128>; vault: Q_Asset<QTOV>; }
+  entry pay2(a: Q_Address, b: Q_Address, funds: Q_Asset<QTOV>) conserves QTOV writes(proceeds, vault) { guard in_asset == native; proceeds.credit(a, funds.amount); proceeds.credit(b, funds.amount); vault.merge(funds); }
+  entry withdraw(n: u128) conserves QTOV reads(proceeds) writes(proceeds, vault) { guard proceeds.get(caller) >= n; proceeds.debit(caller, n); send(caller, vault.split(n)); }
+}"#
+    ));
+}
