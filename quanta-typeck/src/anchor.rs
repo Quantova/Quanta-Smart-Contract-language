@@ -436,6 +436,26 @@ fn check_after_anchors(entry: &EntryDecl) -> Result<(), TypeError> {
         let Clause::After { target, from, span } = clause else {
             continue;
         };
+        match target {
+            AfterTarget::Expr(Expr::Int(_)) => {
+                return Err(TypeError::new(
+                    "an `after` gate with a bare integer compares `now` against absolute time, so \
+                     it is open from the epoch; use a duration with a unit such as `after 24 \
+                     hours from <anchor>`, or a date"
+                        .to_string(),
+                    *span,
+                ));
+            }
+            AfterTarget::Duration(_) if from.is_none() => {
+                return Err(TypeError::new(
+                    "a duration `after` gate needs a `from` anchor, otherwise it compares against \
+                     absolute time and is open from the epoch"
+                        .to_string(),
+                    *span,
+                ));
+            }
+            _ => {}
+        }
         if let AfterTarget::Expr(expr) = target {
             check_anchor_expr(expr, &params, &quorum_params, &authenticated, *span)?;
         }
