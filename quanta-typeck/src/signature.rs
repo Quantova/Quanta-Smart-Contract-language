@@ -1520,12 +1520,22 @@ fn entry_debits_the_row_it_gated_on(entry: &EntryDecl, field: &str, key: &Expr) 
             if let Expr::Call { callee, args, .. } = e {
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
                     if let Expr::Ident(m) = base.as_ref() {
-                        if m.text == field
-                            && name.text == "debit"
-                            && args.len() >= 2
-                            && expr_eq(&args[0], key)
-                        {
-                            debited = true;
+                        if args.is_empty() || !expr_eq(&args[0], key) {
+                            return;
+                        }
+                        // The row at the gated key is spent in this entry — debited, removed, or
+                        // cleared to zero — so a caller cannot replay the gate to drain again.
+                        // The spend may be on the gated map itself or, in a consume-and-forward
+                        // state machine, on another map keyed by the same gated key (e.g. a
+                        // `payout.remove(id)` that retires a proposal gated by `votes.get(id)`).
+                        let same_map = m.text == field;
+                        match name.text.as_str() {
+                            "debit" if args.len() >= 2 => debited = true,
+                            "remove" => debited = true,
+                            "set" if same_map && args.len() >= 2 && is_zero_int(&args[1]) => {
+                                debited = true
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -3820,7 +3830,7 @@ fn map_lookup_on_param(
             if let Expr::Field { base, name, .. } = callee.as_ref() {
                 if matches!(name.text.as_str(), "contains" | "get" | "has") {
                     if let Expr::Ident(map_id) = base.as_ref() {
-                        if is_addr_keyed(model, map_id.text.as_str()) {
+                        if is_lookup_keyed(model, map_id.text.as_str()) {
                             for a in args {
                                 if let Some(field) = param_field(params, signed, derived, a) {
                                     found = Some((map_id.text.clone(), field, *span, a.clone()));
@@ -3844,6 +3854,13 @@ fn is_addr_keyed(model: &Model, ident: &str) -> bool {
         }
     }
     false
+}
+
+fn is_lookup_keyed(model: &Model, ident: &str) -> bool {
+    model
+        .state
+        .get(ident)
+        .is_some_and(|f| matches!(f.ty.name.text.as_str(), "Map" | "Registry"))
 }
 
 fn is_amount_valued(model: &Model, ident: &str) -> bool {
