@@ -255,6 +255,23 @@ impl<'a> Env<'a> {
                     AssignOp::Set => compatible(slot, given),
                     AssignOp::Add | AssignOp::Sub => numeric(slot) && numeric(given),
                 };
+                if let Expr::Ident(id) = target {
+                    let narrow = self
+                        .model
+                        .state
+                        .get(id.text.as_str())
+                        .and_then(|field| narrow_max(&field.ty.name.text));
+                    if narrow.is_some() && matches!(value, Expr::Wrapping { .. }) {
+                        return Err(TypeError::new(
+                            format!(
+                                "`wrapping` on the narrow field `{}` reverts at its maximum rather \
+                                 than wrapping; widen the field to u64 or mask the value explicitly",
+                                id.text
+                            ),
+                            value.span(),
+                        ));
+                    }
+                }
                 if let (Expr::Ident(id), Expr::Int(lit)) = (target, value) {
                     let max = self
                         .model
@@ -856,7 +873,7 @@ mod tests {
 
     #[test]
     fn an_explicit_wrapping_addition_is_accepted() {
-        let src = "contract C { state { counter: u8; } \
+        let src = "contract C { state { counter: u64; } \
                    entry bump(order: BumpOrder) writes(counter) \
                    { counter = wrapping(counter + order.step); } }";
         ok(src);
