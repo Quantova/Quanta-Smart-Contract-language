@@ -38,7 +38,7 @@ fn memory_with(cc: &CompiledContract, z: u64) -> Vec<u8> {
 
 fn run(cc: &CompiledContract, z: u64) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
     let mem = memory_with(cc, z);
-    Interpreter::new(&cc.container.code, &cc.container.consts, 100_000)
+    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 100_000)
         .with_memory(&mem)
         .run()
         .map(|out| out.storage)

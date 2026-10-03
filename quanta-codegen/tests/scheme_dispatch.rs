@@ -89,7 +89,7 @@ fn ml_bump(cc: &CompiledContract, step: u64) -> (Vec<u8>, [u8; 32]) {
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let signer = signer_address(1, &pk);
     let msg = canonical_message(cc.container.entries[0].selector, &signer, 0, step);
-    let sig = ml_dsa::sign(&sk, &msg, &[], &[0u8; 32]).expect("sign");
+    let sig = ml_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     (place(cc, 1, &pk, &sig, step), signer)
 }
 
@@ -97,7 +97,8 @@ fn slh_bump(cc: &CompiledContract, step: u64) -> (Vec<u8>, [u8; 32]) {
     let (sk, pk) = slh_dsa::keygen(&[1u8; 24], &[2u8; 24], &[3u8; 24]);
     let signer = signer_address(2, &pk);
     let msg = canonical_message(cc.container.entries[0].selector, &signer, 0, step);
-    let sig = slh_dsa::sign(&sk, &msg, &[], &[4u8; 24]).expect("sign");
+    let sig =
+        slh_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[4u8; 24]).expect("sign");
     (place(cc, 2, &pk, &sig, step), signer)
 }
 
@@ -107,7 +108,7 @@ fn run(cc: &CompiledContract, owner: Option<[u8; 32]>, mem: &[u8]) -> Result<u64
         put_addr_slots(&mut storage, OWNER_SLOT, &owner);
     }
     storage.insert(slot_key(COUNT_SLOT), 10);
-    Interpreter::new(&cc.container.code, &cc.container.consts, 500_000)
+    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 500_000)
         .with_storage(storage)
         .with_memory(mem)
         .run()
@@ -153,7 +154,7 @@ fn scheme_two_does_not_use_the_module_lattice_opcode() {
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let signer = signer_address(1, &pk);
     let msg = canonical_message(cc.container.entries[0].selector, &signer, 0, 4);
-    let sig = ml_dsa::sign(&sk, &msg, &[], &[0u8; 32]).expect("sign");
+    let sig = ml_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     let mem = place(&cc, 2, &pk, &sig, 4);
     assert!(
         run(&cc, None, &mem).is_err(),
@@ -167,7 +168,7 @@ fn an_unknown_scheme_reverts() {
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let signer = signer_address(1, &pk);
     let msg = canonical_message(cc.container.entries[0].selector, &signer, 0, 4);
-    let sig = ml_dsa::sign(&sk, &msg, &[], &[0u8; 32]).expect("sign");
+    let sig = ml_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     let mem3 = place(&cc, 3, &pk, &sig, 4);
     assert_eq!(run(&cc, Some(signer), &mem3), Err(Fault::DivByZero));
     let mem99 = place(&cc, 99, &pk, &sig, 4);

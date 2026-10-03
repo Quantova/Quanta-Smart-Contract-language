@@ -41,7 +41,7 @@ fn run(src: &str, total: u64, amount: u64) -> Result<u64, Fault> {
     let mut storage = BTreeMap::new();
     storage.insert(slot_key(0), total);
 
-    Interpreter::new(&cc.container.code, &cc.container.consts, 100_000)
+    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 100_000)
         .with_storage(storage)
         .with_memory(&mem)
         .run()

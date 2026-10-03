@@ -5237,7 +5237,7 @@ mod tests {
             mem[at..at + 8].copy_from_slice(&val.to_be_bytes());
         }
 
-        let out = Interpreter::new(&code, &[], 100_000)
+        let out = Interpreter::for_system_program(&code, &[], 100_000)
             .with_storage(storage)
             .with_memory(&mem)
             .run()

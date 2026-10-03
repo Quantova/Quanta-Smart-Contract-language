@@ -128,7 +128,9 @@ mod tests {
         b.op(Instr::Add { d: 2, a: 0, b: 1 });
         b.op(Instr::Halt);
         let code = b.link().expect("link");
-        let out = Interpreter::new(&code, &[], 100).run().expect("halt");
+        let out = Interpreter::for_system_program(&code, &[], 100)
+            .run()
+            .expect("halt");
         assert_eq!(out.regs[2], 12);
     }
 
@@ -143,7 +145,9 @@ mod tests {
         b.mark(skip);
         b.op(Instr::Halt);
         let code = b.link().expect("link");
-        let out = Interpreter::new(&code, &[], 100).run().expect("halt");
+        let out = Interpreter::for_system_program(&code, &[], 100)
+            .run()
+            .expect("halt");
         assert_eq!(out.regs[1], 5);
     }
 

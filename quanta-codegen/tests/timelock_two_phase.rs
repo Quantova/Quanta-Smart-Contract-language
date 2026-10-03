@@ -67,7 +67,7 @@ fn ml_region(
 ) -> Vec<u8> {
     let addr = signer_address(SCHEME_ML, pk);
     let msg = message(selector, &addr, nonce);
-    let sig = ml_dsa::sign(sk, &msg, &[], &[0u8; 32]).expect("sign");
+    let sig = ml_dsa::sign(sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     let mut region = Vec::new();
     region.extend_from_slice(pk);
     region.extend_from_slice(&sig);

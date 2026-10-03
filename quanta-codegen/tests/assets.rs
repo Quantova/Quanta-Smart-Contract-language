@@ -51,7 +51,7 @@ fn run(
     storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
 ) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
-    Interpreter::new(&cc.container.code, &cc.container.consts, 300_000)
+    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 300_000)
         .with_storage(storage)
         .with_memory(mem)
         .run()
@@ -162,7 +162,7 @@ fn signed_mint_memory(cc: &CompiledContract, amount: u64) -> (Vec<u8>, [u8; 32])
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&amount.to_be_bytes());
     msg.extend_from_slice(&0u64.to_be_bytes());
-    let sig = ml_dsa::sign(&sk, &msg, &[], &[0u8; 32]).expect("sign");
+    let sig = ml_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
 
     let mut region = Vec::new();
     region.extend_from_slice(&pk);

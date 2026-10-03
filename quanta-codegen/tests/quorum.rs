@@ -55,7 +55,7 @@ fn message(cc: &CompiledContract, member: &[u8; 32], nonce: u64) -> Vec<u8> {
 fn ml_region(cc: &CompiledContract, pk: &[u8], sk: &ml_dsa::SecretKey, nonce: u64) -> Vec<u8> {
     let addr = signer_address(SCHEME_ML, pk);
     let msg = message(cc, &addr, nonce);
-    let sig = ml_dsa::sign(sk, &msg, &[], &[0u8; 32]).expect("sign");
+    let sig = ml_dsa::sign(sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     let mut region = Vec::new();
     region.extend_from_slice(pk);
     region.extend_from_slice(&sig);
@@ -71,7 +71,7 @@ fn slh_region(
 ) -> Vec<u8> {
     let addr = signer_address(SCHEME_SLH, pk);
     let msg = message(cc, &addr, nonce);
-    let sig = slh_dsa::sign(sk, &msg, &[], &[4u8; 24]).expect("sign");
+    let sig = slh_dsa::sign(sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[4u8; 24]).expect("sign");
     let mut region = Vec::new();
     region.extend_from_slice(pk);
     region.extend_from_slice(&sig);
@@ -120,7 +120,7 @@ fn run(
     storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
 ) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
-    Interpreter::new(&cc.container.code, &cc.container.consts, 3_000_000)
+    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 3_000_000)
         .with_storage(storage)
         .with_memory(mem)
         .run()

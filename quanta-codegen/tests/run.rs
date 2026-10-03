@@ -45,7 +45,7 @@ fn meter_advance_runs_metered_and_writes_state() {
     storage.insert(slot_key(0), 5u64);
     let mem = memory_with(&cc, 0, &[("step", 7)]);
 
-    let out = Interpreter::new(&cc.container.code, &cc.container.consts, 100_000)
+    let out = Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 100_000)
         .with_storage(storage)
         .with_memory(&mem)
         .run()
@@ -70,7 +70,7 @@ fn a_failing_guard_reverts_and_keeps_state() {
     persistent.insert(slot_key(0), 5u64);
     let mem = memory_with(&cc, 0, &[("step", 0)]);
 
-    let result = Interpreter::new(&cc.container.code, &cc.container.consts, 100_000)
+    let result = Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 100_000)
         .with_storage(persistent.clone())
         .with_memory(&mem)
         .run();

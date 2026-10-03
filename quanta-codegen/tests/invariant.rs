@@ -47,10 +47,11 @@ fn run(
     let mut storage = BTreeMap::new();
     storage.insert(slot_key(0), total);
     let mem = memory_with(cc, &[("amount", amount)]);
-    let outcome = Interpreter::new(&cc.container.code, &cc.container.consts, 100_000)
-        .with_storage(storage.clone())
-        .with_memory(&mem)
-        .run();
+    let outcome =
+        Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 100_000)
+            .with_storage(storage.clone())
+            .with_memory(&mem)
+            .run();
     match outcome {
         Ok(out) => (Ok(()), out.storage),
         Err(f) => (Err(f), storage),

@@ -130,7 +130,8 @@ fn mint_memory(
     let mint = find_entry(cc, "mint");
     let signer = signer_address(SCHEME_ML, &key.0);
     let msg = mint_message(cc, &signer, nonce, amount, to);
-    let sig = ml_dsa::sign(&key.1, &msg, &[], &[0u8; 32]).expect("sign");
+    let sig =
+        ml_dsa::sign(&key.1, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     let mut region = Vec::new();
     region.extend_from_slice(&key.0);
     region.extend_from_slice(&sig);
@@ -373,7 +374,8 @@ fn a_signed_mint_is_bound_to_its_chain_and_does_not_replay_on_another() {
     let mut msg = mint_message(&cc, &owner, 0, 100, &to);
     let tag = (u64::from_be_bytes(*b"QTVSGN01") ^ chain_a).to_be_bytes();
     msg[0..8].copy_from_slice(&tag);
-    let sig = ml_dsa::sign(&key.1, &msg, &[], &[0u8; 32]).expect("sign");
+    let sig =
+        ml_dsa::sign(&key.1, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     let mut region = Vec::new();
     region.extend_from_slice(&key.0);
     region.extend_from_slice(&sig);

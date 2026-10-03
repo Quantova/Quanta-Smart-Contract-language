@@ -54,7 +54,7 @@ fn signed_swap_memory(
     msg.extend_from_slice(to);
     msg.extend_from_slice(&out.to_be_bytes());
     msg.extend_from_slice(&0u64.to_be_bytes());
-    let sig = ml_dsa::sign(&sk, &msg, &[], &[0u8; 32]).expect("sign");
+    let sig = ml_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
 
     let mut region = Vec::new();
     region.extend_from_slice(&pk);

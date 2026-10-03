@@ -34,7 +34,7 @@ fn run(cc: &CompiledContract, v: u64) -> Result<BTreeMap<[u8; 32], u64>, Fault> 
             mem[at..at + 8].copy_from_slice(&v.to_be_bytes());
         }
     }
-    Interpreter::new(&cc.container.code, &cc.container.consts, 300_000)
+    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 300_000)
         .with_storage(storage)
         .with_memory(&mem)
         .run()

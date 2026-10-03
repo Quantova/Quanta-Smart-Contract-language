@@ -39,7 +39,7 @@ fn run_bump(
     let mut mem = vec![0u8; 128];
     mem[0..32].copy_from_slice(caller);
 
-    Interpreter::new(&cc.container.code, &cc.container.consts, 100_000)
+    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 100_000)
         .with_storage(storage)
         .with_memory(&mem)
         .run()

@@ -261,7 +261,8 @@ fn mint_memory(
         amount,
         to,
     );
-    let sig = ml_dsa::sign(&key.1, &msg, &[], &[0u8; 32]).expect("sign");
+    let sig =
+        ml_dsa::sign(&key.1, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
 
     let mut region = Vec::new();
     region.extend_from_slice(&key.0);

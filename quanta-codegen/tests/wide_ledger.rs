@@ -174,7 +174,8 @@ fn mint_memory(
     let mint = find_entry(cc, "mint");
     let signer = signer_address(SCHEME_ML, &key.0);
     let msg = mint_message(cc, &signer, nonce, amount, to);
-    let sig = ml_dsa::sign(&key.1, &msg, &[], &[0u8; 32]).expect("sign");
+    let sig =
+        ml_dsa::sign(&key.1, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     let mut region = Vec::new();
     region.extend_from_slice(&key.0);
     region.extend_from_slice(&sig);

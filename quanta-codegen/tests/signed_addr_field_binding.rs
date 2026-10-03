@@ -84,7 +84,7 @@ fn rotate_memory(
     let signer = signer_address(SCHEME_ML, pk);
     let selector = cc.container.entries[0].selector;
     let msg = canonical_message(&signer, selector, signed_newowner);
-    let sig = ml_dsa::sign(sk, &msg, &[], &[0u8; 32]).expect("sign");
+    let sig = ml_dsa::sign(sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
 
     let mut region = Vec::new();
     region.extend_from_slice(pk);
@@ -119,7 +119,7 @@ fn run(
     storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
 ) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
-    Interpreter::new(&cc.container.code, &cc.container.consts, 600_000)
+    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 600_000)
         .with_storage(storage)
         .with_memory(mem)
         .run()

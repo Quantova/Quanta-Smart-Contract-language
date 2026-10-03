@@ -104,7 +104,7 @@ fn mint_mem(
         &signed.to,
         &signed.content,
     );
-    let sig = ml_dsa::sign(sk, &msg, &[], &[0u8; 32]).expect("sign");
+    let sig = ml_dsa::sign(sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
 
     let mut region = Vec::new();
     region.extend_from_slice(pk);
@@ -311,7 +311,7 @@ fn an_order_captured_on_another_chain_does_not_verify_here() {
     let signer = signer_address(SCHEME_ML, &pk);
     let sel = entry(&cc, "mint").selector;
     let msg = message(1, sel, &signer, 0, order.id, &order.to, &order.content);
-    let sig = ml_dsa::sign(&sk, &msg, &[], &[0u8; 32]).expect("sign");
+    let sig = ml_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     let mut region = Vec::new();
     region.extend_from_slice(&pk);
     region.extend_from_slice(&sig);
