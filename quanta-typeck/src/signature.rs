@@ -3995,7 +3995,7 @@ fn is_state_address(model: &Model, expr: &Expr) -> bool {
     if map_value_addr(model, expr).is_some() {
         return true;
     }
-    matches!(expr.peel(), Expr::Ident(id) if model.state.get(id.text.as_str()).is_some_and(|f| f.ty.name.text == "Q_Address"))
+    matches!(expr.peel(), Expr::Ident(id) if model.state.get(id.text.as_str()).is_some_and(|f| f.ty.name.text == "Q_Address" || f.ty.name.text == "GuardianSet"))
 }
 
 #[cfg(test)]
