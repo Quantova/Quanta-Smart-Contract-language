@@ -4,6 +4,7 @@
 #![allow(clippy::collapsible_match)]
 #![allow(clippy::single_match)]
 #![allow(clippy::unnecessary_map_or)]
+#![allow(clippy::needless_borrows_for_generic_args)]
 
 mod access;
 mod anchor;
