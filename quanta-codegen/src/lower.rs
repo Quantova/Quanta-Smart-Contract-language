@@ -3706,7 +3706,7 @@ fn lower_send(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), CodegenErr
 const MINT_SELECTOR: u64 = 0x4d494e54;
 
 fn lower_mint_asset(ctx: &mut Ctx, args: &[Expr], span: Span) -> Result<(), CodegenError> {
-    if !ctx.entry_mints && !ctx.is_genesis {
+    if !ctx.entry_mints {
         return Err(CodegenError::Unsupported {
             what: "a mint outside an entry that declares mints".into(),
             span,
