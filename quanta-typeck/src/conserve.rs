@@ -57,7 +57,8 @@ fn mint_call(body: &[Stmt]) -> Option<quanta_lexer::Span> {
         for_each_expr(stmt, &mut |e| {
             if found.is_none() {
                 if let Expr::Call { callee, span, .. } = e {
-                    if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "mint" || id.text == "mint_asset") {
+                    if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "mint" || id.text == "mint_asset")
+                    {
                         found = Some(*span);
                     }
                 }
