@@ -99,7 +99,7 @@ fn build(path: &str, contracts: &[quanta_codegen::CompiledContract]) {
     let dir = std::path::Path::new(path)
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."));
-    let seed = match provenance_seed() {
+    let mut seed = match provenance_seed() {
         Ok(seed) => seed,
         Err(e) => {
             eprintln!("error: {e}");
@@ -110,12 +110,15 @@ fn build(path: &str, contracts: &[quanta_codegen::CompiledContract]) {
         let out = dir.join(format!("{}.qbc", cc.name));
         let mut bytes = cc.container.canonical_bytes();
         if let Some(seed) = &seed {
-            let (_, sk) = qtv_crypto::ml_dsa::keygen(seed);
-            match qtv_crypto::ml_dsa::sign_os(
+            use zeroize::Zeroize;
+            let (_, mut sk) = qtv_crypto::ml_dsa::keygen(seed);
+            let attested = qtv_crypto::ml_dsa::sign_os(
                 &sk,
                 &cc.container.identifier(),
                 b"QUANTOVA/QVM/PROVENANCE/v1",
-            ) {
+            );
+            sk.zeroize();
+            match attested {
                 Some(sig) => {
                     bytes.extend_from_slice(b"QPRV");
                     bytes.extend_from_slice(&sig);
@@ -138,6 +141,10 @@ fn build(path: &str, contracts: &[quanta_codegen::CompiledContract]) {
             println!("  event {}", event.signature);
         }
     }
+    if let Some(s) = seed.as_mut() {
+        use zeroize::Zeroize;
+        s.zeroize();
+    }
 }
 
 fn provenance_seed() -> Result<Option<[u8; 32]>, String> {
@@ -146,12 +153,14 @@ fn provenance_seed() -> Result<Option<[u8; 32]>, String> {
         Err(_) => return Ok(None),
     };
     let hex = hex.trim();
-    if hex.len() != 64 {
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err("QUANTA_PROVENANCE_SEED must be 64 hex characters".to_string());
     }
+    let bytes = hex.as_bytes();
     let mut seed = [0u8; 32];
     for (i, slot) in seed.iter_mut().enumerate() {
-        *slot = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+        let pair = std::str::from_utf8(&bytes[i * 2..i * 2 + 2]).unwrap_or("");
+        *slot = u8::from_str_radix(pair, 16)
             .map_err(|_| "QUANTA_PROVENANCE_SEED is not valid hex".to_string())?;
     }
     Ok(Some(seed))

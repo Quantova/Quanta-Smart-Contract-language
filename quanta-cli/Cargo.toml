@@ -19,3 +19,4 @@ quanta-typeck = { path = "../quanta-typeck" }
 quanta-codegen = { path = "../quanta-codegen" }
 quanta-emit = { path = "../quanta-emit" }
 qtv-crypto = { git = "https://github.com/Quantova/Q-Crypto.git", rev = "367547487c9ce07ca36293864308c117865a02ea" }
+zeroize = "1"
