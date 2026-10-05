@@ -9,6 +9,13 @@ pub struct Emit {
 }
 
 pub fn compile_json(src: &str) -> Emit {
+    compile_json_with(src, |cc| Some(cc.container.canonical_bytes()))
+}
+
+pub fn compile_json_with<F>(src: &str, artifact: F) -> Emit
+where
+    F: Fn(&CompiledContract) -> Option<Vec<u8>>,
+{
     let program = match quanta_parser::parse(src) {
         Ok(program) => program,
         Err(e) => {
@@ -25,10 +32,24 @@ pub fn compile_json(src: &str) -> Emit {
         };
     }
     match quanta_codegen::compile(&program) {
-        Ok(contracts) => Emit {
-            json: contracts_json(&contracts),
-            ok: true,
-        },
+        Ok(contracts) => {
+            let mut artifacts = Vec::with_capacity(contracts.len());
+            for cc in &contracts {
+                match artifact(cc) {
+                    Some(bytes) => artifacts.push(bytes),
+                    None => {
+                        return Emit {
+                            json: error_json(src, "cannot attest the compiled container", 0),
+                            ok: false,
+                        }
+                    }
+                }
+            }
+            Emit {
+                json: contracts_json(&contracts, &artifacts),
+                ok: true,
+            }
+        }
         Err(e) => Emit {
             json: error_json(src, &e.to_string(), e.span().start),
             ok: false,
@@ -36,7 +57,7 @@ pub fn compile_json(src: &str) -> Emit {
     }
 }
 
-fn contracts_json(contracts: &[CompiledContract]) -> String {
+fn contracts_json(contracts: &[CompiledContract], artifacts: &[Vec<u8>]) -> String {
     let mut out = String::from("{\"ok\":true,\"contracts\":[");
     for (i, cc) in contracts.iter().enumerate() {
         if i > 0 {
@@ -45,7 +66,7 @@ fn contracts_json(contracts: &[CompiledContract]) -> String {
         out.push_str("{\"name\":");
         json_str(&mut out, &cc.name);
         out.push_str(",\"container\":");
-        json_hex(&mut out, &cc.container.canonical_bytes());
+        json_hex(&mut out, &artifacts[i]);
         out.push_str(",\"entries\":[");
         for (j, entry) in cc.entries.iter().enumerate() {
             if j > 0 {

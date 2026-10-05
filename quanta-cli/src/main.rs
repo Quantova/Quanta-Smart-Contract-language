@@ -70,7 +70,21 @@ fn main() {
             }
         },
         "emit" => {
-            let emit = quanta_emit::compile_json(&src);
+            let mut seed = match provenance_seed() {
+                Ok(seed) => seed,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    exit(2);
+                }
+            };
+            let emit = match &seed {
+                Some(seed) => quanta_emit::compile_json_with(&src, |cc| attest(seed, cc)),
+                None => quanta_emit::compile_json(&src),
+            };
+            if let Some(s) = seed.as_mut() {
+                use zeroize::Zeroize;
+                s.zeroize();
+            }
             println!("{}", emit.json);
             if !emit.ok {
                 exit(1);
@@ -108,27 +122,16 @@ fn build(path: &str, contracts: &[quanta_codegen::CompiledContract]) {
     };
     for cc in contracts {
         let out = dir.join(format!("{}.qbc", cc.name));
-        let mut bytes = cc.container.canonical_bytes();
-        if let Some(seed) = &seed {
-            use zeroize::Zeroize;
-            let (_, mut sk) = qtv_crypto::ml_dsa::keygen(seed);
-            let attested = qtv_crypto::ml_dsa::sign_os(
-                &sk,
-                &cc.container.identifier(),
-                b"QUANTOVA/QVM/PROVENANCE/v1",
-            );
-            sk.zeroize();
-            match attested {
-                Some(sig) => {
-                    bytes.extend_from_slice(b"QPRV");
-                    bytes.extend_from_slice(&sig);
-                }
+        let bytes = match &seed {
+            Some(seed) => match attest(seed, cc) {
+                Some(bytes) => bytes,
                 None => {
                     eprintln!("error: cannot attest {}", out.display());
                     exit(2);
                 }
-            }
-        }
+            },
+            None => cc.container.canonical_bytes(),
+        };
         if let Err(e) = std::fs::write(&out, &bytes) {
             eprintln!("error: cannot write {}: {e}", out.display());
             exit(2);
@@ -145,6 +148,21 @@ fn build(path: &str, contracts: &[quanta_codegen::CompiledContract]) {
         use zeroize::Zeroize;
         s.zeroize();
     }
+}
+
+fn attest(seed: &[u8; 32], cc: &quanta_codegen::CompiledContract) -> Option<Vec<u8>> {
+    use zeroize::Zeroize;
+    let (_, mut sk) = qtv_crypto::ml_dsa::keygen(seed);
+    let signature = qtv_crypto::ml_dsa::sign_os(
+        &sk,
+        &cc.container.identifier(),
+        b"QUANTOVA/QVM/PROVENANCE/v1",
+    );
+    sk.zeroize();
+    let mut bytes = cc.container.canonical_bytes();
+    bytes.extend_from_slice(b"QPRV");
+    bytes.extend_from_slice(&signature?);
+    Some(bytes)
 }
 
 fn provenance_seed() -> Result<Option<[u8; 32]>, String> {
