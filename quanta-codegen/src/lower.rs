@@ -449,6 +449,15 @@ fn lower_ident(ctx: &mut Ctx, name: &str, span: Span) -> Result<Reg, CodegenErro
             span,
         });
     }
+    if ctx.layout.guardian_set(name).is_some() && !ctx.scalar_locals.contains_key(name) {
+        return Err(CodegenError::Rejected {
+            what: format!(
+                "the guardian set `{name}` read as a value; a guardian set is only named in a \
+                 quorum type or assigned whole to a guardian set field"
+            ),
+            span,
+        });
+    }
     if let Some(off) = ctx.scalar_locals.get(name).copied() {
         load_arg(ctx, off, span)
     } else if let Some(slot) = ctx.layout.slot(name) {
