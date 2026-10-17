@@ -495,6 +495,10 @@ fn lower_call_value(
     })
 }
 
+const DECLARED_ORDER_WORD_TYPES: &[&str] = &[
+    "bool", "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", "Q_Asset", "Time",
+];
+
 const SCALAR_PARAM_TYPES: &[&str] = &[
     "bool", "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", ADDR_TYPE,
     NAME_TYPE, "Q_Asset", "Quorum", "Q_Hash", "Q_Id", "Time",
@@ -1774,6 +1778,22 @@ pub fn lower_entry(
                 ctx.args.offset_of_width(&param.name.text, NAME_WINDOW);
                 ctx.args
                     .offset_of(&format!("{}{NAME_LEN_SUFFIX}", param.name.text));
+            }
+        }
+        for param in &entry.params {
+            let ty = param.ty.name.text.as_str();
+            let name = &param.name.text;
+            if ty == ADDR_TYPE {
+                if name != CALLER_KEY {
+                    ctx.args.offset_of_width(name, ADDR_BYTES);
+                }
+            } else if DECLARED_ORDER_WORD_TYPES.contains(&ty) {
+                let width = if ctx.wide_keys.contains(name) {
+                    2 * WORD
+                } else {
+                    WORD
+                };
+                ctx.args.offset_of_width(name, width);
             }
         }
         for key in &address_key_list {
