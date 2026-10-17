@@ -29,4 +29,10 @@ fn main() {
         println!("cargo:rustc-env=QUANTA_BUILD_COMMIT={id}");
     }
     println!("cargo:rerun-if-changed=../.git/HEAD");
+    println!("cargo:rerun-if-changed=../.git/index");
+    let head = std::fs::read_to_string("../.git/HEAD").unwrap_or_default();
+    if let Some(reference) = head.trim().strip_prefix("ref: ") {
+        println!("cargo:rerun-if-changed=../.git/{reference}");
+        println!("cargo:rerun-if-changed=../.git/packed-refs");
+    }
 }
