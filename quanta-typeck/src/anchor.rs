@@ -11,8 +11,171 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
     for entry in &model.entries {
         check_after_anchors(entry)?;
         check_anchor_liveness(model, entry)?;
+        check_guard_liveness(model, entry)?;
     }
     check_guard_anchors(model)
+}
+
+fn check_guard_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
+    let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
+    let gate = GateScan {
+        model,
+        entry,
+        params: &params,
+    };
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } => gate.scan(expr, true, &[])?,
+            Clause::Denies { expr, .. } => gate.scan(expr, false, &[])?,
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            gate.scan(expr, true, &[])?;
+        }
+    }
+    Ok(())
+}
+
+struct GateScan<'m, 'a> {
+    model: &'m Model<'a>,
+    entry: &'m EntryDecl,
+    params: &'m HashSet<&'m str>,
+}
+
+impl GateScan<'_, '_> {
+    fn scan(&self, expr: &Expr, holds: bool, acked: &[&Expr]) -> Result<(), TypeError> {
+        match expr {
+            Expr::Unary {
+                op: quanta_ast::UnaryOp::Not,
+                expr,
+                ..
+            } => self.scan(expr, !holds, acked),
+            Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+                self.scan(expr, holds, acked)
+            }
+            Expr::Binary {
+                op: BinOp::Or,
+                left,
+                right,
+                ..
+            } => {
+                for (side, other) in [(left, right), (right, left)] {
+                    let mut with: Vec<&Expr> = acked.to_vec();
+                    if let Some(read) = zero_test(other) {
+                        with.push(read);
+                    }
+                    self.scan(side, holds, &with)?;
+                }
+                Ok(())
+            }
+            Expr::Binary {
+                op: BinOp::And,
+                left,
+                right,
+                ..
+            } => {
+                self.scan(left, holds, acked)?;
+                self.scan(right, holds, acked)
+            }
+            Expr::Binary {
+                op: op @ (BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge),
+                left,
+                right,
+                span,
+            } => {
+                let now_left = mentions_now(left);
+                let now_right = mentions_now(right);
+                if now_left == now_right {
+                    return Ok(());
+                }
+                let greater = matches!(op, BinOp::Gt | BinOp::Ge);
+                if (now_left == greater) != holds {
+                    return Ok(());
+                }
+                let mut reads: Vec<&Expr> = Vec::new();
+                collect_anchor_reads(self.model, self.params, left, &mut reads);
+                collect_anchor_reads(self.model, self.params, right, &mut reads);
+                for read in reads {
+                    let Some(field) = anchor_field(read) else {
+                        continue;
+                    };
+                    if field_is_asset(self.model, field) || !records_time(self.model, field) {
+                        continue;
+                    }
+                    let live = read_starts_nonzero(self.model, read, field)
+                        || entry_requires_nonzero(self.entry, read)
+                        || acked.iter().any(|a| read_eq(a, read));
+                    if !live {
+                        return Err(guard_liveness_rejection(field, *span));
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+fn zero_test(expr: &Expr) -> Option<&Expr> {
+    if let Expr::Binary {
+        op: BinOp::Eq,
+        left,
+        right,
+        ..
+    } = expr
+    {
+        if is_zero(right) {
+            return Some(left);
+        }
+        if is_zero(left) {
+            return Some(right);
+        }
+    }
+    None
+}
+
+fn records_time(model: &Model, field: &str) -> bool {
+    let mut timed = false;
+    for entry in &model.entries {
+        for stmt in &entry.body {
+            match stmt {
+                Stmt::Assign { target, value, .. } => {
+                    if matches!(target, Expr::Ident(id) if id.text == field) && mentions_now(value)
+                    {
+                        timed = true;
+                    }
+                }
+                Stmt::Expr {
+                    expr: Expr::Call { callee, args, .. },
+                    ..
+                } => {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if name.text == "set"
+                            && matches!(base.as_ref(), Expr::Ident(id) if id.text == field)
+                            && args.get(1).is_some_and(mentions_now)
+                        {
+                            timed = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    timed
+}
+
+fn guard_liveness_rejection(field: &str, span: Span) -> TypeError {
+    TypeError::new(
+        format!(
+            "this gate opens once `now` passes a time read from `{field}`, which is zero until it \
+             is first recorded, so the delay is skipped on first use; require `{field}` to be \
+             nonzero in this entry, or state the first use explicitly with `{field} == 0 || ...`"
+        ),
+        span,
+    )
 }
 
 fn check_guard_anchors(model: &Model) -> Result<(), TypeError> {
@@ -654,7 +817,14 @@ mod tests {
 
     #[test]
     fn a_time_guard_on_a_recorded_or_authorized_field_is_accepted() {
-        ok(&GATED.replace("ARM", "entry arm() writes(unlock) { unlock = now; }"));
+        let recorded = GATED.replace("ARM", "entry arm() writes(unlock) { unlock = now; }");
+        assert!(error_for(&recorded).contains("zero until it is first recorded"));
+        ok(&recorded.replace("{ guard now >=", "{ guard unlock > 0; guard now >="));
+        ok(&recorded.replace("{ guard now >=", "{ guard unlock == 0 || now >="));
+        ok(&recorded.replace(
+            "{ guard now >= unlock + 86400;",
+            "denies now < unlock + 86400 || unlock == 0 {",
+        ));
         ok(&GATED.replace(
             "ARM",
             "entry arm(order: ArmOrder signed by owner) writes(unlock) { unlock = order.at; }",

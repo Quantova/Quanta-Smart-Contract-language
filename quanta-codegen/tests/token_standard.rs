@@ -103,11 +103,13 @@ fn mint_message(
     to: &[u8; 32],
 ) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN01");
+    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector_of(cc, "mint")) as u64).to_be_bytes());
     msg.extend_from_slice(member);
     msg.extend_from_slice(&nonce.to_be_bytes());
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&amount.to_be_bytes());
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(to);

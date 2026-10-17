@@ -50,7 +50,10 @@ fn window(label: &[u8]) -> [u8; 32] {
 }
 
 fn expected_key(win: &[u8; 32], len: u64) -> [u8; 32] {
-    let name_key = sha3_256(&win[..len as usize]);
+    let mut input = b"QTVNAME1".to_vec();
+    input.extend_from_slice(&len.to_be_bytes());
+    input.extend_from_slice(&win[..len as usize]);
+    let name_key = sha3_256(&input);
     map_key(OWNER_OF_BASE, &name_key)
 }
 

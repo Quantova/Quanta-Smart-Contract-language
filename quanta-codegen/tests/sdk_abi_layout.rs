@@ -230,13 +230,14 @@ fn canonical_order_message(
     amount: u128,
     to: &[u8; 32],
 ) -> Vec<u8> {
-    let tag = u64::from_be_bytes(*b"QTVSGN01") ^ chain_id;
     let mut msg = Vec::new();
-    msg.extend_from_slice(&tag.to_be_bytes());
+    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(&chain_id.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(sel) as u64).to_be_bytes());
     msg.extend_from_slice(signer);
     msg.extend_from_slice(&nonce.to_be_bytes());
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&(amount as u64).to_be_bytes());
     msg.extend_from_slice(&((amount >> 64) as u64).to_be_bytes());
     msg.extend_from_slice(to);

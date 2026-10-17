@@ -60,7 +60,10 @@ fn window(label: &[u8]) -> [u8; 32] {
 }
 
 fn name_key(label: &[u8]) -> [u8; 32] {
-    sha3_256(label)
+    let mut input = b"QTVNAME1".to_vec();
+    input.extend_from_slice(&(label.len() as u64).to_be_bytes());
+    input.extend_from_slice(label);
+    sha3_256(&input)
 }
 
 fn put_map_addr(

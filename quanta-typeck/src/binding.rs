@@ -21,6 +21,7 @@ struct Authorized<'a> {
     quorum: HashSet<&'a str>,
     asset: HashSet<&'a str>,
     guardian: HashSet<&'a str>,
+    names: HashSet<&'a str>,
     has_quorum: bool,
 }
 
@@ -73,6 +74,9 @@ impl<'a> Authorized<'a> {
         if self.guardian.contains(name) {
             return self.guardian_ok(name, span);
         }
+        if self.has_quorum && self.names.contains(name) {
+            return None;
+        }
         Some(TypeError::new(
             format!(
                 "authorized entry reads parameter `{name}`, whose value no signature binds; carry it \
@@ -100,6 +104,7 @@ fn kind_sets<'a>(entry: &'a EntryDecl) -> Authorized<'a> {
     let mut quorum = HashSet::new();
     let mut asset = HashSet::new();
     let mut guardian = HashSet::new();
+    let mut names = HashSet::new();
     for p in &entry.params {
         let name = p.name.text.as_str();
         params.insert(name);
@@ -115,6 +120,9 @@ fn kind_sets<'a>(entry: &'a EntryDecl) -> Authorized<'a> {
         if p.ty.name.text == GUARDIAN_SET {
             guardian.insert(name);
         }
+        if p.ty.name.text == "Q_Name" {
+            names.insert(name);
+        }
     }
     let has_quorum = !quorum.is_empty();
     Authorized {
@@ -123,6 +131,7 @@ fn kind_sets<'a>(entry: &'a EntryDecl) -> Authorized<'a> {
         quorum,
         asset,
         guardian,
+        names,
         has_quorum,
     }
 }

@@ -14,7 +14,7 @@ contract QNS {
     meta expiry_of: Map<Q_Address, u64>;
     owner_of: Map<Q_Address, Q_Address>;
     resolved_of: Map<Q_Address, Q_Address>;
-    primary_of: Map<Q_Address, Q_Address>;
+    primary_of: Map<Q_Address, Q_Name>;
     meta reserved: Map<Q_Address, u64>;
   }
   genesis {
@@ -69,6 +69,7 @@ contract QNS {
     guard years >= 1;
     guard label.len >= 3;
     guard reserved.get(label) == 0;
+    guard expiry_of.get(label) > 0;
     guard now >= expiry_of.get(label) + grace_period;
     guard now < expiry_of.get(label) + grace_period + auction_duration;
     guard interval > 0;
@@ -79,17 +80,17 @@ contract QNS {
     vault.merge(payment);
     emit PremiumClaimed(label, caller, now + years * 31536000, years);
   }
-  entry reserve(order: NameReservation, approvals: Quorum<4 of 7, guardians>)
+  entry reserve(label: Q_Name, approvals: Quorum<4 of 7, guardians>)
     writes(reserved)
   {
-    reserved.set(order.name, 1);
-    emit Reserved(order.name);
+    reserved.set(label, 1);
+    emit Reserved(label);
   }
-  entry release(order: NameReservation, approvals: Quorum<4 of 7, guardians>)
+  entry release(label: Q_Name, approvals: Quorum<4 of 7, guardians>)
     writes(reserved)
   {
-    reserved.set(order.name, 0);
-    emit Released(order.name);
+    reserved.set(label, 0);
+    emit Released(label);
   }
   entry set_resolved(label: Q_Name, target: Q_Address)
     reads(owner_of, expiry_of)
@@ -128,13 +129,13 @@ contract QNS {
     send(order.to, out);
     emit Swept(order.to, order.amount);
   }
-  event Registered(name: Q_Address, owner: Q_Address, expiry: u64, term: u64);
-  event Renewed(name: Q_Address, expiry: u64, term: u64);
-  event PremiumClaimed(name: Q_Address, owner: Q_Address, expiry: u64, term: u64);
-  event Reserved(name: Q_Address);
-  event Released(name: Q_Address);
-  event Resolved(name: Q_Address, owner: Q_Address, target: Q_Address);
-  event PrimarySet(owner: Q_Address, name: Q_Address);
-  event Transferred(name: Q_Address, prior: Q_Address, to: Q_Address);
+  event Registered(name: Q_Name, owner: Q_Address, expiry: u64, term: u64);
+  event Renewed(name: Q_Name, expiry: u64, term: u64);
+  event PremiumClaimed(name: Q_Name, owner: Q_Address, expiry: u64, term: u64);
+  event Reserved(name: Q_Name);
+  event Released(name: Q_Name);
+  event Resolved(name: Q_Name, owner: Q_Address, target: Q_Address);
+  event PrimarySet(owner: Q_Address, name: Q_Name);
+  event Transferred(name: Q_Name, prior: Q_Address, to: Q_Address);
   event Swept(to: Q_Address, amount: u128);
 }

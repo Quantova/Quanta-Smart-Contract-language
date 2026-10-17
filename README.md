@@ -25,6 +25,12 @@ The static checker runs a fixed sequence of passes over each contract and return
 
 The code generator lowers a type checked contract to the register machine bytecode of the QVM and packs it into a container with an embedded interface descriptor. Selectors follow SPEC-cid and the container layout follows SPEC-container in the Quantova-Specs repository. The emit crate turns the whole result into one JSON document that carries each contract's container bytes as hex together with the interface a caller needs, every entry with its selector and argument layout and every event with its selector. The command line tool and the browser compiler drive this one path, so the container the editor shows is byte for byte the container the command line produces and the QVM runs.
 
+## Signed orders and provenance
+
+A parameter signed by an owner or a quorum is checked against a fixed message. It opens with the tag QTVSGN02 and then carries the chain id word that the contract copies from the machine context, the contract id, the selector word, the signer address, the signer nonce, an expiry in unix seconds and the signed fields. The caller supplies the expiry at the argument slot that emit reports as the parameter name followed by #expiry, and the contract refuses the call once the block time passes it.
+
+When the environment variable QUANTA_PROVENANCE_KEY_FILE names a file that only its owner can read and that holds exactly 64 hex characters, build and emit append a provenance record to each container. The record is the marker QPV2, a compiler id that hashes the compiler version and build commit, the SHA3 hash of the exact source file and an ML DSA signature over the container identifier, the compiler id and the source hash under the context QUANTOVA/QVM/PROVENANCE/v2. The record shows which key holder admitted a container. It is an allow list and does not by itself prove that the container came from checked source, which reviewers confirm by recompiling the published source and comparing the bytes.
+
 ## Post quantum with no escape hatch
 
 The QVM exposes only post quantum cryptographic opcodes, and the code generator has no path to a classical one. The cryptographic instructions are the SHA3 hash, the ML DSA verify, the SLH DSA verify, and the Merkle verify. A test classifies every machine opcode with an exhaustive match that has no wildcard and no classical arm, so a future opcode cannot pass as classical without failing the build, and the opcodes emitted over a corpus of contracts are checked to be post quantum only.

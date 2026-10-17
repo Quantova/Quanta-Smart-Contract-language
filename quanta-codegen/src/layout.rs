@@ -10,6 +10,7 @@ const KEYED_BASE: u64 = 1 << 40;
 const KEYED_STRIDE: u64 = 1 << 32;
 const WIDE_TYPE: &str = "u128";
 const ADDR_TYPE: &str = "Q_Address";
+const NAME_TYPE: &str = "Q_Name";
 const ID_TYPE: &str = "Q_Id";
 pub const ADDR_WORDS: u64 = 4;
 const GUARDIAN_SET_TYPE: &str = "GuardianSet";
@@ -81,7 +82,8 @@ impl Layout {
                         }
                         if matches!(
                             field.ty.args.get(1),
-                            Some(quanta_ast::GenericArg::Type(t)) if t.name.text == ADDR_TYPE
+                            Some(quanta_ast::GenericArg::Type(t))
+                                if t.name.text == ADDR_TYPE || t.name.text == NAME_TYPE
                         ) {
                             map_value_addr.insert(field.name.text.clone());
                         }

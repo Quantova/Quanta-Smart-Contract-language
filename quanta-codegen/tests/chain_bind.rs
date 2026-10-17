@@ -26,7 +26,8 @@ const CONTRACT_CTX_OFF: usize = 32;
 const REGION_OFF: u64 = 8192;
 const SCHEME_ML: u8 = 1;
 const CONTRACT: [u8; 32] = [0x33; 32];
-const SIGNED_MSG_TAG: u64 = u64::from_be_bytes(*b"QTVSGN01");
+const SIGNED_MSG_TAG: &[u8; 8] = b"QTVSGN02";
+const TIME_CTX_OFF: usize = 64;
 
 const CHAIN_A: u64 = 42;
 const CHAIN_B: u64 = 99;
@@ -56,20 +57,36 @@ fn canonical_message(
     selector: [u8; 4],
     signer: &[u8; 32],
     nonce: u64,
+    expiry: u64,
     fields: &[u64],
 ) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(&(SIGNED_MSG_TAG ^ chain).to_be_bytes());
+    msg.extend_from_slice(SIGNED_MSG_TAG);
+    msg.extend_from_slice(&chain.to_be_bytes());
     msg.extend_from_slice(contract);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
     msg.extend_from_slice(signer);
     msg.extend_from_slice(&nonce.to_be_bytes());
+    msg.extend_from_slice(&expiry.to_be_bytes());
     for f in fields {
         msg.extend_from_slice(&f.to_be_bytes());
     }
     msg
 }
 
+struct Timing {
+    now: u64,
+    signed_expiry: u64,
+    arg_expiry: u64,
+}
+
+const OPEN: Timing = Timing {
+    now: 0,
+    signed_expiry: 0,
+    arg_expiry: 0,
+};
+
+#[allow(clippy::too_many_arguments)]
 fn bump_memory(
     cc: &CompiledContract,
     pk: &[u8],
@@ -78,10 +95,19 @@ fn bump_memory(
     run_chain: u64,
     step: u64,
     nonce: u64,
+    timing: Timing,
 ) -> Vec<u8> {
     let signer = signer_address(SCHEME_ML, pk);
     let selector = cc.container.entries[0].selector;
-    let msg = canonical_message(signed_chain, &CONTRACT, selector, &signer, nonce, &[step]);
+    let msg = canonical_message(
+        signed_chain,
+        &CONTRACT,
+        selector,
+        &signer,
+        nonce,
+        timing.signed_expiry,
+        &[step],
+    );
     let sig = ml_dsa::sign(sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
 
     let mut region = Vec::new();
@@ -92,6 +118,8 @@ fn bump_memory(
     let mut mem = vec![0u8; REGION_OFF as usize + region.len()];
     mem[CONTRACT_CTX_OFF..CONTRACT_CTX_OFF + 32].copy_from_slice(&CONTRACT);
     put_word(&mut mem, arg_offset(cc, "@chain"), run_chain);
+    put_word(&mut mem, TIME_CTX_OFF, timing.now);
+    put_word(&mut mem, arg_offset(cc, "order#expiry"), timing.arg_expiry);
     put_word(&mut mem, arg_offset(cc, "order#scheme"), SCHEME_ML as u64);
     put_word(&mut mem, arg_offset(cc, "order#ptr"), REGION_OFF);
     put_word(&mut mem, arg_offset(cc, "order.step"), step);
@@ -118,35 +146,42 @@ fn run(
         .map(|out| out.storage)
 }
 
-const PINNED_ORDER_PREIMAGE: [u8; 96] = [
-    0x50, 0x77, 0x13, 0x34, 0xce, 0xe5, 0xfd, 0xde, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
+const PINNED_ORDER_PREIMAGE: [u8; 112] = [
+    0x51, 0x54, 0x56, 0x53, 0x47, 0x4e, 0x30, 0x32, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
     0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
-    0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x00, 0x00, 0x00, 0x00, 0x6c, 0xad, 0x12, 0xfc,
+    0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
+    0x00, 0x00, 0x00, 0x00, 0x6c, 0xad, 0x12, 0xfc, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
     0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
-    0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2a,
+    0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07,
+    0x00, 0x00, 0x00, 0x00, 0x71, 0x3f, 0xb3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2a,
 ];
 
 #[test]
-fn the_order_preimage_matches_the_pinned_chain_bound_vector() {
+fn the_order_preimage_matches_the_pinned_vector() {
     let preimage = canonical_message(
         0x0123_4567_89AB_CDEF,
         &[0x33; 32],
         [0x6c, 0xad, 0x12, 0xfc],
         &[0x11; 32],
         7,
+        1_900_000_000,
         &[42],
     );
     assert_eq!(
         preimage.len(),
-        96,
-        "tag 8, contract 32, selector 8, signer 32, nonce 8, field 8"
+        112,
+        "tag 8, chain 8, contract 32, selector 8, signer 32, nonce 8, expiry 8, field 8"
     );
     assert_eq!(preimage.as_slice(), PINNED_ORDER_PREIMAGE.as_slice());
     assert_eq!(
         &preimage[..8],
-        &(SIGNED_MSG_TAG ^ 0x0123_4567_89AB_CDEF).to_be_bytes(),
-        "the leading word is the domain tag xored with the chain id"
+        SIGNED_MSG_TAG,
+        "the leading word is the fixed tag"
+    );
+    assert_eq!(
+        &preimage[8..16],
+        &0x0123_4567_89AB_CDEFu64.to_be_bytes(),
+        "the chain id is its own word"
     );
 }
 
@@ -156,7 +191,7 @@ fn a_signature_bound_to_a_chain_is_accepted_on_it() {
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let owner = signer_address(SCHEME_ML, &pk);
 
-    let mem = bump_memory(&cc, &pk, &sk, CHAIN_A, CHAIN_A, 4, 0);
+    let mem = bump_memory(&cc, &pk, &sk, CHAIN_A, CHAIN_A, 4, 0, OPEN);
     let out = run(&cc, owned_storage(&owner, 10), &mem)
         .expect("the owner's signature is accepted on its own chain");
     assert_eq!(
@@ -177,7 +212,7 @@ fn the_same_signature_does_not_verify_under_a_different_chain() {
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let owner = signer_address(SCHEME_ML, &pk);
 
-    let mem = bump_memory(&cc, &pk, &sk, CHAIN_A, CHAIN_B, 4, 0);
+    let mem = bump_memory(&cc, &pk, &sk, CHAIN_A, CHAIN_B, 4, 0, OPEN);
     let storage = owned_storage(&owner, 10);
     assert_eq!(
         run(&cc, storage.clone(), &mem),

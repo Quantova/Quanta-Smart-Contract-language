@@ -23,6 +23,7 @@ const OPENED_SLOT: u64 = 5;
 const CONTRACT: [u8; 32] = [0x44; 32];
 const SCHEME_ML: u8 = 1;
 const GAS: u64 = 3_000_000;
+const EXPIRY: u64 = u64::MAX;
 
 fn compile(src: &str) -> CompiledContract {
     let program = quanta_parser::parse(src).expect("parse");
@@ -51,11 +52,13 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
 
 fn message(selector: [u8; SELECTOR_BYTES], member: &[u8; 32], nonce: u64) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN01");
+    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
     msg.extend_from_slice(member);
     msg.extend_from_slice(&nonce.to_be_bytes());
+    msg.extend_from_slice(&EXPIRY.to_be_bytes());
     msg
 }
 
@@ -79,6 +82,7 @@ fn call(e: &EntryArtifact, region: Vec<u8>, now: u64) -> Vec<u8> {
     let mut mem = vec![0u8; 65536];
     mem[arg_offset(e, "@contract")..arg_offset(e, "@contract") + 32].copy_from_slice(&CONTRACT);
     put_word(&mut mem, arg_offset(e, "@time"), now);
+    put_word(&mut mem, arg_offset(e, "approvals#expiry"), EXPIRY);
     let off = 8192usize;
     mem[off..off + region.len()].copy_from_slice(&region);
     put_word(

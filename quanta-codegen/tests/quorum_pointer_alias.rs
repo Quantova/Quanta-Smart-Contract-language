@@ -21,7 +21,7 @@ const CONTRACT: [u8; 32] = [0x44; 32];
 const SCHEME_ML: u8 = 1;
 
 const SIGNER_ADDR_SCRATCH: u64 = 40960;
-const MSG_FIELDS_OFF: u64 = 88;
+const MSG_FIELDS_OFF: u64 = 104;
 
 fn compile(src: &str) -> CompiledContract {
     let program = quanta_parser::parse(src).expect("parse");
@@ -50,11 +50,13 @@ fn message(
 ) -> Vec<u8> {
     let selector = cc.container.entries[0].selector;
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN01");
+    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
     msg.extend_from_slice(member);
     msg.extend_from_slice(&nonce.to_be_bytes());
+    msg.extend_from_slice(&0u64.to_be_bytes());
     for addr in new_board {
         msg.extend_from_slice(addr);
     }

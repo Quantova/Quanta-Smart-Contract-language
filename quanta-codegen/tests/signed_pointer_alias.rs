@@ -25,7 +25,7 @@ const SCHEME_SLH: u8 = 2;
 const CONTRACT: [u8; 32] = [0x33; 32];
 
 const SIGNER_ADDR_SCRATCH: u64 = 40960;
-const MSG_FIELDS_OFF: u64 = 88;
+const MSG_FIELDS_OFF: u64 = 104;
 const NONCE_DIGEST_SCRATCH: u64 = 41216;
 
 fn compile(src: &str) -> CompiledContract {
@@ -54,11 +54,13 @@ fn canonical_message(
     target: &[u8; 32],
 ) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN01");
+    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
     msg.extend_from_slice(signer);
     msg.extend_from_slice(&nonce.to_be_bytes());
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(target);
     msg
 }

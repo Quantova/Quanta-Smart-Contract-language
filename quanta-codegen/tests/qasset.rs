@@ -109,11 +109,13 @@ fn mint_message(
     to: &[u8; 32],
 ) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN01");
+    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector_of(cc, "mint")) as u64).to_be_bytes());
     msg.extend_from_slice(owner);
     msg.extend_from_slice(&nonce.to_be_bytes());
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&amount.to_be_bytes());
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(to);
@@ -372,8 +374,7 @@ fn a_signed_mint_is_bound_to_its_chain_and_does_not_replay_on_another() {
     let mint_sel = selector_of(&cc, "mint");
 
     let mut msg = mint_message(&cc, &owner, 0, 100, &to);
-    let tag = (u64::from_be_bytes(*b"QTVSGN01") ^ chain_a).to_be_bytes();
-    msg[0..8].copy_from_slice(&tag);
+    msg[8..16].copy_from_slice(&chain_a.to_be_bytes());
     let sig =
         ml_dsa::sign(&key.1, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     let mut region = Vec::new();

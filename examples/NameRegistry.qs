@@ -1,4 +1,3 @@
-import { Q_Sig } from "quantova/primitives";
 import { Registry, Map } from "quantova/stdlib";
 contract NameRegistry {
   state {
@@ -9,20 +8,22 @@ contract NameRegistry {
   genesis {
     admin = deployer;
   }
-  entry register(claim: NameClaim signed by admin)
+  entry register(name: Q_Name, owner: Q_Address)
     writes(names, owners)
-    denies names.contains(claim.name)
+    denies names.contains(name)
   {
-    names.insert(claim.name);
-    owners.set(claim.name, claim.owner);
-    emit Registered(claim.name, claim.owner);
+    guard caller == admin;
+    names.insert(name);
+    owners.set(name, owner);
+    emit Registered(name, owner);
   }
-  entry release_name(order: ReleaseName signed by admin)
+  entry release_name(name: Q_Name)
     writes(names, owners)
-    denies !names.contains(order.name)
+    denies !names.contains(name)
   {
-    names.remove(order.name);
-    emit ReleasedName(order.name);
+    guard caller == admin;
+    names.remove(name);
+    emit ReleasedName(name);
   }
   event Registered(name: Q_Name, owner: Q_Address);
   event ReleasedName(name: Q_Name);

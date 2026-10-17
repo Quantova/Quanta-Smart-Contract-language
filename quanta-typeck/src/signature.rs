@@ -2678,8 +2678,11 @@ fn forged_map_authority(
     signed: &HashSet<&str>,
     derived: &HashSet<String>,
 ) -> Option<TypeError> {
-    if !entry_moves_value(model, entry) || entry_binds_caller(model, entry, signed) {
+    if entry_binds_caller(model, entry, signed) {
         return None;
+    }
+    if !entry_moves_value(model, entry) {
+        return forged_lookup_permission(model, entry, params, signed, derived);
     }
     let gate_expr = |expr: &Expr| {
         map_lookup_on_param(model, params, signed, derived, expr)
@@ -2701,6 +2704,176 @@ fn forged_map_authority(
         }
     }
     None
+}
+
+fn entry_writes_any_state(model: &Model, entry: &EntryDecl) -> bool {
+    model
+        .state
+        .keys()
+        .any(|field| entry_writes_field(entry, field))
+}
+
+fn forged_lookup_permission(
+    model: &Model,
+    entry: &EntryDecl,
+    params: &HashSet<&str>,
+    signed: &HashSet<&str>,
+    derived: &HashSet<String>,
+) -> Option<TypeError> {
+    if !entry_writes_any_state(model, entry) {
+        return None;
+    }
+    let scan = PermissionScan {
+        model,
+        params,
+        signed,
+        derived,
+    };
+    for clause in &entry.clauses {
+        let found = match clause {
+            Clause::Limits { expr, .. } => scan.find(expr, true),
+            Clause::Denies { expr, .. } => scan.find(expr, false),
+            _ => None,
+        };
+        if let Some((field, span)) = found {
+            return Some(permission_lookup_error(&field, span));
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            if let Some((field, span)) = scan.find(expr, true) {
+                return Some(permission_lookup_error(&field, span));
+            }
+        }
+    }
+    None
+}
+
+struct PermissionScan<'m, 'a> {
+    model: &'m Model<'a>,
+    params: &'m HashSet<&'m str>,
+    signed: &'m HashSet<&'m str>,
+    derived: &'m HashSet<String>,
+}
+
+impl PermissionScan<'_, '_> {
+    fn lookup(&self, expr: &Expr) -> Option<(String, Span)> {
+        let Expr::Call { callee, args, span } = expr.peel() else {
+            return None;
+        };
+        let Expr::Field { base, name, .. } = callee.as_ref() else {
+            return None;
+        };
+        if !matches!(name.text.as_str(), "contains" | "get" | "has") {
+            return None;
+        }
+        let Expr::Ident(map_id) = base.as_ref() else {
+            return None;
+        };
+        let map = map_id.text.as_str();
+        if !is_lookup_keyed(self.model, map) || !authority_anchor_protected(self.model, map) {
+            return None;
+        }
+        args.iter()
+            .find_map(|a| param_field(self.params, self.signed, self.derived, a))
+            .map(|field| (field, *span))
+    }
+
+    fn signed_lookups(&self, expr: &Expr, sign: i8, out: &mut Vec<(String, Span, i8)>) {
+        if let Some((field, span)) = self.lookup(expr) {
+            out.push((field, span, sign));
+            return;
+        }
+        match expr {
+            Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+                self.signed_lookups(expr, sign, out)
+            }
+            Expr::Unary {
+                op: UnaryOp::Neg,
+                expr,
+                ..
+            } => self.signed_lookups(expr, -sign, out),
+            Expr::Binary {
+                op, left, right, ..
+            } => {
+                let right_sign = match op {
+                    BinOp::Add | BinOp::Mul => sign,
+                    BinOp::Sub | BinOp::Div | BinOp::Shr => -sign,
+                    _ => 0,
+                };
+                let left_sign = match op {
+                    BinOp::Add | BinOp::Mul | BinOp::Sub | BinOp::Div | BinOp::Shr => sign,
+                    _ => 0,
+                };
+                self.signed_lookups(left, left_sign, out);
+                self.signed_lookups(right, right_sign, out);
+            }
+            _ => {}
+        }
+    }
+
+    fn find(&self, expr: &Expr, holds: bool) -> Option<(String, Span)> {
+        if let Some(found) = self.lookup(expr) {
+            return holds.then_some(found);
+        }
+        match expr {
+            Expr::Unary {
+                op: UnaryOp::Not,
+                expr,
+                ..
+            } => self.find(expr, !holds),
+            Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => self.find(expr, holds),
+            Expr::Binary {
+                op: BinOp::And | BinOp::Or,
+                left,
+                right,
+                ..
+            } => self.find(left, holds).or_else(|| self.find(right, holds)),
+            Expr::Binary {
+                op, left, right, ..
+            } => {
+                let mut sides: Vec<(String, Span, i8, bool)> = Vec::new();
+                let mut found = Vec::new();
+                self.signed_lookups(left, 1, &mut found);
+                sides.extend(found.drain(..).map(|(f, s, g)| (f, s, g, true)));
+                self.signed_lookups(right, 1, &mut found);
+                sides.extend(found.drain(..).map(|(f, s, g)| (f, s, g, false)));
+                for (field, span, sign, on_left) in sides {
+                    let direct = if on_left { left } else { right };
+                    let other = if on_left { right } else { left };
+                    let is_direct = self.lookup(direct).is_some();
+                    let presence_helps = match op {
+                        BinOp::Eq => !(is_direct && is_zero_int(other)),
+                        BinOp::Ne => {
+                            !(is_direct
+                                && matches!(other.peel(), Expr::Int(_))
+                                && !is_zero_int(other))
+                        }
+                        BinOp::Gt | BinOp::Ge => sign == 0 || ((sign > 0) == on_left),
+                        BinOp::Lt | BinOp::Le => sign == 0 || ((sign > 0) != on_left),
+                        _ => true,
+                    };
+                    if presence_helps == holds {
+                        return Some((field, span));
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
+fn permission_lookup_error(field: &str, span: Span) -> TypeError {
+    TypeError::new(
+        format!(
+            "forged authority: this entry writes state gated by looking up self declared parameter \
+             data `{field}` in a map that only authorized entries write, so a caller passes by \
+             naming any key already granted; authority must come from `caller` or a signature, \
+             and a check that a key is absent is a restriction and stays allowed"
+        ),
+        span,
+    )
 }
 
 fn is_guardian_set(model: &Model, ident: &str) -> bool {

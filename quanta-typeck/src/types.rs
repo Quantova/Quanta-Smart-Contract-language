@@ -18,12 +18,14 @@ enum Ty {
     Name,
     Time,
     Str,
+    Collection,
     Unknown,
 }
 
 struct Env<'a> {
     model: &'a Model<'a>,
     params: HashMap<&'a str, Ty>,
+    locals: std::cell::RefCell<HashMap<String, Ty>>,
 }
 
 const MAX_GUARDIAN_SET: u64 = 256;
@@ -65,8 +67,8 @@ fn storable(ty: &Type) -> Result<(), TypeError> {
                 };
                 let is_key = index == 0;
                 let fits = match ty_of_decl(inner) {
-                    Ty::Name => is_key,
-                    Ty::Unknown | Ty::Asset | Ty::Str => false,
+                    Ty::Name => is_key || keyed == "Map",
+                    Ty::Unknown | Ty::Asset | Ty::Str | Ty::Collection => false,
                     _ => inner.args.is_empty(),
                 };
                 if !fits {
@@ -103,10 +105,7 @@ fn type_text(ty: &Type) -> String {
 }
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
-    let defaults = Env {
-        model,
-        params: HashMap::new(),
-    };
+    let defaults = Env::new(model, HashMap::new());
     for item in &model.contract.items {
         if let Item::State(block) = item {
             for field in &block.fields {
@@ -142,22 +141,17 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
     }
     for item in &model.contract.items {
         if let Item::Invariant(inv) = item {
-            let env = Env {
-                model,
-                params: HashMap::new(),
-            };
+            let env = Env::new(model, HashMap::new());
             env.expect_predicate(&inv.expr)?;
         }
     }
     for entry in &model.entries {
         check_entry(model, entry)?;
     }
+    check_key_kinds(model)?;
     for item in &model.contract.items {
         if let Item::Genesis(genesis) = item {
-            let env = Env {
-                model,
-                params: HashMap::new(),
-            };
+            let env = Env::new(model, HashMap::new());
             for stmt in &genesis.body {
                 env.check_stmt_types(stmt)?;
                 asset_calls_consumed(stmt)?;
@@ -255,7 +249,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     for param in &entry.params {
         params.insert(param.name.text.as_str(), ty_of_decl(&param.ty));
     }
-    let env = Env { model, params };
+    let env = Env::new(model, params);
 
     for clause in &entry.clauses {
         match clause {
@@ -268,8 +262,15 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     for stmt in &entry.body {
         match stmt {
             Stmt::Guard { expr, .. } => env.expect_predicate(expr)?,
-            Stmt::Let { value, .. } => {
-                env.ty_of(value)?;
+            Stmt::Let { name, value, .. } => {
+                let ty = env.ty_of(value)?;
+                if ty == Ty::Collection {
+                    return Err(TypeError::new(
+                        "a map, registry or guardian set cannot be bound to a local",
+                        value.span(),
+                    ));
+                }
+                env.locals.borrow_mut().insert(name.text.clone(), ty);
             }
             Stmt::Assign { .. } | Stmt::Expr { .. } => {
                 env.check_stmt_types(stmt)?;
@@ -277,10 +278,11 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
                     env.refuse_name_recipient(expr)?;
                 }
             }
-            Stmt::Emit { args, .. } => {
+            Stmt::Emit { name, args, .. } => {
                 for arg in args {
                     env.ty_of(arg)?;
                 }
+                env.check_emit_fields(&name.text, args)?;
             }
         }
     }
@@ -306,6 +308,56 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
 }
 
 impl<'a> Env<'a> {
+    fn new(model: &'a Model<'a>, params: HashMap<&'a str, Ty>) -> Env<'a> {
+        Env {
+            model,
+            params,
+            locals: std::cell::RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn is_name_param(&self, expr: &Expr) -> bool {
+        matches!(expr, Expr::Ident(id) if self.params.get(id.text.as_str()) == Some(&Ty::Name))
+    }
+
+    fn check_emit_fields(&self, event: &str, args: &[Expr]) -> Result<(), TypeError> {
+        let declared = self
+            .model
+            .contract
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Event(ev) if ev.name.text == event => Some(ev),
+                _ => None,
+            });
+        let Some(declared) = declared else {
+            return Ok(());
+        };
+        for (arg, field) in args.iter().zip(&declared.params) {
+            let want = ty_of_decl(&field.ty);
+            let got = self.ty_of(arg)?;
+            let mismatch = match (want, got) {
+                (Ty::Name, got) => got != Ty::Name || !self.is_name_param(arg),
+                (_, Ty::Name) => true,
+                (_, Ty::Collection) | (Ty::Collection, _) => true,
+                _ => false,
+            };
+            if mismatch {
+                return Err(TypeError::new(
+                    format!(
+                        "the event field `{}` is declared {}, so it cannot carry a {} value; \
+                         declare a name field as Q_Name and pass a name parameter",
+                        field.name.text,
+                        type_text(&field.ty),
+                        got.describe()
+                    ),
+                    arg.span(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn check_stmt_types(&self, stmt: &Stmt) -> Result<(), TypeError> {
         match stmt {
             Stmt::Assign {
@@ -428,7 +480,26 @@ impl<'a> Env<'a> {
         };
         for (index, (arg, want)) in args.iter().zip(expected).enumerate() {
             let got = self.ty_of(arg)?;
+            if got == Ty::Name && !self.is_name_param(arg) {
+                return Err(TypeError::new(
+                    format!(
+                        "`{}` takes a name only straight from a Q_Name parameter, whose \
+                         characters and length the entry checks",
+                        field.name.text
+                    ),
+                    arg.span(),
+                ));
+            }
             let named_key = index == 0 && got == Ty::Name;
+            if *want == Ty::Name && got != Ty::Name {
+                return Err(TypeError::new(
+                    format!(
+                        "`{}` is keyed by Q_Name, so it takes a Q_Name parameter here",
+                        field.name.text
+                    ),
+                    arg.span(),
+                ));
+            }
             if !named_key && !compatible(*want, got) {
                 return Err(TypeError::new(
                     format!(
@@ -577,6 +648,9 @@ impl<'a> Env<'a> {
         if let Some(ty) = self.params.get(name) {
             return *ty;
         }
+        if let Some(ty) = self.locals.borrow().get(name) {
+            return *ty;
+        }
         if let Some(field) = self.model.state.get(name) {
             return ty_of_decl(&field.ty);
         }
@@ -676,6 +750,7 @@ impl Ty {
             Ty::Name => "name",
             Ty::Time => "time",
             Ty::Str => "string",
+            Ty::Collection => "collection",
             Ty::Unknown => "value",
         }
     }
@@ -769,11 +844,13 @@ fn one_word(ty: Ty) -> bool {
 }
 
 fn compatible(want: Ty, got: Ty) -> bool {
-    want == got
-        || want == Ty::Unknown
-        || got == Ty::Unknown
-        || (one_word(want) && one_word(got))
-        || (want == Ty::Address && got == Ty::Name)
+    if want == Ty::Name || got == Ty::Name {
+        return want == got;
+    }
+    if want == Ty::Collection || got == Ty::Collection {
+        return want == got || want == Ty::Unknown || got == Ty::Unknown;
+    }
+    want == got || want == Ty::Unknown || got == Ty::Unknown || (one_word(want) && one_word(got))
 }
 
 fn declared_arg(ty: &Type, index: usize) -> Ty {
@@ -811,8 +888,113 @@ fn ty_of_decl(ty: &Type) -> Ty {
         "Q_Name" => Ty::Name,
         "Time" => Ty::Time,
         "Q_Id" => Ty::Int,
+        "Map" | "Registry" | "GuardianSet" => Ty::Collection,
         _ => Ty::Unknown,
     }
+}
+
+fn keyed_calls<'e>(expr: &'e Expr, out: &mut Vec<(&'e str, &'e Expr)>) {
+    match expr {
+        Expr::Call { callee, args, .. } => {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if let (Expr::Ident(map), Some(key)) = (base.as_ref(), args.first()) {
+                    if matches!(
+                        name.text.as_str(),
+                        "set" | "get" | "contains" | "insert" | "remove" | "credit" | "debit"
+                    ) {
+                        out.push((map.text.as_str(), key));
+                    }
+                }
+            }
+            keyed_calls(callee, out);
+            for arg in args {
+                keyed_calls(arg, out);
+            }
+        }
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            keyed_calls(expr, out)
+        }
+        Expr::Binary { left, right, .. } => {
+            keyed_calls(left, out);
+            keyed_calls(right, out);
+        }
+        Expr::Field { base, .. } => keyed_calls(base, out),
+        _ => {}
+    }
+}
+
+fn entry_exprs(entry: &EntryDecl) -> Vec<&Expr> {
+    let mut out = Vec::new();
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => out.push(expr),
+            Clause::After { target, from, .. } => {
+                if let AfterTarget::Expr(expr) = target {
+                    out.push(expr);
+                }
+                if let Some(expr) = from {
+                    out.push(expr);
+                }
+            }
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        match stmt {
+            Stmt::Guard { expr, .. } | Stmt::Expr { expr, .. } => out.push(expr),
+            Stmt::Let { value, .. } => out.push(value),
+            Stmt::Assign { target, value, .. } => {
+                out.push(target);
+                out.push(value);
+            }
+            Stmt::Emit { args, .. } => out.extend(args.iter()),
+        }
+    }
+    out
+}
+
+fn check_key_kinds(model: &Model) -> Result<(), TypeError> {
+    let mut kinds: HashMap<&str, (Option<quanta_lexer::Span>, Option<quanta_lexer::Span>)> =
+        HashMap::new();
+    for entry in &model.entries {
+        let names: std::collections::HashSet<&str> = entry
+            .params
+            .iter()
+            .filter(|p| p.ty.name.text == "Q_Name")
+            .map(|p| p.name.text.as_str())
+            .collect();
+        for expr in entry_exprs(entry) {
+            let mut calls = Vec::new();
+            keyed_calls(expr, &mut calls);
+            for (map, key) in calls {
+                let keyed = model
+                    .state
+                    .get(map)
+                    .is_some_and(|f| matches!(f.ty.name.text.as_str(), "Map" | "Registry"));
+                if !keyed {
+                    continue;
+                }
+                let is_name = matches!(key, Expr::Ident(id) if names.contains(id.text.as_str()));
+                let seen = kinds.entry(map).or_insert((None, None));
+                if is_name {
+                    seen.0.get_or_insert(key.span());
+                } else {
+                    seen.1.get_or_insert(key.span());
+                }
+                if let (Some(_), Some(other)) = *seen {
+                    return Err(TypeError::new(
+                        format!(
+                            "`{map}` is keyed by a name in one place and by another value in \
+                             another, so a caller could reach a name's row without the name \
+                             checks; key each map by one kind of value"
+                        ),
+                        if is_name { key.span() } else { other },
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn check_arithmetic(entry: &EntryDecl, params: &HashMap<&str, Ty>) -> Result<(), TypeError> {
@@ -1033,7 +1215,9 @@ mod tests {
         let named = "contract C { state { label: Q_Name; } }";
         assert!(error_for(named).contains("a name cannot be stored"));
         let named_value = "contract C { state { tags: Map<Q_Address, Q_Name>; } }";
-        assert!(error_for(named_value).contains("cannot be a Map value"));
+        ok(named_value);
+        let registry_value = "contract C { state { tags: Registry<Q_Address, Q_Name>; } }";
+        assert!(error_for(registry_value).contains("takes 1 type arguments"));
         let nested = "contract C { state { grid: Map<Q_Address, Map<Q_Address, u64> >; } }";
         assert!(error_for(nested).contains("cannot be a Map value"));
         let arity = "contract C { state { grid: Map<Q_Address>; } }";

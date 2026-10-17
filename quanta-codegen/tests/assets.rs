@@ -155,10 +155,12 @@ fn signed_mint_memory(cc: &CompiledContract, amount: u64) -> (Vec<u8>, [u8; 32])
 
     let selector = cc.container.entries[0].selector;
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN01");
+    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&MINT_CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
     msg.extend_from_slice(&signer);
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&amount.to_be_bytes());
     msg.extend_from_slice(&0u64.to_be_bytes());
@@ -317,8 +319,8 @@ fn an_insert_sets_a_flag_that_contains_reads_back() {
 
 const GATE: &str = "contract Gate {\n\
   state { allow: Registry<Q_Address>; flag: u64; }\n\
-  entry act(who: Q_Address) reads(allow) writes(flag) {\n\
-    guard allow.contains(who);\n\
+  entry act() reads(allow) writes(flag) {\n\
+    guard allow.contains(caller);\n\
     flag = 1;\n\
   }\n\
 }\n";
@@ -328,7 +330,7 @@ fn a_membership_guard_admits_a_listed_key_and_reverts_an_absent_one() {
     let cc = compile(GATE);
     let who = addr(3);
     let mut listed = memory_with(&cc, 0, &[]);
-    set_addr_arg(&mut listed, &cc, 0, "who", &who);
+    set_addr_arg(&mut listed, &cc, 0, "@caller", &who);
     let mut storage = BTreeMap::new();
     storage.insert(map_key(KEYED_BASE, &who), 1u64);
     assert_eq!(
@@ -340,7 +342,7 @@ fn a_membership_guard_admits_a_listed_key_and_reverts_an_absent_one() {
     );
 
     let mut absent = memory_with(&cc, 0, &[]);
-    set_addr_arg(&mut absent, &cc, 0, "who", &who);
+    set_addr_arg(&mut absent, &cc, 0, "@caller", &who);
     assert_eq!(
         run(&cc, BTreeMap::new(), &absent),
         Err(Fault::DivByZero),

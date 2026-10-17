@@ -19,7 +19,7 @@ contract Faucet {
     limits order.amount <= drip
   {
     guard tank.amount >= order.amount;
-    guard now >= last_claim.get(order.to) + cooldown;
+    guard last_claim.get(order.to) == 0 || now >= last_claim.get(order.to) + cooldown;
     let out = tank.split(order.amount);
     send(order.to, out);
     last_claim.set(order.to, now);

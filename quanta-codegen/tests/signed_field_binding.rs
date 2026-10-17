@@ -25,6 +25,7 @@ const CONTRACT_CTX_OFF: usize = 32;
 const REGION_OFF: u64 = 8192;
 const SCHEME_ML: u8 = 1;
 const CONTRACT: [u8; 32] = [0x33; 32];
+const EXPIRY: u64 = u64::MAX;
 
 fn compile(src: &str) -> CompiledContract {
     let program = quanta_parser::parse(src).expect("parse");
@@ -47,11 +48,13 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
 
 fn canonical_message(signer: &[u8; 32], selector: [u8; 4], nonce: u64, fields: &[u64]) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN01");
+    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
     msg.extend_from_slice(signer);
     msg.extend_from_slice(&nonce.to_be_bytes());
+    msg.extend_from_slice(&EXPIRY.to_be_bytes());
     for f in fields {
         msg.extend_from_slice(&f.to_be_bytes());
     }
@@ -82,6 +85,7 @@ fn act_memory(
     put_word(&mut mem, arg_offset(cc, "order#scheme"), SCHEME_ML as u64);
     put_word(&mut mem, arg_offset(cc, "order#ptr"), REGION_OFF);
     put_word(&mut mem, arg_offset(cc, "@time"), now);
+    put_word(&mut mem, arg_offset(cc, "order#expiry"), EXPIRY);
     put_word(&mut mem, arg_offset(cc, "order.notbefore"), plain[0]);
     put_word(&mut mem, arg_offset(cc, "order.step"), plain[1]);
     put_word(&mut mem, arg_offset(cc, "order.extra"), plain[2]);

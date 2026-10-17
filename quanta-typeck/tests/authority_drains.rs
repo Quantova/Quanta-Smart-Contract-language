@@ -161,7 +161,7 @@ fn a_write_once_slot_is_a_sound_anchor() {
   state { token: Q_Address; total: Map<Q_Address, u64>; start: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
   entry fund(funds: Q_Asset<TOK>, who: Q_Address) conserves TOK reads(start) writes(total, start, vault) { guard in_asset == token; guard start.get(who) == 0; total.credit(who, funds.amount); start.set(who, now); vault.merge(funds); }
-  entry claim(amount: u64) reads(token, total, start) writes(total) { guard now >= start.get(caller) + 2592000; total.debit(caller, amount); send_asset(token, caller, amount); }
+  entry claim(amount: u64) reads(token, total, start) writes(total) { guard start.get(caller) > 0; guard now >= start.get(caller) + 2592000; total.debit(caller, amount); send_asset(token, caller, amount); }
 }"#
     ));
 }
@@ -174,7 +174,7 @@ fn resetting_a_vesting_clock_for_somebody_else_is_still_refused() {
   state { token: Q_Address; total: Map<Q_Address, u64>; start: Map<Q_Address, u64>; vault: Q_Asset<TOK>; }
   genesis { token = deployer; }
   entry fund(funds: Q_Asset<TOK>, who: Q_Address) conserves TOK writes(total, start, vault) { guard in_asset == token; total.credit(who, funds.amount); start.set(who, now); vault.merge(funds); }
-  entry claim(amount: u64) reads(token, total, start) writes(total) { guard now >= start.get(caller) + 2592000; total.debit(caller, amount); send_asset(token, caller, amount); }
+  entry claim(amount: u64) reads(token, total, start) writes(total) { guard start.get(caller) > 0; guard now >= start.get(caller) + 2592000; total.debit(caller, amount); send_asset(token, caller, amount); }
 }"#
     ));
 }

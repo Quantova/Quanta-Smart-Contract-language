@@ -20,7 +20,7 @@ const VAULT_SLOT: u64 = 35;
 const CONTRACT: [u8; 32] = [0x44; 32];
 const SCHEME_ML: u8 = 1;
 const GAS: u64 = 12_500_000;
-const SIGNED_TAG: &[u8; 8] = b"QTVSGN01";
+const SIGNED_TAG: &[u8; 8] = b"QTVSGN02";
 
 fn compiled() -> CompiledContract {
     let program = quanta_parser::parse(SRC).expect("parse");
@@ -52,13 +52,14 @@ fn member_message(
     amount: u64,
     to: &[u8; 32],
 ) -> Vec<u8> {
-    let tag = u64::from_be_bytes(*SIGNED_TAG);
     let mut msg = Vec::new();
-    msg.extend_from_slice(&tag.to_be_bytes());
+    msg.extend_from_slice(SIGNED_TAG);
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(sel) as u64).to_be_bytes());
     msg.extend_from_slice(member);
     msg.extend_from_slice(&nonce.to_be_bytes());
+    msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&amount.to_be_bytes());
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(to);

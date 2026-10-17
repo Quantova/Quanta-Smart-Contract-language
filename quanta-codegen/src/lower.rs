@@ -26,6 +26,7 @@ const EVENT_BASE: u64 = 32768;
 
 const SIG_SCHEME_SUFFIX: &str = "#scheme";
 const SIG_PTR_SUFFIX: &str = "#ptr";
+const SIG_EXPIRY_SUFFIX: &str = "#expiry";
 
 const DEPLOY_PARAMS: &str = "deploy_params";
 
@@ -64,8 +65,9 @@ const ADDR_TYPE: &str = "Q_Address";
 
 const WIDE_TYPE: &str = "u128";
 
-const SIGNED_MSG_TAG: u64 = u64::from_be_bytes(*b"QTVSGN01");
+const SIGNED_MSG_TAG: u64 = u64::from_be_bytes(*b"QTVSGN02");
 pub(crate) const NONCE_TAG: u64 = u64::from_be_bytes(*b"QTVNONCE");
+const NAME_KEY_TAG: u64 = u64::from_be_bytes(*b"QTVNAME1");
 
 fn deploy_param_name(expr: &Expr) -> Option<&str> {
     if let Expr::Field { base, name, .. } = expr {
@@ -1913,6 +1915,8 @@ fn lower_quorum_prologue(
         let name = &param.name.text;
         let span = param.span;
         let field_specs = quorum_message_fields(ctx, entry, name)?;
+        let expiry_off = ctx.args.offset_of(&format!("{name}{SIG_EXPIRY_SUFFIX}"));
+        lower_expiry_check(ctx, expiry_off, trap, span)?;
         let selector_word = u32::from_be_bytes(entry_selector(entry)) as u64;
         let mut prev_index_off: Option<u64> = None;
         for i in 0..threshold {
@@ -1931,6 +1935,7 @@ fn lower_quorum_prologue(
                     set_base,
                     set_count,
                     selector_word,
+                    expiry_off,
                     field_specs: &field_specs,
                 },
                 trap,
@@ -2064,6 +2069,7 @@ struct QuorumMember<'a> {
     set_base: u64,
     set_count: u64,
     selector_word: u64,
+    expiry_off: u64,
     field_specs: &'a [(u64, u64)],
 }
 
@@ -2235,18 +2241,7 @@ fn emit_quorum_member(
         });
         ctx.regs.free(k);
     }
-    {
-        let r = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: r,
-            imm: SIGNED_MSG_TAG,
-        });
-        bind_chain_into_tag(ctx, r, span)?;
-        store_off(ctx, dst, MSG_TAG_OFF, r);
-        ctx.regs.free(r);
-    }
-    let contract_off = ctx.args.offset_of(CONTRACT_KEY);
-    copy_words_to_region(ctx, contract_off, dst, MSG_CONTRACT_OFF, ADDR_WORDS, span)?;
+    store_order_header(ctx, dst, member.expiry_off, span)?;
     {
         let r = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
@@ -2719,10 +2714,37 @@ fn lower_name_prologue(ctx: &mut Ctx, entry: &EntryDecl, trap: Label) -> Result<
         lower_name_ends_on_a_byte(ctx, window_off, len, trap, *span)?;
         lower_name_charset(ctx, window_off, len, trap, *span)?;
 
+        {
+            let rtag = ctx.regs.alloc(*span)?;
+            ctx.b.op(Instr::Ldi {
+                d: rtag,
+                imm: NAME_KEY_TAG,
+            });
+            store_mem_word(ctx, NONCE_PREIMAGE_SCRATCH, rtag);
+            ctx.regs.free(rtag);
+        }
+        store_mem_word(ctx, NONCE_PREIMAGE_SCRATCH + WORD, len);
+        copy_words_fixed(
+            ctx,
+            window_off,
+            NONCE_PREIMAGE_SCRATCH + 2 * WORD,
+            NAME_WINDOW / WORD,
+            *span,
+        )?;
         let rptr = ctx.regs.alloc(*span)?;
         ctx.b.op(Instr::Ldi {
             d: rptr,
-            imm: window_off,
+            imm: NONCE_PREIMAGE_SCRATCH,
+        });
+        let rlen = ctx.regs.alloc(*span)?;
+        ctx.b.op(Instr::Ldi {
+            d: rlen,
+            imm: 2 * WORD,
+        });
+        ctx.b.op(Instr::AddW {
+            d: rlen,
+            a: rlen,
+            b: len,
         });
         let rout = ctx.regs.alloc(*span)?;
         ctx.b.op(Instr::Ldi {
@@ -2731,10 +2753,11 @@ fn lower_name_prologue(ctx: &mut Ctx, entry: &EntryDecl, trap: Label) -> Result<
         });
         ctx.b.op(Instr::Hash {
             a: rptr,
-            b: len,
+            b: rlen,
             c: rout,
         });
         ctx.regs.free(rout);
+        ctx.regs.free(rlen);
         ctx.regs.free(rptr);
         ctx.regs.free(len);
 
@@ -2766,15 +2789,43 @@ fn quorum_spec(param: &Param) -> Option<(u64, u64, String)> {
     Some((m, n, set?))
 }
 
-fn bind_chain_into_tag(ctx: &mut Ctx, tag: Reg, span: Span) -> Result<(), CodegenError> {
-    let chain_off = ctx.args.offset_of(CHAIN_KEY);
-    let chain = load_arg(ctx, chain_off, span)?;
-    ctx.b.op(Instr::Xor {
+fn store_order_header(
+    ctx: &mut Ctx,
+    dst: Reg,
+    expiry_off: u64,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let tag = ctx.regs.alloc(span)?;
+    ctx.b.op(Instr::Ldi {
         d: tag,
-        a: tag,
-        b: chain,
+        imm: SIGNED_MSG_TAG,
     });
-    ctx.regs.free(chain);
+    store_off(ctx, dst, MSG_TAG_OFF, tag);
+    ctx.regs.free(tag);
+    let chain_off = ctx.args.offset_of(CHAIN_KEY);
+    copy_words_to_region(ctx, chain_off, dst, MSG_CHAIN_OFF, 1, span)?;
+    let contract_off = ctx.args.offset_of(CONTRACT_KEY);
+    copy_words_to_region(ctx, contract_off, dst, MSG_CONTRACT_OFF, ADDR_WORDS, span)?;
+    copy_words_to_region(ctx, expiry_off, dst, MSG_EXPIRY_OFF, 1, span)
+}
+
+fn lower_expiry_check(
+    ctx: &mut Ctx,
+    expiry_off: u64,
+    trap: Label,
+    span: Span,
+) -> Result<(), CodegenError> {
+    let time_off = ctx.args.offset_of(TIME_KEY);
+    let now = load_arg(ctx, time_off, span)?;
+    let expiry = load_arg(ctx, expiry_off, span)?;
+    ctx.b.op(Instr::GtU {
+        d: now,
+        a: now,
+        b: expiry,
+    });
+    ctx.b.jnz(now, trap);
+    ctx.regs.free(expiry);
+    ctx.regs.free(now);
     Ok(())
 }
 
@@ -3268,11 +3319,13 @@ fn anchor_write_rejection(field: &str, span: Span) -> CodegenError {
 }
 
 const MSG_TAG_OFF: u64 = 0;
-const MSG_CONTRACT_OFF: u64 = 8;
-const MSG_SELECTOR_OFF: u64 = 40;
-const MSG_SIGNER_OFF: u64 = 48;
-const MSG_NONCE_OFF: u64 = 80;
-const MSG_FIELDS_OFF: u64 = 88;
+const MSG_CHAIN_OFF: u64 = 8;
+const MSG_CONTRACT_OFF: u64 = 16;
+const MSG_SELECTOR_OFF: u64 = 48;
+const MSG_SIGNER_OFF: u64 = 56;
+const MSG_NONCE_OFF: u64 = 88;
+const MSG_EXPIRY_OFF: u64 = 96;
+const MSG_FIELDS_OFF: u64 = 104;
 
 fn lower_signed_binding(
     ctx: &mut Ctx,
@@ -3303,6 +3356,8 @@ fn lower_signed_binding(
     let ptr_off = ctx.args.offset_of(&format!("{name}{SIG_PTR_SUFFIX}"));
     let keys = collect_signed_fields(entry, name);
     let field_specs = signed_field_specs(ctx, keys);
+    let expiry_off = ctx.args.offset_of(&format!("{name}{SIG_EXPIRY_SUFFIX}"));
+    lower_expiry_check(ctx, expiry_off, trap, span)?;
     let selector_word = u32::from_be_bytes(entry_selector(entry)) as u64;
 
     let ml_label = ctx.b.label();
@@ -3348,6 +3403,7 @@ fn lower_signed_binding(
         ctx,
         VerifyOp::Ml,
         ptr_off,
+        expiry_off,
         owner_slot,
         selector_word,
         &field_specs,
@@ -3361,6 +3417,7 @@ fn lower_signed_binding(
         ctx,
         VerifyOp::Slh,
         ptr_off,
+        expiry_off,
         owner_slot,
         selector_word,
         &field_specs,
@@ -3409,6 +3466,7 @@ fn emit_signed_binding(
     ctx: &mut Ctx,
     op: VerifyOp,
     ptr_off: u64,
+    expiry_off: u64,
     owner_slot: u64,
     selector_word: u64,
     field_specs: &[(u64, u64)],
@@ -3517,25 +3575,7 @@ fn emit_signed_binding(
         });
         ctx.regs.free(k);
     }
-    {
-        let r = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: r,
-            imm: SIGNED_MSG_TAG,
-        });
-        bind_chain_into_tag(ctx, r, span)?;
-        store_off(ctx, dst, MSG_TAG_OFF, r);
-        ctx.regs.free(r);
-    }
-    let contract_off = ctx.args.offset_of(CONTRACT_KEY);
-    copy_words_to_region(
-        ctx,
-        contract_off,
-        dst,
-        MSG_CONTRACT_OFF,
-        ADDR_BYTES / WORD,
-        span,
-    )?;
+    store_order_header(ctx, dst, expiry_off, span)?;
     {
         let r = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
