@@ -27,7 +27,7 @@ The code generator lowers a type checked contract to the register machine byteco
 
 ## Post quantum with no escape hatch
 
-The QVM exposes only post quantum cryptographic opcodes, and the code generator has no path to a classical one. The cryptographic instructions are the SHA3 hash, the ML DSA verify, the SLH DSA verify, the Merkle verify, the VRF verify, and the ML KEM operation. A test classifies every machine opcode with an exhaustive match that has no wildcard and no classical arm, so a future opcode cannot pass as classical without failing the build, and the opcodes emitted over a corpus of contracts are checked to be post quantum only.
+The QVM exposes only post quantum cryptographic opcodes, and the code generator has no path to a classical one. The cryptographic instructions are the SHA3 hash, the ML DSA verify, the SLH DSA verify, and the Merkle verify. A test classifies every machine opcode with an exhaustive match that has no wildcard and no classical arm, so a future opcode cannot pass as classical without failing the build, and the opcodes emitted over a corpus of contracts are checked to be post quantum only.
 
 The escape hatch is closed earlier still. The lexer refuses a set of foreign identifiers outright, among them function, require, msg, mapping, uint256, ecrecover, pragma, wei, and ether, so source shaped like another chain's language does not even tokenize. The vocabulary is Quanta's own.
 
@@ -44,7 +44,7 @@ The compiler is a Rust workspace.
 - quanta-web is the browser compiler crate. It runs the whole compiler in the user's page with no backend, which keeps the compile off Quantova's servers and gives the IDE the same lexer, parser, checker, and code generator the command line runs.
 - quanta-cli is the command line front end, with parse, fmt, tokens, check, build, and emit subcommands.
 
-The QVM and the cryptography arrive as pinned dependencies, qtv-vm at tag v0.4.0 and qtv-crypto at tag v0.1.0, and are never reimplemented here.
+The QVM and the cryptography arrive as pinned dependencies, qtv-vm at commit f7d82ab and qtv-crypto at commit 12fefda, and are never reimplemented here.
 
 ## Examples
 
