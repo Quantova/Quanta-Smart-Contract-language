@@ -167,7 +167,90 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
     Ok(())
 }
 
+fn wraps(expr: &Expr, wrapped: &std::collections::HashSet<&str>) -> bool {
+    match expr {
+        Expr::Wrapping { .. } => true,
+        Expr::Ident(id) => wrapped.contains(id.text.as_str()),
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } => wraps(expr, wrapped),
+        Expr::Binary { left, right, .. } => wraps(left, wrapped) || wraps(right, wrapped),
+        Expr::Call { args, .. } => args.iter().any(|a| wraps(a, wrapped)),
+        _ => false,
+    }
+}
+
+fn narrow_wrapping(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
+    let refuse = |at: &Expr, slot: &str| {
+        Err(TypeError::new(
+            format!(
+                "a `wrapping` value reaches the narrow {slot}, which reverts at its maximum rather \
+                 than wrapping; widen it to u64 or mask the value explicitly"
+            ),
+            at.span(),
+        ))
+    };
+    let mut wrapped: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for stmt in &entry.body {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                if wraps(value, &wrapped) {
+                    wrapped.insert(name.text.as_str());
+                }
+            }
+            Stmt::Assign {
+                target: Expr::Ident(id),
+                value,
+                ..
+            } => {
+                let narrow = model
+                    .state
+                    .get(id.text.as_str())
+                    .and_then(|field| narrow_max(&field.ty.name.text));
+                if narrow.is_some() && wraps(value, &wrapped) {
+                    return refuse(value, &format!("field `{}`", id.text));
+                }
+            }
+            Stmt::Expr {
+                expr: Expr::Call { callee, args, .. },
+                ..
+            } => {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if name.text == "set" {
+                        if let (Expr::Ident(map), Some(value)) = (base.as_ref(), args.get(1)) {
+                            let narrow = model.state.get(map.text.as_str()).and_then(|field| {
+                                match field.ty.args.get(1) {
+                                    Some(GenericArg::Type(t)) => narrow_max(&t.name.text),
+                                    _ => None,
+                                }
+                            });
+                            if narrow.is_some() && wraps(value, &wrapped) {
+                                return refuse(value, &format!("values of `{}`", map.text));
+                            }
+                        }
+                    }
+                }
+            }
+            Stmt::Emit { name, args, .. } => {
+                let params = model.contract.items.iter().find_map(|item| match item {
+                    quanta_ast::Item::Event(e) if e.name.text == name.text => Some(&e.params),
+                    _ => None,
+                });
+                for (index, arg) in args.iter().enumerate() {
+                    let narrow = params
+                        .and_then(|p| p.get(index))
+                        .and_then(|p| narrow_max(&p.ty.name.text));
+                    if narrow.is_some() && wraps(arg, &wrapped) {
+                        return refuse(arg, &format!("event field of `{}`", name.text));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
+    narrow_wrapping(model, entry)?;
     let mut params = HashMap::new();
     for param in &entry.params {
         params.insert(param.name.text.as_str(), ty_of_decl(&param.ty));
@@ -188,7 +271,12 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
             Stmt::Let { value, .. } => {
                 env.ty_of(value)?;
             }
-            Stmt::Assign { .. } | Stmt::Expr { .. } => env.check_stmt_types(stmt)?,
+            Stmt::Assign { .. } | Stmt::Expr { .. } => {
+                env.check_stmt_types(stmt)?;
+                if let Stmt::Expr { expr, .. } = stmt {
+                    env.refuse_name_recipient(expr)?;
+                }
+            }
             Stmt::Emit { args, .. } => {
                 for arg in args {
                     env.ty_of(arg)?;
@@ -428,6 +516,28 @@ impl<'a> Env<'a> {
                 expr.span(),
             ))
         }
+    }
+
+    fn refuse_name_recipient(&self, expr: &Expr) -> Result<(), TypeError> {
+        let Expr::Call { callee, args, .. } = expr else {
+            return Ok(());
+        };
+        let positions: &[usize] = match callee.as_ref() {
+            Expr::Ident(id) if id.text == "send" || id.text == "mint_asset" => &[0],
+            Expr::Ident(id) if id.text == "send_asset" => &[0, 1],
+            _ => return Ok(()),
+        };
+        for &index in positions {
+            if let Some(arg) = args.get(index) {
+                if self.ty_of(arg)? == Ty::Name {
+                    return Err(TypeError::new(
+                        "a name cannot receive funds or issue an asset; pass the address it resolves to",
+                        arg.span(),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn ty_of(&self, expr: &Expr) -> Result<Ty, TypeError> {

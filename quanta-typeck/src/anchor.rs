@@ -51,6 +51,17 @@ fn check_guard_anchors(model: &Model) -> Result<(), TypeError> {
     Ok(())
 }
 
+fn constant_only(expr: &Expr) -> bool {
+    match expr {
+        Expr::Int(_) => true,
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            constant_only(expr)
+        }
+        Expr::Binary { left, right, .. } => constant_only(left) && constant_only(right),
+        _ => false,
+    }
+}
+
 fn mentions_now(expr: &Expr) -> bool {
     match expr {
         Expr::Now { .. } => true,
@@ -436,8 +447,16 @@ fn check_after_anchors(entry: &EntryDecl) -> Result<(), TypeError> {
         let Clause::After { target, from, span } = clause else {
             continue;
         };
+        if from.as_ref().is_some_and(constant_only) {
+            return Err(TypeError::new(
+                "an `after` gate anchored on a constant counts from the epoch, so it is already \
+                 open; anchor it on a state field recorded with `now`"
+                    .to_string(),
+                *span,
+            ));
+        }
         match target {
-            AfterTarget::Expr(Expr::Int(_)) => {
+            AfterTarget::Expr(expr) if constant_only(expr) => {
                 return Err(TypeError::new(
                     "an `after` gate with a bare integer compares `now` against absolute time, so \
                      it is open from the epoch; use a duration with a unit such as `after 24 \

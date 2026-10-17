@@ -1513,6 +1513,31 @@ fn entry_debits_another_map_under(entry: &EntryDecl, field: &str, key: &Expr) ->
     backed
 }
 
+fn entry_gates_on_row(entry: &EntryDecl, map: &str, key: &Expr) -> bool {
+    let reads_row = |e: &Expr| {
+        let mut found = false;
+        walk(e, &mut |x| {
+            if let Expr::Call { callee, args, .. } = x {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if matches!(base.as_ref(), Expr::Ident(m) if m.text == map)
+                        && name.text == "get"
+                        && args.first().is_some_and(|a| expr_eq(a, key))
+                    {
+                        found = true;
+                    }
+                }
+            }
+        });
+        found
+    };
+    entry.clauses.iter().any(|c| {
+        matches!(c, Clause::Limits { expr, .. } | Clause::Denies { expr, .. } if reads_row(expr))
+    }) || entry
+        .body
+        .iter()
+        .any(|s| matches!(s, Stmt::Guard { expr, .. } if reads_row(expr)))
+}
+
 fn entry_debits_the_row_it_gated_on(entry: &EntryDecl, field: &str, key: &Expr) -> bool {
     let mut debited = false;
     for stmt in &entry.body {
@@ -1529,9 +1554,10 @@ fn entry_debits_the_row_it_gated_on(entry: &EntryDecl, field: &str, key: &Expr) 
                         // state machine, on another map keyed by the same gated key (e.g. a
                         // `payout.remove(id)` that retires a proposal gated by `votes.get(id)`).
                         let same_map = m.text == field;
+                        let linked = same_map || entry_gates_on_row(entry, &m.text, key);
                         match name.text.as_str() {
-                            "debit" if args.len() >= 2 => debited = true,
-                            "remove" => debited = true,
+                            "debit" if linked && args.len() >= 2 => debited = true,
+                            "remove" if linked => debited = true,
                             "set" if same_map && args.len() >= 2 && is_zero_int(&args[1]) => {
                                 debited = true
                             }
