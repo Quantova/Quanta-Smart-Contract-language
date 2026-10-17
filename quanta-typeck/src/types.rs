@@ -423,7 +423,7 @@ impl<'a> Env<'a> {
         }
         let expected: &[Ty] = match name.text.as_str() {
             "set" => &[key, value],
-            "insert" | "remove" | "contains" | "credit" | "debit" => &[key],
+            "insert" | "remove" | "contains" | "get" | "credit" | "debit" => &[key],
             _ => return Ok(()),
         };
         for (index, (arg, want)) in args.iter().zip(expected).enumerate() {
@@ -566,6 +566,7 @@ impl<'a> Env<'a> {
                 for arg in args {
                     self.ty_of(arg)?;
                 }
+                self.check_keyed_call(expr)?;
                 Ok(self.ty_of_call(callee))
             }
             Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => self.ty_of(expr),
