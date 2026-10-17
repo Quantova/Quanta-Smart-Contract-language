@@ -12,6 +12,7 @@ mod asset_identity;
 mod binding;
 mod conserve;
 pub mod error;
+mod guardian;
 mod linear;
 mod model;
 mod resolve;
@@ -42,6 +43,7 @@ pub fn check(program: &Program) -> Result<(), TypeError> {
         let model = Model::build(contract);
         resolve::check(&model)?;
         types::check(&model)?;
+        guardian::check(&model)?;
         linear::check(&model)?;
         signature::check(&model)?;
         anchor::check(&model)?;
