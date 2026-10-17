@@ -139,10 +139,17 @@ fn zero_test(expr: &Expr) -> Option<&Expr> {
 fn records_time(model: &Model, field: &str) -> bool {
     let mut timed = false;
     for entry in &model.entries {
+        let mut timed_locals: HashSet<&str> = HashSet::new();
         for stmt in &entry.body {
             match stmt {
+                Stmt::Let { name, value, .. } => {
+                    if derives_from_now(value, &timed_locals) {
+                        timed_locals.insert(name.text.as_str());
+                    }
+                }
                 Stmt::Assign { target, value, .. } => {
-                    if matches!(target, Expr::Ident(id) if id.text == field) && mentions_now(value)
+                    if matches!(target, Expr::Ident(id) if id.text == field)
+                        && derives_from_now(value, &timed_locals)
                     {
                         timed = true;
                     }
@@ -154,7 +161,9 @@ fn records_time(model: &Model, field: &str) -> bool {
                     if let Expr::Field { base, name, .. } = callee.as_ref() {
                         if name.text == "set"
                             && matches!(base.as_ref(), Expr::Ident(id) if id.text == field)
-                            && args.get(1).is_some_and(mentions_now)
+                            && args
+                                .get(1)
+                                .is_some_and(|value| derives_from_now(value, &timed_locals))
                         {
                             timed = true;
                         }
@@ -165,6 +174,20 @@ fn records_time(model: &Model, field: &str) -> bool {
         }
     }
     timed
+}
+
+fn derives_from_now(expr: &Expr, timed_locals: &HashSet<&str>) -> bool {
+    match expr {
+        Expr::Now { .. } => true,
+        Expr::Ident(id) => timed_locals.contains(id.text.as_str()),
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            derives_from_now(expr, timed_locals)
+        }
+        Expr::Binary { left, right, .. } => {
+            derives_from_now(left, timed_locals) || derives_from_now(right, timed_locals)
+        }
+        _ => false,
+    }
 }
 
 fn guard_liveness_rejection(field: &str, span: Span) -> TypeError {
@@ -564,7 +587,11 @@ fn is_positive_int(expr: &Expr) -> bool {
 }
 
 fn is_zero(expr: &Expr) -> bool {
-    matches!(expr, Expr::Int(lit) if lit.text.replace('_', "").parse::<u128>() == Ok(0))
+    match expr {
+        Expr::Int(lit) => lit.text.replace('_', "").parse::<u128>() == Ok(0),
+        Expr::Ident(id) => id.text == "false",
+        _ => false,
+    }
 }
 
 fn liveness_rejection(field: &str, span: Span) -> TypeError {

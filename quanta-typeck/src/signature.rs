@@ -4010,7 +4010,11 @@ fn is_nonnegative_int(expr: &Expr) -> bool {
 }
 
 fn is_zero_int(expr: &Expr) -> bool {
-    matches!(expr, Expr::Int(lit) if lit.text.replace('_', "").parse::<u128>() == Ok(0))
+    match expr {
+        Expr::Int(lit) => lit.text.replace('_', "").parse::<u128>() == Ok(0),
+        Expr::Ident(id) => id.text == "false",
+        _ => false,
+    }
 }
 
 fn map_lookup_on_param(
