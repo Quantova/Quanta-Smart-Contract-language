@@ -239,6 +239,12 @@ fn provenance_key() -> Result<Option<zeroize::Zeroizing<[u8; 32]>>, String> {
         Some(path) => path,
         None => return Ok(None),
     };
+    if option_env!("QUANTA_BUILD_COMMIT").is_none() {
+        return Err(
+            "this compiler was built without a known source commit, so it refuses to sign provenance"
+                .to_string(),
+        );
+    }
     let meta =
         std::fs::metadata(&path).map_err(|e| format!("cannot read {PROVENANCE_KEY_FILE}: {e}"))?;
     if !meta.is_file() {
