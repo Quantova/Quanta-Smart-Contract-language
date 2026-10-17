@@ -41,6 +41,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn run(mut self) -> Result<Vec<Token>, LexError> {
+        self.check_source()?;
         let mut out = Vec::new();
         loop {
             self.skip_trivia();
@@ -55,7 +56,7 @@ impl<'a> Lexer<'a> {
             let token = if is_ident_start(c) {
                 self.scan_word(start)?
             } else if c.is_ascii_digit() {
-                self.scan_number(start)
+                self.scan_number(start)?
             } else if c == b'"' {
                 self.scan_string(start)?
             } else {
@@ -63,6 +64,33 @@ impl<'a> Lexer<'a> {
             };
             out.push(token);
         }
+    }
+
+    fn check_source(&self) -> Result<(), LexError> {
+        let b = self.bytes;
+        for i in 0..b.len() {
+            if b[i] == b'\r' && b.get(i + 1) != Some(&b'\n') {
+                return Err(LexError {
+                    message: "a carriage return must be followed by a line feed".to_string(),
+                    span: Span::new(i, i + 1),
+                });
+            }
+            let invisible = match (b[i], b.get(i + 1), b.get(i + 2)) {
+                (0xE2, Some(0x80), Some(&c)) => matches!(c, 0x8B..=0x8F | 0xA8..=0xAE),
+                (0xE2, Some(0x81), Some(&c)) => matches!(c, 0xA6..=0xA9),
+                (0xEF, Some(0xBB), Some(0xBF)) => i > 0,
+                (0xD8, Some(0x9C), _) => true,
+                _ => false,
+            };
+            if invisible {
+                return Err(LexError {
+                    message: "the source holds an invisible or direction changing character"
+                        .to_string(),
+                    span: Span::new(i, i + 1),
+                });
+            }
+        }
+        Ok(())
     }
 
     fn skip_trivia(&mut self) {
@@ -102,11 +130,14 @@ impl<'a> Lexer<'a> {
         Ok(Token::new(kind, span))
     }
 
-    fn scan_number(&mut self, start: usize) -> Token {
+    fn scan_number(&mut self, start: usize) -> Result<Token, LexError> {
         if self.is_date_at(start) {
             self.pos += 10;
             let span = Span::new(start, self.pos);
-            return Token::new(TokenKind::Date(self.slice(span).to_string()), span);
+            return Ok(Token::new(
+                TokenKind::Date(self.slice(span).to_string()),
+                span,
+            ));
         }
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() || c == b'_' {
@@ -116,7 +147,14 @@ impl<'a> Lexer<'a> {
             }
         }
         let span = Span::new(start, self.pos);
-        Token::new(TokenKind::Int(self.slice(span).to_string()), span)
+        let text = self.slice(span);
+        if text.len() > 1 && text.starts_with('0') {
+            return Err(LexError {
+                message: format!("the number `{text}` starts with a zero"),
+                span,
+            });
+        }
+        Ok(Token::new(TokenKind::Int(text.to_string()), span))
     }
 
     fn is_date_at(&self, i: usize) -> bool {
