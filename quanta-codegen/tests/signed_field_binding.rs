@@ -8,7 +8,7 @@ use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
 
 mod common;
-use common::{nonce_key, put_addr_slots, signer_address, slot_key};
+use common::{bind_layout, nonce_key, put_addr_slots, signer_address, slot_key};
 
 const TIMED: &str = "contract Timed {\n\
   state { owner: Q_Address; count: u64; }\n\
@@ -48,7 +48,7 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
 
 fn canonical_message(signer: &[u8; 32], selector: [u8; 4], nonce: u64, fields: &[u64]) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(b"QTVSGN03");
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
@@ -72,7 +72,7 @@ fn act_memory(
 ) -> Vec<u8> {
     let signer = signer_address(SCHEME_ML, pk);
     let selector = cc.container.entries[0].selector;
-    let msg = canonical_message(&signer, selector, nonce, &signed);
+    let msg = bind_layout(cc, canonical_message(&signer, selector, nonce, &signed));
     let sig = ml_dsa::sign(sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
 
     let mut region = Vec::new();
@@ -105,7 +105,7 @@ fn run(
     storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
 ) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
-    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 400_000)
+    Interpreter::for_entry(&cc.container, cc.entries[0].selector, 400_000)?
         .with_storage(storage)
         .with_memory(mem)
         .run()

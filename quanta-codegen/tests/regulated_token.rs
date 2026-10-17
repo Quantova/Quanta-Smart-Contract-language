@@ -12,7 +12,7 @@ use qtv_vm::interp::{Effect, Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 
 mod common;
-use common::{map_key, nonce_key, signer_address, slot_key};
+use common::{bind_layout, map_key, nonce_key, signer_address, slot_key};
 
 const SLOT_SUPPLY: u64 = 4;
 const HI: u64 = 1 << 56;
@@ -69,7 +69,12 @@ fn run(
     storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
 ) -> Result<(BTreeMap<[u8; 32], u64>, Vec<Effect>), Fault> {
-    Interpreter::for_entry(&cc.container, entry, GAS)?
+    let interp = if entry == selector(GENESIS_SIGNATURE) {
+        Interpreter::for_genesis(&cc.container, GAS)?
+    } else {
+        Interpreter::for_entry(&cc.container, entry, GAS)?
+    };
+    interp
         .with_storage(storage)
         .with_memory(mem)
         .run()
@@ -134,7 +139,7 @@ fn signed_memory(
 ) -> Vec<u8> {
     let entry = find_entry(cc, entry_name);
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(b"QTVSGN03");
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector_of(cc, entry_name)) as u64).to_be_bytes());
@@ -150,6 +155,7 @@ fn signed_memory(
             Field::Addr(_, a) => msg.extend_from_slice(*a),
         }
     }
+    let msg = bind_layout(cc, msg);
     let sig =
         ml_dsa::sign(&key.1, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
 

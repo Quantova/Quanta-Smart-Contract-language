@@ -37,6 +37,10 @@ fn memory_with(cc: &CompiledContract, entry: usize, values: &[(&str, u64)]) -> V
     mem
 }
 
+fn dispatch_meter(cc: &CompiledContract) -> u64 {
+    qtv_vm::meter::DISPATCH + cc.container.code.len() as u64 * qtv_vm::meter::CODE_SCAN_PER_BYTE
+}
+
 #[test]
 fn meter_advance_runs_metered_and_writes_state() {
     let cc = compile(&fixture("Meter.qs"));
@@ -45,7 +49,8 @@ fn meter_advance_runs_metered_and_writes_state() {
     storage.insert(slot_key(0), 5u64);
     let mem = memory_with(&cc, 0, &[("step", 7)]);
 
-    let out = Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 100_000)
+    let out = Interpreter::for_entry(&cc.container, cc.entries[0].selector, 100_000)
+        .expect("entry")
         .with_storage(storage)
         .with_memory(&mem)
         .run()
@@ -57,7 +62,8 @@ fn meter_advance_runs_metered_and_writes_state() {
         "reading must become twelve"
     );
     assert_eq!(
-        out.meter_used, 1760,
+        out.meter_used - dispatch_meter(&cc),
+        1760,
         "metered meter cost of the advance entry"
     );
 }
@@ -70,7 +76,8 @@ fn a_failing_guard_reverts_and_keeps_state() {
     persistent.insert(slot_key(0), 5u64);
     let mem = memory_with(&cc, 0, &[("step", 0)]);
 
-    let result = Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 100_000)
+    let result = Interpreter::for_entry(&cc.container, cc.entries[0].selector, 100_000)
+        .expect("entry")
         .with_storage(persistent.clone())
         .with_memory(&mem)
         .run();

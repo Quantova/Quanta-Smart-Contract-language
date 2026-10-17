@@ -10,7 +10,7 @@ use qtv_vm::interp::{Effect, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
 
 mod common;
-use common::{put_addr_slots, signer_address};
+use common::{bind_layout, put_addr_slots, signer_address};
 
 const GAS: u64 = 3_000_000;
 const DEX_CONTRACT: [u8; 32] = [0x55; 32];
@@ -45,7 +45,7 @@ fn signed_swap_memory(
     let operator = signer_address(1, &pk);
 
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(b"QTVSGN03");
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&DEX_CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
@@ -56,6 +56,7 @@ fn signed_swap_memory(
     msg.extend_from_slice(to);
     msg.extend_from_slice(&out.to_be_bytes());
     msg.extend_from_slice(&0u64.to_be_bytes());
+    let msg = bind_layout(cc, msg);
     let sig = ml_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
 
     let mut region = Vec::new();

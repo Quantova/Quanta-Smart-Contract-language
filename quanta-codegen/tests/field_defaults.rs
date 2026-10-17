@@ -3,7 +3,6 @@
 
 use std::collections::BTreeMap;
 
-use qtv_vm::container::{selector, GENESIS_SIGNATURE};
 use qtv_vm::interp::Interpreter;
 use quanta_codegen::{compile_contract, CompiledContract};
 
@@ -17,9 +16,8 @@ fn compile(src: &str) -> CompiledContract {
 }
 
 fn run_genesis(cc: &CompiledContract) -> BTreeMap<[u8; 32], u64> {
-    let gsel = selector(GENESIS_SIGNATURE);
     let mem = vec![0u8; 4096];
-    Interpreter::for_entry(&cc.container, gsel, 200_000)
+    Interpreter::for_genesis(&cc.container, 200_000)
         .expect("the genesis selector resolves")
         .with_memory(&mem)
         .run()

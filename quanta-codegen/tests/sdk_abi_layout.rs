@@ -13,7 +13,7 @@ use quanta_ast::Contract;
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 
 mod common;
-use common::{map_addr_word_key, map_key, signer_address, slot_key};
+use common::{bind_layout, map_addr_word_key, map_key, signer_address, slot_key};
 
 const SDK_CONTEXT_BYTES: u64 = 120;
 const SDK_WORD: u64 = 8;
@@ -206,7 +206,12 @@ fn run(
     storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
 ) -> Result<(BTreeMap<[u8; 32], u64>, Vec<Effect>), Fault> {
-    Interpreter::for_entry(&cc.container, sel, GAS)?
+    let interp = if sel == selector(GENESIS_SIGNATURE) {
+        Interpreter::for_genesis(&cc.container, GAS)?
+    } else {
+        Interpreter::for_entry(&cc.container, sel, GAS)?
+    };
+    interp
         .with_storage(storage)
         .with_memory(mem)
         .run()
@@ -231,7 +236,7 @@ fn canonical_order_message(
     to: &[u8; 32],
 ) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(b"QTVSGN03");
     msg.extend_from_slice(&chain_id.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(sel) as u64).to_be_bytes());
@@ -254,13 +259,16 @@ fn mint_memory(
     client_context: u64,
 ) -> Vec<u8> {
     let signer = signer_address(SCHEME_ML, &key.0);
-    let msg = canonical_order_message(
-        chain_id,
-        &signer,
-        selector_of(cc, "mint"),
-        nonce,
-        amount,
-        to,
+    let msg = bind_layout(
+        cc,
+        canonical_order_message(
+            chain_id,
+            &signer,
+            selector_of(cc, "mint"),
+            nonce,
+            amount,
+            to,
+        ),
     );
     let sig =
         ml_dsa::sign(&key.1, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");

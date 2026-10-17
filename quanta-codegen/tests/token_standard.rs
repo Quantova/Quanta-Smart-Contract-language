@@ -11,7 +11,7 @@ use quanta_ast::Contract;
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 
 mod common;
-use common::{addr, map_key, put_addr_slots, signer_address, slot_key};
+use common::{addr, bind_layout, map_key, put_addr_slots, signer_address, slot_key};
 
 const SLOT_SUPPLY: u64 = 20;
 const SLOT_MAX: u64 = 21;
@@ -103,7 +103,7 @@ fn mint_message(
     to: &[u8; 32],
 ) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(b"QTVSGN03");
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector_of(cc, "mint")) as u64).to_be_bytes());
@@ -113,7 +113,7 @@ fn mint_message(
     msg.extend_from_slice(&amount.to_be_bytes());
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(to);
-    msg
+    bind_layout(cc, msg)
 }
 
 fn ml_member(

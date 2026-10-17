@@ -61,3 +61,25 @@ pub fn nonce_key(signer: &[u8; 32]) -> [u8; 32] {
 pub fn addr(tag: u8) -> [u8; 32] {
     [tag; 32]
 }
+
+pub fn layout_hash_of(cc: &quanta_codegen::CompiledContract, selector: [u8; 4]) -> [u8; 32] {
+    let entry = cc
+        .entries
+        .iter()
+        .find(|e| e.selector == selector)
+        .expect("the signing entry");
+    entry
+        .signed_orders
+        .iter()
+        .chain(entry.quorum_orders.iter())
+        .next()
+        .expect("the entry carries a signed order")
+        .layout_hash
+}
+
+pub fn bind_layout(cc: &quanta_codegen::CompiledContract, mut msg: Vec<u8>) -> Vec<u8> {
+    let word = u64::from_be_bytes(msg[48..56].try_into().unwrap());
+    let hash = layout_hash_of(cc, (word as u32).to_be_bytes());
+    msg.splice(104..104, hash);
+    msg
+}

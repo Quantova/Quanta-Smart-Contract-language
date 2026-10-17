@@ -44,8 +44,7 @@ fn send_asset_emits_a_sixty_four_byte_issuer_and_holder_transfer() {
     let mut mem = vec![0u8; 4096];
     mem[0..32].copy_from_slice(&caller);
 
-    let genesis = qtv_vm::container::selector(qtv_vm::container::GENESIS_SIGNATURE);
-    let deployed = Interpreter::for_entry(&cc.container, genesis, GAS)
+    let deployed = Interpreter::for_genesis(&cc.container, GAS)
         .expect("genesis entry")
         .with_memory(&mem)
         .run()

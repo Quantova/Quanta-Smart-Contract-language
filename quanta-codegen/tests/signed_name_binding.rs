@@ -8,7 +8,7 @@ use qtv_vm::interp::Interpreter;
 use quanta_codegen::{compile_contract, CompiledContract};
 
 mod common;
-use common::{signer_address, slot_key};
+use common::{bind_layout, signer_address, slot_key};
 
 const SRC: &str = "contract R {\n\
   state { admin: Q_Address; reserved: Map<Q_Name, u64>; }\n\
@@ -61,7 +61,7 @@ fn memory(
     let signer = signer_address(SCHEME_ML, pk);
     let selector = cc.entries[entry_index(cc)].selector;
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(b"QTVSGN03");
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
@@ -70,6 +70,7 @@ fn memory(
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&window(signed));
     msg.extend_from_slice(&(signed.len() as u64).to_be_bytes());
+    let msg = bind_layout(cc, msg);
     let sig = ml_dsa::sign(sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
 
     let mut region = Vec::new();

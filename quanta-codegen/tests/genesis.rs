@@ -39,13 +39,12 @@ fn the_container_carries_a_genesis_entry() {
 #[test]
 fn genesis_stores_the_whole_deployer_address_as_the_owner() {
     let cc = compile(COUNTER);
-    let gsel = selector(GENESIS_SIGNATURE);
 
     let deployer = [0xD1u8; 32];
     let mut mem = vec![0u8; 4096];
     mem[0..32].copy_from_slice(&deployer);
 
-    let out = Interpreter::for_entry(&cc.container, gsel, 200_000)
+    let out = Interpreter::for_genesis(&cc.container, 200_000)
         .expect("the genesis selector resolves")
         .with_memory(&mem)
         .run()
@@ -73,11 +72,10 @@ fn genesis_stores_the_whole_deployer_address_as_the_owner() {
 #[test]
 fn a_bump_after_genesis_is_gated_by_the_stored_owner() {
     let cc = compile(COUNTER);
-    let gsel = selector(GENESIS_SIGNATURE);
     let deployer = [0x7Eu8; 32];
     let mut mem = vec![0u8; 4096];
     mem[0..32].copy_from_slice(&deployer);
-    let out = Interpreter::for_entry(&cc.container, gsel, 200_000)
+    let out = Interpreter::for_genesis(&cc.container, 200_000)
         .expect("genesis resolves")
         .with_memory(&mem)
         .run()
@@ -97,12 +95,11 @@ fn a_bump_after_genesis_is_gated_by_the_stored_owner() {
 #[test]
 fn genesis_run_a_second_time_on_initialized_storage_reverts_and_keeps_the_owner() {
     let cc = compile(COUNTER);
-    let gsel = selector(GENESIS_SIGNATURE);
 
     let deployer = [0x7Eu8; 32];
     let mut mem = vec![0u8; 4096];
     mem[0..32].copy_from_slice(&deployer);
-    let first = Interpreter::for_entry(&cc.container, gsel, 200_000)
+    let first = Interpreter::for_genesis(&cc.container, 200_000)
         .expect("genesis resolves")
         .with_memory(&mem)
         .run()
@@ -111,7 +108,7 @@ fn genesis_run_a_second_time_on_initialized_storage_reverts_and_keeps_the_owner(
     let stranger = [0xAAu8; 32];
     let mut stranger_mem = vec![0u8; 4096];
     stranger_mem[0..32].copy_from_slice(&stranger);
-    let second = Interpreter::for_entry(&cc.container, gsel, 200_000)
+    let second = Interpreter::for_genesis(&cc.container, 200_000)
         .expect("genesis resolves")
         .with_storage(first.storage.clone())
         .with_memory(&stranger_mem)

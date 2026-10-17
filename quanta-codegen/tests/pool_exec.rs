@@ -38,7 +38,12 @@ fn run(
     storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
 ) -> Result<(BTreeMap<[u8; 32], u64>, Vec<Effect>), Fault> {
-    Interpreter::for_entry(&cc.container, sel, GAS)?
+    let interp = if sel == selector(GENESIS_SIGNATURE) {
+        Interpreter::for_genesis(&cc.container, GAS)?
+    } else {
+        Interpreter::for_entry(&cc.container, sel, GAS)?
+    };
+    interp
         .with_storage(storage)
         .with_memory(mem)
         .run()

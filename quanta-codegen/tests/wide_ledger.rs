@@ -13,7 +13,7 @@ use quanta_ast::Contract;
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 
 mod common;
-use common::{map_addr_word_key, map_key, signer_address, slot_key};
+use common::{bind_layout, map_addr_word_key, map_key, signer_address, slot_key};
 
 const SLOT_SUPPLY: u64 = 4;
 const HI: u64 = 1 << 56;
@@ -74,7 +74,12 @@ fn run(
     storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
 ) -> Result<(BTreeMap<[u8; 32], u64>, Vec<Effect>), Fault> {
-    Interpreter::for_entry(&cc.container, entry, GAS)?
+    let interp = if entry == selector(GENESIS_SIGNATURE) {
+        Interpreter::for_genesis(&cc.container, GAS)?
+    } else {
+        Interpreter::for_entry(&cc.container, entry, GAS)?
+    };
+    interp
         .with_storage(storage)
         .with_memory(mem)
         .run()
@@ -153,7 +158,7 @@ fn mint_message(
     to: &[u8; 32],
 ) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(b"QTVSGN03");
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector_of(cc, "mint")) as u64).to_be_bytes());
@@ -163,7 +168,7 @@ fn mint_message(
     msg.extend_from_slice(&(amount as u64).to_be_bytes());
     msg.extend_from_slice(&((amount >> 64) as u64).to_be_bytes());
     msg.extend_from_slice(to);
-    msg
+    bind_layout(cc, msg)
 }
 
 fn mint_memory(

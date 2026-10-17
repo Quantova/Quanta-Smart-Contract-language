@@ -8,7 +8,7 @@ use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
 
 mod common;
-use common::{nonce_key, put_addr_slots, signer_address, slot_key};
+use common::{layout_hash_of, nonce_key, put_addr_slots, signer_address, slot_key};
 
 const COUNTER: &str = "contract Counter {\n\
   state { owner: Q_Address; count: u64; }\n\
@@ -26,7 +26,7 @@ const CONTRACT_CTX_OFF: usize = 32;
 const REGION_OFF: u64 = 8192;
 const SCHEME_ML: u8 = 1;
 const CONTRACT: [u8; 32] = [0x33; 32];
-const SIGNED_MSG_TAG: &[u8; 8] = b"QTVSGN02";
+const SIGNED_MSG_TAG: &[u8; 8] = b"QTVSGN03";
 const TIME_CTX_OFF: usize = 64;
 
 const CHAIN_A: u64 = 42;
@@ -51,6 +51,7 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
     mem[off..off + 8].copy_from_slice(&value.to_be_bytes());
 }
 
+#[allow(clippy::too_many_arguments)]
 fn canonical_message(
     chain: u64,
     contract: &[u8; 32],
@@ -58,6 +59,7 @@ fn canonical_message(
     signer: &[u8; 32],
     nonce: u64,
     expiry: u64,
+    layout: &[u8; 32],
     fields: &[u64],
 ) -> Vec<u8> {
     let mut msg = Vec::new();
@@ -68,6 +70,7 @@ fn canonical_message(
     msg.extend_from_slice(signer);
     msg.extend_from_slice(&nonce.to_be_bytes());
     msg.extend_from_slice(&expiry.to_be_bytes());
+    msg.extend_from_slice(layout);
     for f in fields {
         msg.extend_from_slice(&f.to_be_bytes());
     }
@@ -106,6 +109,7 @@ fn bump_memory(
         &signer,
         nonce,
         timing.signed_expiry,
+        &layout_hash_of(cc, selector),
         &[step],
     );
     let sig = ml_dsa::sign(sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
@@ -139,21 +143,23 @@ fn run(
     storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
 ) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
-    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 400_000)
+    Interpreter::for_entry(&cc.container, cc.entries[0].selector, 400_000)?
         .with_storage(storage)
         .with_memory(mem)
         .run()
         .map(|out| out.storage)
 }
 
-const PINNED_ORDER_PREIMAGE: [u8; 112] = [
-    0x51, 0x54, 0x56, 0x53, 0x47, 0x4e, 0x30, 0x32, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
+const PINNED_ORDER_PREIMAGE: [u8; 144] = [
+    0x51, 0x54, 0x56, 0x53, 0x47, 0x4e, 0x30, 0x33, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef,
     0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
     0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33,
     0x00, 0x00, 0x00, 0x00, 0x6c, 0xad, 0x12, 0xfc, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
     0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
     0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07,
-    0x00, 0x00, 0x00, 0x00, 0x71, 0x3f, 0xb3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2a,
+    0x00, 0x00, 0x00, 0x00, 0x71, 0x3f, 0xb3, 0x00, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c,
+    0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c,
+    0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x4c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2a,
 ];
 
 #[test]
@@ -165,12 +171,13 @@ fn the_order_preimage_matches_the_pinned_vector() {
         &[0x11; 32],
         7,
         1_900_000_000,
+        &[0x4c; 32],
         &[42],
     );
     assert_eq!(
         preimage.len(),
-        112,
-        "tag 8, chain 8, contract 32, selector 8, signer 32, nonce 8, expiry 8, field 8"
+        144,
+        "tag 8, chain 8, contract 32, selector 8, signer 32, nonce 8, expiry 8, layout 32, field 8"
     );
     assert_eq!(preimage.as_slice(), PINNED_ORDER_PREIMAGE.as_slice());
     assert_eq!(

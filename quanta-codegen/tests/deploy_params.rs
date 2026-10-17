@@ -1,7 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use qtv_vm::container::{selector, GENESIS_SIGNATURE};
 use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
 
@@ -20,7 +19,7 @@ fn run_genesis(
     cc: &CompiledContract,
     mem: &[u8],
 ) -> Result<std::collections::BTreeMap<[u8; 32], u64>, Fault> {
-    Interpreter::for_entry(&cc.container, selector(GENESIS_SIGNATURE), 12_500_000)
+    Interpreter::for_genesis(&cc.container, 12_500_000)
         .expect("the genesis selector resolves")
         .with_memory(mem)
         .run()

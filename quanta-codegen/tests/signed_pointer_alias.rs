@@ -8,7 +8,7 @@ use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
 
 mod common;
-use common::{nonce_key, put_addr_slots, signer_address, slot_key};
+use common::{bind_layout, nonce_key, put_addr_slots, signer_address, slot_key};
 
 const VAULT: &str = "contract Vault {\n\
   state { owner: Q_Address; seized: Registry<Q_Address>; }\n\
@@ -25,7 +25,7 @@ const SCHEME_SLH: u8 = 2;
 const CONTRACT: [u8; 32] = [0x33; 32];
 
 const SIGNER_ADDR_SCRATCH: u64 = 40960;
-const MSG_FIELDS_OFF: u64 = 104;
+const MSG_FIELDS_OFF: u64 = 136;
 const NONCE_DIGEST_SCRATCH: u64 = 41216;
 
 fn compile(src: &str) -> CompiledContract {
@@ -54,7 +54,7 @@ fn canonical_message(
     target: &[u8; 32],
 ) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(b"QTVSGN03");
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
@@ -74,6 +74,7 @@ fn msg_start(scheme: u8) -> u64 {
 }
 
 fn signed_region(
+    cc: &CompiledContract,
     scheme: u8,
     signer_seed: u8,
     selector: [u8; 4],
@@ -84,7 +85,7 @@ fn signed_region(
         SCHEME_ML => {
             let (pk, sk) = ml_dsa::keygen(&[signer_seed; 32]);
             let signer = signer_address(SCHEME_ML, &pk);
-            let msg = canonical_message(selector, &signer, nonce, target);
+            let msg = bind_layout(cc, canonical_message(selector, &signer, nonce, target));
             let sig = ml_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32])
                 .expect("sign");
             let mut region = Vec::new();
@@ -97,7 +98,7 @@ fn signed_region(
             let (sk, pk) =
                 slh_dsa::keygen(&[signer_seed; 24], &[signer_seed; 24], &[signer_seed; 24]);
             let signer = signer_address(SCHEME_SLH, &pk);
-            let msg = canonical_message(selector, &signer, nonce, target);
+            let msg = bind_layout(cc, canonical_message(selector, &signer, nonce, target));
             let sig = slh_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[4u8; 24])
                 .expect("sign");
             let mut region = Vec::new();
@@ -139,7 +140,7 @@ fn run(
     storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
 ) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
-    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 6_000_000)
+    Interpreter::for_entry(&cc.container, cc.entries[0].selector, 6_000_000)?
         .with_storage(storage)
         .with_memory(mem)
         .run()
@@ -161,7 +162,7 @@ fn the_owner_over_a_bounded_pointer_is_admitted() {
     let cc = compile(VAULT);
     let selector = cc.container.entries[0].selector;
     let victim = [0x77u8; 32];
-    let (region, owner) = signed_region(SCHEME_ML, 3, selector, 0, &victim);
+    let (region, owner) = signed_region(&cc, SCHEME_ML, 3, selector, 0, &victim);
     let mem = call_memory(&cc, SCHEME_ML, &region, 8192, &victim);
     let out = run(&cc, owned_storage(&owner), &mem).expect("the owner's own order is admitted");
     assert_eq!(
@@ -174,9 +175,9 @@ fn the_owner_over_a_bounded_pointer_is_admitted() {
 fn forge_attempt(scheme: u8) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
     let cc = compile(VAULT);
     let selector = cc.container.entries[0].selector;
-    let (_owner_region, owner) = signed_region(scheme, 3, selector, 0, &[0u8; 32]);
+    let (_owner_region, owner) = signed_region(&cc, scheme, 3, selector, 0, &[0u8; 32]);
     let ptr = aliasing_ptr(scheme);
-    let (region, _attacker) = signed_region(scheme, 9, selector, 0, &owner);
+    let (region, _attacker) = signed_region(&cc, scheme, 9, selector, 0, &owner);
     let mem = call_memory(&cc, scheme, &region, ptr, &owner);
     run(&cc, owned_storage(&owner), &mem)
 }
@@ -204,7 +205,7 @@ fn a_message_ending_exactly_at_the_scratch_floor_is_admitted() {
     let cc = compile(VAULT);
     let selector = cc.container.entries[0].selector;
     let victim = [0x55u8; 32];
-    let (region, owner) = signed_region(SCHEME_ML, 3, selector, 0, &victim);
+    let (region, owner) = signed_region(&cc, SCHEME_ML, 3, selector, 0, &victim);
     let ptr = floor_ptr(SCHEME_ML);
     let mem = call_memory(&cc, SCHEME_ML, &region, ptr, &victim);
     let out = run(&cc, owned_storage(&owner), &mem)
@@ -221,7 +222,7 @@ fn a_message_reaching_one_word_into_the_scratch_is_refused() {
     let cc = compile(VAULT);
     let selector = cc.container.entries[0].selector;
     let victim = [0x55u8; 32];
-    let (region, owner) = signed_region(SCHEME_ML, 3, selector, 0, &victim);
+    let (region, owner) = signed_region(&cc, SCHEME_ML, 3, selector, 0, &victim);
     let ptr = floor_ptr(SCHEME_ML) + 8;
     let mem = call_memory(&cc, SCHEME_ML, &region, ptr, &victim);
     assert_eq!(
@@ -236,7 +237,7 @@ fn a_pointer_aliasing_the_nonce_digest_scratch_is_refused() {
     let cc = compile(VAULT);
     let selector = cc.container.entries[0].selector;
     let victim = [0x66u8; 32];
-    let (region, owner) = signed_region(SCHEME_ML, 3, selector, 0, &victim);
+    let (region, owner) = signed_region(&cc, SCHEME_ML, 3, selector, 0, &victim);
     let ptr = NONCE_DIGEST_SCRATCH - msg_start(SCHEME_ML) - MSG_FIELDS_OFF;
     let mem = call_memory(&cc, SCHEME_ML, &region, ptr, &victim);
     assert_eq!(

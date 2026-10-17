@@ -118,7 +118,25 @@ fn resolve(offsets: &[Option<u32>], label: Label) -> Result<u32, LinkError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use qtv_vm::interp::Interpreter;
+    use qtv_vm::container::{selector, Container, Entry, StateAccess};
+    use qtv_vm::interp::{Interpreter, Outcome};
+
+    fn run_code(code: Vec<u8>) -> Outcome {
+        let sel = selector("run()");
+        let container = Container::new(
+            code,
+            vec![],
+            vec![Entry {
+                selector: sel,
+                offset: 0,
+                access: StateAccess::default(),
+            }],
+        );
+        Interpreter::for_entry(&container, sel, 1_000_000)
+            .expect("entry")
+            .run()
+            .expect("halt")
+    }
 
     #[test]
     fn straight_line_program_runs() {
@@ -128,9 +146,7 @@ mod tests {
         b.op(Instr::Add { d: 2, a: 0, b: 1 });
         b.op(Instr::Halt);
         let code = b.link().expect("link");
-        let out = Interpreter::for_system_program(&code, &[], 100)
-            .run()
-            .expect("halt");
+        let out = run_code(code);
         assert_eq!(out.regs[2], 12);
     }
 
@@ -145,9 +161,7 @@ mod tests {
         b.mark(skip);
         b.op(Instr::Halt);
         let code = b.link().expect("link");
-        let out = Interpreter::for_system_program(&code, &[], 100)
-            .run()
-            .expect("halt");
+        let out = run_code(code);
         assert_eq!(out.regs[1], 5);
     }
 

@@ -9,7 +9,7 @@ use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 
 mod common;
-use common::{put_addr_slots, signer_address, slot_key};
+use common::{bind_layout, put_addr_slots, signer_address, slot_key};
 
 const GATE: &str = "contract Gate {\n\
   state { board: GuardianSet<1>; armed: u64; opened: u64; }\n\
@@ -52,7 +52,7 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
 
 fn message(selector: [u8; SELECTOR_BYTES], member: &[u8; 32], nonce: u64) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(b"QTVSGN03");
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
@@ -63,13 +63,14 @@ fn message(selector: [u8; SELECTOR_BYTES], member: &[u8; 32], nonce: u64) -> Vec
 }
 
 fn ml_region(
+    cc: &CompiledContract,
     selector: [u8; SELECTOR_BYTES],
     pk: &[u8],
     sk: &ml_dsa::SecretKey,
     nonce: u64,
 ) -> Vec<u8> {
     let addr = signer_address(SCHEME_ML, pk);
-    let msg = message(selector, &addr, nonce);
+    let msg = bind_layout(cc, message(selector, &addr, nonce));
     let sig = ml_dsa::sign(sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     let mut region = Vec::new();
     region.extend_from_slice(pk);
@@ -140,7 +141,7 @@ fn arm_then_open_after_the_delay_runs_end_to_end() {
     let open = entry(&cc, "open");
 
     let t: u64 = 10_000;
-    let armed = call(arm, ml_region(arm.selector, &key.0, &key.1, 0), t);
+    let armed = call(arm, ml_region(&cc, arm.selector, &key.0, &key.1, 0), t);
     let after_arm = run(&cc, arm, board_storage(&addr), &armed).expect("the arm records the time");
     assert_eq!(
         after_arm.get(&slot_key(ARMED_SLOT)),
@@ -148,7 +149,11 @@ fn arm_then_open_after_the_delay_runs_end_to_end() {
         "the arm recorded now under quorum"
     );
 
-    let open_mem = call(open, ml_region(open.selector, &key.0, &key.1, 1), t + 3600);
+    let open_mem = call(
+        open,
+        ml_region(&cc, open.selector, &key.0, &key.1, 1),
+        t + 3600,
+    );
     let out = run(&cc, open, after_arm.clone(), &open_mem)
         .expect("the open passes once the delay elapses");
     assert_eq!(
@@ -171,10 +176,14 @@ fn open_before_the_delay_reverts() {
     let open = entry(&cc, "open");
 
     let t: u64 = 10_000;
-    let armed = call(arm, ml_region(arm.selector, &key.0, &key.1, 0), t);
+    let armed = call(arm, ml_region(&cc, arm.selector, &key.0, &key.1, 0), t);
     let after_arm = run(&cc, arm, board_storage(&addr), &armed).expect("the arm records the time");
 
-    let open_mem = call(open, ml_region(open.selector, &key.0, &key.1, 1), t + 3599);
+    let open_mem = call(
+        open,
+        ml_region(&cc, open.selector, &key.0, &key.1, 1),
+        t + 3599,
+    );
     assert_eq!(
         run(&cc, open, after_arm.clone(), &open_mem),
         Err(Fault::DivByZero),
@@ -195,7 +204,7 @@ fn a_valid_quorum_cannot_open_without_a_prior_arm() {
 
     let open_mem = call(
         open,
-        ml_region(open.selector, &key.0, &key.1, 0),
+        ml_region(&cc, open.selector, &key.0, &key.1, 0),
         10_000_000,
     );
     assert_eq!(

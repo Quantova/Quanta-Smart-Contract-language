@@ -34,7 +34,7 @@ fn run(
     storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
 ) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
-    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 100_000)
+    Interpreter::for_entry(&cc.container, cc.entries[0].selector, 100_000)?
         .with_storage(storage)
         .with_memory(mem)
         .run()

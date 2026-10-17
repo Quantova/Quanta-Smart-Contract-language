@@ -65,7 +65,8 @@ const ADDR_TYPE: &str = "Q_Address";
 
 const WIDE_TYPE: &str = "u128";
 
-const SIGNED_MSG_TAG: u64 = u64::from_be_bytes(*b"QTVSGN02");
+const SIGNED_MSG_TAG: u64 = u64::from_be_bytes(*b"QTVSGN03");
+const ORDER_LAYOUT_TAG: &[u8; 8] = b"QTVLAYT1";
 pub(crate) const NONCE_TAG: u64 = u64::from_be_bytes(*b"QTVNONCE");
 const NAME_KEY_TAG: u64 = u64::from_be_bytes(*b"QTVNAME1");
 
@@ -134,6 +135,67 @@ pub struct DeployParamSlot {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderField {
+    pub name: String,
+    pub ty: String,
+    pub width: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderLayoutSlot {
+    pub param: String,
+    pub quorum: bool,
+    pub fields: Vec<OrderField>,
+    pub hash: [u8; 32],
+}
+
+pub fn order_layout_hash(selector: [u8; 4], fields: &[OrderField]) -> [u8; 32] {
+    let mut pre = ORDER_LAYOUT_TAG.to_vec();
+    pre.extend_from_slice(&selector);
+    pre.extend_from_slice(&(fields.len() as u32).to_be_bytes());
+    for field in fields {
+        pre.extend_from_slice(&(field.name.len() as u32).to_be_bytes());
+        pre.extend_from_slice(field.name.as_bytes());
+        pre.extend_from_slice(&(field.ty.len() as u32).to_be_bytes());
+        pre.extend_from_slice(field.ty.as_bytes());
+        pre.extend_from_slice(&field.width.to_be_bytes());
+    }
+    qtv_crypto::sha3::sha3_256(&pre)
+}
+
+struct MsgField {
+    off: u64,
+    words: u64,
+    name: String,
+    ty: String,
+}
+
+fn record_order_layout(
+    ctx: &mut Ctx,
+    entry: &EntryDecl,
+    param: &str,
+    quorum: bool,
+    specs: &[MsgField],
+) -> [u8; 32] {
+    let fields: Vec<OrderField> = specs
+        .iter()
+        .map(|f| OrderField {
+            name: f.name.clone(),
+            ty: f.ty.clone(),
+            width: f.words * WORD,
+        })
+        .collect();
+    let hash = order_layout_hash(entry_selector(entry), &fields);
+    ctx.args.order_layouts.push(OrderLayoutSlot {
+        param: param.to_string(),
+        quorum,
+        fields,
+        hash,
+    });
+    hash
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventSig {
     pub selector: u32,
     pub field_words: Vec<u64>,
@@ -150,6 +212,7 @@ pub struct Args {
     oversize: Option<String>,
     sealed: HashSet<String>,
     unsigned: Option<String>,
+    order_layouts: Vec<OrderLayoutSlot>,
 }
 
 impl Args {
@@ -210,6 +273,10 @@ impl Args {
 
     pub fn deploy_params(&self) -> &[DeployParamSlot] {
         &self.deploy_params
+    }
+
+    pub fn order_layouts(&self) -> &[OrderLayoutSlot] {
+        &self.order_layouts
     }
 
     pub fn layout(&self) -> Vec<(String, u64, u64)> {
@@ -1844,11 +1911,6 @@ fn lower_genesis_guard(ctx: &mut Ctx, span: Span) -> Result<(), CodegenError> {
     Ok(())
 }
 
-enum VerifyOp {
-    Ml,
-    Slh,
-}
-
 fn lower_signed_prologue(
     ctx: &mut Ctx,
     entry: &EntryDecl,
@@ -1915,6 +1977,7 @@ fn lower_quorum_prologue(
         let name = &param.name.text;
         let span = param.span;
         let field_specs = quorum_message_fields(ctx, entry, name)?;
+        let layout_hash = record_order_layout(ctx, entry, name, true, &field_specs);
         let expiry_off = ctx.args.offset_of(&format!("{name}{SIG_EXPIRY_SUFFIX}"));
         lower_expiry_check(ctx, expiry_off, trap, span)?;
         let selector_word = u32::from_be_bytes(entry_selector(entry)) as u64;
@@ -1936,6 +1999,7 @@ fn lower_quorum_prologue(
                     set_count,
                     selector_word,
                     expiry_off,
+                    layout_hash,
                     field_specs: &field_specs,
                 },
                 trap,
@@ -2001,7 +2065,7 @@ fn quorum_message_fields(
     ctx: &mut Ctx,
     entry: &EntryDecl,
     quorum_name: &str,
-) -> Result<Vec<(u64, u64)>, CodegenError> {
+) -> Result<Vec<MsgField>, CodegenError> {
     let mut specs = Vec::new();
     for param in &entry.params {
         let pname = &param.name.text;
@@ -2018,28 +2082,39 @@ fn quorum_message_fields(
                     span: param.span,
                 })?;
             let off = ctx.args.offset_of_width(pname, words.saturating_mul(WORD));
-            specs.push((off, words));
+            specs.push(MsgField {
+                off,
+                words,
+                name: pname.clone(),
+                ty: GUARDIAN_SET_PARAM.to_string(),
+            });
             continue;
         }
         let keys = collect_signed_fields(entry, pname);
-        specs.extend(signed_field_specs(ctx, keys));
+        specs.extend(signed_field_specs(ctx, entry, keys));
     }
     Ok(specs)
 }
 
-fn signed_field_specs(ctx: &mut Ctx, keys: Vec<String>) -> Vec<(u64, u64)> {
-    let mut specs: Vec<(u64, u64)> = Vec::new();
-    let push = |specs: &mut Vec<(u64, u64)>, spec: (u64, u64)| {
-        if !specs.iter().any(|(off, _)| *off == spec.0) {
-            specs.push(spec);
+fn signed_field_specs(ctx: &mut Ctx, entry: &EntryDecl, keys: Vec<String>) -> Vec<MsgField> {
+    let mut specs: Vec<MsgField> = Vec::new();
+    let push = |specs: &mut Vec<MsgField>, off: u64, words: u64, name: &str, ty: &str| {
+        if !specs.iter().any(|f| f.off == off) {
+            specs.push(MsgField {
+                off,
+                words,
+                name: name.to_string(),
+                ty: ty.to_string(),
+            });
         }
     };
     for key in keys {
         if ctx.name_params.contains(&key) {
             let window = ctx.args.offset_of_width(&key, NAME_WINDOW);
-            push(&mut specs, (window, NAME_WINDOW / WORD));
-            let len = ctx.args.offset_of(&format!("{key}{NAME_LEN_SUFFIX}"));
-            push(&mut specs, (len, 1));
+            push(&mut specs, window, NAME_WINDOW / WORD, &key, NAME_TYPE);
+            let len_key = format!("{key}{NAME_LEN_SUFFIX}");
+            let len = ctx.args.offset_of(&len_key);
+            push(&mut specs, len, 1, &len_key, "u64");
             continue;
         }
         let key = match key.split_once('.') {
@@ -2048,15 +2123,20 @@ fn signed_field_specs(ctx: &mut Ctx, keys: Vec<String>) -> Vec<(u64, u64)> {
             }
             _ => key,
         };
-        let words = if ctx.address_keys.contains(&key) {
-            ADDR_WORDS
+        let (words, ty) = if ctx.address_keys.contains(&key) {
+            (ADDR_WORDS, ADDR_TYPE.to_string())
         } else if ctx.wide_keys.contains(&key) {
-            2
+            (2, WIDE_TYPE.to_string())
         } else {
-            1
+            let declared = entry
+                .params
+                .iter()
+                .find(|p| p.name.text == key)
+                .map(|p| p.ty.name.text.clone());
+            (1, declared.unwrap_or_else(|| "u64".to_string()))
         };
         let off = ctx.args.offset_of_width(&key, words * WORD);
-        push(&mut specs, (off, words));
+        push(&mut specs, off, words, &key, &ty);
     }
     specs
 }
@@ -2070,7 +2150,8 @@ struct QuorumMember<'a> {
     set_count: u64,
     selector_word: u64,
     expiry_off: u64,
-    field_specs: &'a [(u64, u64)],
+    layout_hash: [u8; 32],
+    field_specs: &'a [MsgField],
 }
 
 fn lower_quorum_member(
@@ -2079,219 +2160,16 @@ fn lower_quorum_member(
     trap: Label,
     span: Span,
 ) -> Result<(), CodegenError> {
-    let ml_label = ctx.b.label();
-    let slh_label = ctx.b.label();
-    let done_label = ctx.b.label();
-
-    let scheme = ctx.regs.alloc(span)?;
-    ctx.b.op(Instr::Ldi {
-        d: SCRATCH,
-        imm: member.scheme_off,
-    });
-    ctx.b.op(Instr::MLoad {
-        d: scheme,
-        a: SCRATCH,
-    });
-    let test = ctx.regs.alloc(span)?;
-    ctx.b.op(Instr::Ldi {
-        d: SCRATCH,
-        imm: SCHEME_ML,
-    });
-    ctx.b.op(Instr::Eq {
-        d: test,
-        a: scheme,
-        b: SCRATCH,
-    });
-    ctx.b.jnz(test, ml_label);
-    ctx.b.op(Instr::Ldi {
-        d: SCRATCH,
-        imm: SCHEME_SLH,
-    });
-    ctx.b.op(Instr::Eq {
-        d: test,
-        a: scheme,
-        b: SCRATCH,
-    });
-    ctx.b.jnz(test, slh_label);
-    ctx.b.jmp(trap);
-    ctx.regs.free(test);
-    ctx.regs.free(scheme);
-
-    ctx.b.mark(ml_label);
-    emit_quorum_member(ctx, VerifyOp::Ml, &member, trap, span)?;
-    ctx.b.jmp(done_label);
-
-    ctx.b.mark(slh_label);
-    emit_quorum_member(ctx, VerifyOp::Slh, &member, trap, span)?;
-
-    ctx.b.mark(done_label);
-    Ok(())
-}
-
-fn emit_quorum_member(
-    ctx: &mut Ctx,
-    op: VerifyOp,
-    member: &QuorumMember,
-    trap: Label,
-    span: Span,
-) -> Result<(), CodegenError> {
-    let (pk, sig, scheme_id) = match op {
-        VerifyOp::Ml => (
-            qtv_vm::abi::ML_DSA_PUBLIC_KEY_BYTES as u64,
-            qtv_vm::abi::ML_DSA_SIGNATURE_BYTES as u64,
-            SCHEME_ML,
-        ),
-        VerifyOp::Slh => (
-            qtv_vm::abi::SLH_DSA_PUBLIC_KEY_BYTES as u64,
-            qtv_vm::abi::SLH_DSA_SIGNATURE_BYTES as u64,
-            SCHEME_SLH,
-        ),
+    let msg_len = order_message_len(member.field_specs);
+    let sel = select_scheme(ctx, member.scheme_off, member.ptr_off, msg_len, trap, span)?;
+    let header = OrderHeader {
+        expiry_off: member.expiry_off,
+        selector_word: member.selector_word,
+        layout_hash: &member.layout_hash,
+        field_specs: member.field_specs,
+        msg_len,
     };
-    let msg_start = pk + sig;
-    let fields_bytes: u64 = member
-        .field_specs
-        .iter()
-        .map(|(_, words)| words * WORD)
-        .sum();
-    let msg_len = MSG_FIELDS_OFF + fields_bytes;
-
-    let ptr = load_arg(ctx, member.ptr_off, span)?;
-    bound_message_pointer(ctx, ptr, msg_start, msg_len, trap, span)?;
-
-    {
-        let rscheme = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: rscheme,
-            imm: scheme_id,
-        });
-        let rout = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: rout,
-            imm: SIGNER_ADDR_SCRATCH,
-        });
-        ctx.b.op(Instr::Addr {
-            a: ptr,
-            b: rscheme,
-            c: rout,
-        });
-        ctx.regs.free(rout);
-        ctx.regs.free(rscheme);
-    }
-
-    {
-        let rtag = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: rtag,
-            imm: NONCE_TAG,
-        });
-        store_mem_word(ctx, NONCE_PREIMAGE_SCRATCH, rtag);
-        ctx.regs.free(rtag);
-    }
-    copy_words_fixed(
-        ctx,
-        SIGNER_ADDR_SCRATCH,
-        NONCE_PREIMAGE_SCRATCH + WORD,
-        ADDR_WORDS,
-        span,
-    )?;
-    {
-        let ra = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: ra,
-            imm: NONCE_PREIMAGE_SCRATCH,
-        });
-        let rb = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: rb,
-            imm: WORD + ADDR_BYTES,
-        });
-        let rc = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: rc,
-            imm: NONCE_DIGEST_SCRATCH,
-        });
-        ctx.b.op(Instr::Hash {
-            a: ra,
-            b: rb,
-            c: rc,
-        });
-        ctx.regs.free(rc);
-        ctx.regs.free(rb);
-        ctx.regs.free(ra);
-    }
-    let slot = ctx.regs.alloc(span)?;
-    ctx.b.op(Instr::Ldi {
-        d: slot,
-        imm: NONCE_DIGEST_SCRATCH,
-    });
-    let nonce = ctx.regs.alloc(span)?;
-    ctx.b.op(Instr::SLoad { d: nonce, a: slot });
-
-    let dst = ctx.regs.alloc(span)?;
-    {
-        let k = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: k,
-            imm: msg_start,
-        });
-        ctx.b.op(Instr::AddW {
-            d: dst,
-            a: ptr,
-            b: k,
-        });
-        ctx.regs.free(k);
-    }
-    store_order_header(ctx, dst, member.expiry_off, span)?;
-    {
-        let r = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: r,
-            imm: member.selector_word,
-        });
-        store_off(ctx, dst, MSG_SELECTOR_OFF, r);
-        ctx.regs.free(r);
-    }
-    copy_words_to_region(
-        ctx,
-        SIGNER_ADDR_SCRATCH,
-        dst,
-        MSG_SIGNER_OFF,
-        ADDR_WORDS,
-        span,
-    )?;
-    store_off(ctx, dst, MSG_NONCE_OFF, nonce);
-    {
-        let mut field_off_in_msg = MSG_FIELDS_OFF;
-        for (arg_off, words) in member.field_specs {
-            copy_words_to_region(ctx, *arg_off, dst, field_off_in_msg, *words, span)?;
-            field_off_in_msg += words * WORD;
-        }
-    }
-
-    {
-        let rlen = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: rlen,
-            imm: msg_start + msg_len,
-        });
-        let rok = ctx.regs.alloc(span)?;
-        let instr = match op {
-            VerifyOp::Ml => Instr::VerifyMl {
-                a: ptr,
-                b: rlen,
-                c: rok,
-            },
-            VerifyOp::Slh => Instr::VerifySlh {
-                a: ptr,
-                b: rlen,
-                c: rok,
-            },
-        };
-        ctx.b.op(instr);
-        ctx.b.jz(rok, trap);
-        ctx.regs.free(rok);
-        ctx.regs.free(rlen);
-    }
+    let (slot, nonce) = emit_order_message(ctx, &sel, &header, trap, span)?;
 
     let index = load_arg(ctx, member.index_off, span)?;
     {
@@ -2381,10 +2259,9 @@ fn emit_quorum_member(
         ctx.regs.free(one);
     }
 
-    ctx.regs.free(dst);
     ctx.regs.free(nonce);
     ctx.regs.free(slot);
-    ctx.regs.free(ptr);
+    release_scheme(ctx, sel);
     Ok(())
 }
 
@@ -2793,6 +2670,7 @@ fn store_order_header(
     ctx: &mut Ctx,
     dst: Reg,
     expiry_off: u64,
+    layout_hash: &[u8; 32],
     span: Span,
 ) -> Result<(), CodegenError> {
     let tag = ctx.regs.alloc(span)?;
@@ -2806,7 +2684,17 @@ fn store_order_header(
     copy_words_to_region(ctx, chain_off, dst, MSG_CHAIN_OFF, 1, span)?;
     let contract_off = ctx.args.offset_of(CONTRACT_KEY);
     copy_words_to_region(ctx, contract_off, dst, MSG_CONTRACT_OFF, ADDR_WORDS, span)?;
-    copy_words_to_region(ctx, expiry_off, dst, MSG_EXPIRY_OFF, 1, span)
+    copy_words_to_region(ctx, expiry_off, dst, MSG_EXPIRY_OFF, 1, span)?;
+    let word = ctx.regs.alloc(span)?;
+    for (i, chunk) in layout_hash.as_chunks::<8>().0.iter().enumerate() {
+        ctx.b.op(Instr::Ldi {
+            d: word,
+            imm: u64::from_be_bytes(*chunk),
+        });
+        store_off(ctx, dst, MSG_LAYOUT_OFF + i as u64 * WORD, word);
+    }
+    ctx.regs.free(word);
+    Ok(())
 }
 
 fn lower_expiry_check(
@@ -3325,7 +3213,8 @@ const MSG_SELECTOR_OFF: u64 = 48;
 const MSG_SIGNER_OFF: u64 = 56;
 const MSG_NONCE_OFF: u64 = 88;
 const MSG_EXPIRY_OFF: u64 = 96;
-const MSG_FIELDS_OFF: u64 = 104;
+const MSG_LAYOUT_OFF: u64 = 104;
+const MSG_FIELDS_OFF: u64 = 136;
 
 fn lower_signed_binding(
     ctx: &mut Ctx,
@@ -3355,77 +3244,59 @@ fn lower_signed_binding(
     let scheme_off = ctx.args.offset_of(&format!("{name}{SIG_SCHEME_SUFFIX}"));
     let ptr_off = ctx.args.offset_of(&format!("{name}{SIG_PTR_SUFFIX}"));
     let keys = collect_signed_fields(entry, name);
-    let field_specs = signed_field_specs(ctx, keys);
+    let field_specs = signed_field_specs(ctx, entry, keys);
+    let layout_hash = record_order_layout(ctx, entry, name, false, &field_specs);
     let expiry_off = ctx.args.offset_of(&format!("{name}{SIG_EXPIRY_SUFFIX}"));
     lower_expiry_check(ctx, expiry_off, trap, span)?;
     let selector_word = u32::from_be_bytes(entry_selector(entry)) as u64;
 
-    let ml_label = ctx.b.label();
-    let slh_label = ctx.b.label();
-    let done_label = ctx.b.label();
-
-    let scheme = ctx.regs.alloc(span)?;
-    ctx.b.op(Instr::Ldi {
-        d: SCRATCH,
-        imm: scheme_off,
-    });
-    ctx.b.op(Instr::MLoad {
-        d: scheme,
-        a: SCRATCH,
-    });
-    let test = ctx.regs.alloc(span)?;
-    ctx.b.op(Instr::Ldi {
-        d: SCRATCH,
-        imm: SCHEME_ML,
-    });
-    ctx.b.op(Instr::Eq {
-        d: test,
-        a: scheme,
-        b: SCRATCH,
-    });
-    ctx.b.jnz(test, ml_label);
-    ctx.b.op(Instr::Ldi {
-        d: SCRATCH,
-        imm: SCHEME_SLH,
-    });
-    ctx.b.op(Instr::Eq {
-        d: test,
-        a: scheme,
-        b: SCRATCH,
-    });
-    ctx.b.jnz(test, slh_label);
-    ctx.b.jmp(trap);
-    ctx.regs.free(test);
-    ctx.regs.free(scheme);
-
-    ctx.b.mark(ml_label);
-    emit_signed_binding(
-        ctx,
-        VerifyOp::Ml,
-        ptr_off,
+    let msg_len = order_message_len(&field_specs);
+    let sel = select_scheme(ctx, scheme_off, ptr_off, msg_len, trap, span)?;
+    let header = OrderHeader {
         expiry_off,
-        owner_slot,
         selector_word,
-        &field_specs,
-        trap,
-        span,
-    )?;
-    ctx.b.jmp(done_label);
+        layout_hash: &layout_hash,
+        field_specs: &field_specs,
+        msg_len,
+    };
+    let (slot, nonce) = emit_order_message(ctx, &sel, &header, trap, span)?;
 
-    ctx.b.mark(slh_label);
-    emit_signed_binding(
-        ctx,
-        VerifyOp::Slh,
-        ptr_off,
-        expiry_off,
-        owner_slot,
-        selector_word,
-        &field_specs,
-        trap,
-        span,
-    )?;
+    for i in 0..ADDR_WORDS {
+        let ownv = load_slot(ctx, owner_slot + i, span)?;
+        let sigv = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: SIGNER_ADDR_SCRATCH + i * WORD,
+        });
+        ctx.b.op(Instr::MLoad {
+            d: sigv,
+            a: SCRATCH,
+        });
+        ctx.b.op(Instr::Eq {
+            d: ownv,
+            a: ownv,
+            b: sigv,
+        });
+        ctx.b.jz(ownv, trap);
+        ctx.regs.free(sigv);
+        ctx.regs.free(ownv);
+    }
 
-    ctx.b.mark(done_label);
+    {
+        let one = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::Ldi { d: one, imm: 1 });
+        ctx.b.op(Instr::AddW {
+            d: nonce,
+            a: nonce,
+            b: one,
+        });
+        ctx.b.op(Instr::SStore { a: slot, b: nonce });
+        ctx.regs.free(one);
+    }
+
+    ctx.regs.free(nonce);
+    ctx.regs.free(slot);
+    release_scheme(ctx, sel);
     Ok(())
 }
 
@@ -3461,43 +3332,99 @@ fn bound_message_pointer(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn emit_signed_binding(
+struct SchemeRegs {
+    ptr: Reg,
+    start: Reg,
+    scheme: Reg,
+}
+
+fn message_start(scheme: u64) -> u64 {
+    if scheme == SCHEME_ML {
+        (qtv_vm::abi::ML_DSA_PUBLIC_KEY_BYTES + qtv_vm::abi::ML_DSA_SIGNATURE_BYTES) as u64
+    } else {
+        (qtv_vm::abi::SLH_DSA_PUBLIC_KEY_BYTES + qtv_vm::abi::SLH_DSA_SIGNATURE_BYTES) as u64
+    }
+}
+
+fn select_scheme(
     ctx: &mut Ctx,
-    op: VerifyOp,
+    scheme_off: u64,
     ptr_off: u64,
-    expiry_off: u64,
-    owner_slot: u64,
-    selector_word: u64,
-    field_specs: &[(u64, u64)],
+    msg_len: u64,
     trap: Label,
     span: Span,
-) -> Result<(), CodegenError> {
-    let (pk, sig, scheme_id) = match op {
-        VerifyOp::Ml => (
-            qtv_vm::abi::ML_DSA_PUBLIC_KEY_BYTES as u64,
-            qtv_vm::abi::ML_DSA_SIGNATURE_BYTES as u64,
-            SCHEME_ML,
-        ),
-        VerifyOp::Slh => (
-            qtv_vm::abi::SLH_DSA_PUBLIC_KEY_BYTES as u64,
-            qtv_vm::abi::SLH_DSA_SIGNATURE_BYTES as u64,
-            SCHEME_SLH,
-        ),
-    };
-    let msg_start = pk + sig;
-    let fields_bytes: u64 = field_specs.iter().map(|(_, words)| words * WORD).sum();
-    let msg_len = MSG_FIELDS_OFF + fields_bytes;
-
-    let ptr = load_arg(ctx, ptr_off, span)?;
-    bound_message_pointer(ctx, ptr, msg_start, msg_len, trap, span)?;
-
-    {
-        let rscheme = ctx.regs.alloc(span)?;
+) -> Result<SchemeRegs, CodegenError> {
+    let ptr = ctx.regs.alloc(span)?;
+    let start = ctx.regs.alloc(span)?;
+    let scheme = ctx.regs.alloc(span)?;
+    let ml_label = ctx.b.label();
+    let slh_label = ctx.b.label();
+    let body_label = ctx.b.label();
+    ctx.b.op(Instr::Ldi {
+        d: SCRATCH,
+        imm: scheme_off,
+    });
+    ctx.b.op(Instr::MLoad {
+        d: scheme,
+        a: SCRATCH,
+    });
+    let test = ctx.regs.alloc(span)?;
+    for (id, label) in [(SCHEME_ML, ml_label), (SCHEME_SLH, slh_label)] {
         ctx.b.op(Instr::Ldi {
-            d: rscheme,
-            imm: scheme_id,
+            d: SCRATCH,
+            imm: id,
         });
+        ctx.b.op(Instr::Eq {
+            d: test,
+            a: scheme,
+            b: SCRATCH,
+        });
+        ctx.b.jnz(test, label);
+    }
+    ctx.b.jmp(trap);
+    ctx.regs.free(test);
+    for (id, label) in [(SCHEME_ML, ml_label), (SCHEME_SLH, slh_label)] {
+        ctx.b.mark(label);
+        let msg_start = message_start(id);
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: ptr_off,
+        });
+        ctx.b.op(Instr::MLoad { d: ptr, a: SCRATCH });
+        bound_message_pointer(ctx, ptr, msg_start, msg_len, trap, span)?;
+        ctx.b.op(Instr::Ldi {
+            d: start,
+            imm: msg_start,
+        });
+        ctx.b.jmp(body_label);
+    }
+    ctx.b.mark(body_label);
+    Ok(SchemeRegs { ptr, start, scheme })
+}
+
+fn release_scheme(ctx: &mut Ctx, sel: SchemeRegs) {
+    ctx.regs.free(sel.scheme);
+    ctx.regs.free(sel.start);
+    ctx.regs.free(sel.ptr);
+}
+
+struct OrderHeader<'a> {
+    expiry_off: u64,
+    selector_word: u64,
+    layout_hash: &'a [u8; 32],
+    field_specs: &'a [MsgField],
+    msg_len: u64,
+}
+
+fn emit_order_message(
+    ctx: &mut Ctx,
+    sel: &SchemeRegs,
+    header: &OrderHeader,
+    trap: Label,
+    span: Span,
+) -> Result<(Reg, Reg), CodegenError> {
+    let ptr = sel.ptr;
+    {
         let rout = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
             d: rout,
@@ -3505,11 +3432,10 @@ fn emit_signed_binding(
         });
         ctx.b.op(Instr::Addr {
             a: ptr,
-            b: rscheme,
+            b: sel.scheme,
             c: rout,
         });
         ctx.regs.free(rout);
-        ctx.regs.free(rscheme);
     }
 
     {
@@ -3562,25 +3488,17 @@ fn emit_signed_binding(
     ctx.b.op(Instr::SLoad { d: nonce, a: slot });
 
     let dst = ctx.regs.alloc(span)?;
-    {
-        let k = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: k,
-            imm: msg_start,
-        });
-        ctx.b.op(Instr::AddW {
-            d: dst,
-            a: ptr,
-            b: k,
-        });
-        ctx.regs.free(k);
-    }
-    store_order_header(ctx, dst, expiry_off, span)?;
+    ctx.b.op(Instr::AddW {
+        d: dst,
+        a: ptr,
+        b: sel.start,
+    });
+    store_order_header(ctx, dst, header.expiry_off, header.layout_hash, span)?;
     {
         let r = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
             d: r,
-            imm: selector_word,
+            imm: header.selector_word,
         });
         store_off(ctx, dst, MSG_SELECTOR_OFF, r);
         ctx.regs.free(r);
@@ -3590,81 +3508,65 @@ fn emit_signed_binding(
         SIGNER_ADDR_SCRATCH,
         dst,
         MSG_SIGNER_OFF,
-        ADDR_BYTES / WORD,
+        ADDR_WORDS,
         span,
     )?;
     store_off(ctx, dst, MSG_NONCE_OFF, nonce);
     {
         let mut field_off_in_msg = MSG_FIELDS_OFF;
-        for (arg_off, words) in field_specs {
-            copy_words_to_region(ctx, *arg_off, dst, field_off_in_msg, *words, span)?;
-            field_off_in_msg += words * WORD;
+        for field in header.field_specs {
+            copy_words_to_region(ctx, field.off, dst, field_off_in_msg, field.words, span)?;
+            field_off_in_msg += field.words * WORD;
         }
     }
+    ctx.regs.free(dst);
 
     {
         let rlen = ctx.regs.alloc(span)?;
         ctx.b.op(Instr::Ldi {
             d: rlen,
-            imm: msg_start + msg_len,
+            imm: header.msg_len,
+        });
+        ctx.b.op(Instr::AddW {
+            d: rlen,
+            a: rlen,
+            b: sel.start,
         });
         let rok = ctx.regs.alloc(span)?;
-        let instr = match op {
-            VerifyOp::Ml => Instr::VerifyMl {
-                a: ptr,
-                b: rlen,
-                c: rok,
-            },
-            VerifyOp::Slh => Instr::VerifySlh {
-                a: ptr,
-                b: rlen,
-                c: rok,
-            },
-        };
-        ctx.b.op(instr);
+        let ml_verify = ctx.b.label();
+        let verified = ctx.b.label();
+        ctx.b.op(Instr::Ldi {
+            d: SCRATCH,
+            imm: SCHEME_ML,
+        });
+        ctx.b.op(Instr::Eq {
+            d: rok,
+            a: sel.scheme,
+            b: SCRATCH,
+        });
+        ctx.b.jnz(rok, ml_verify);
+        ctx.b.op(Instr::VerifySlh {
+            a: ptr,
+            b: rlen,
+            c: rok,
+        });
+        ctx.b.jmp(verified);
+        ctx.b.mark(ml_verify);
+        ctx.b.op(Instr::VerifyMl {
+            a: ptr,
+            b: rlen,
+            c: rok,
+        });
+        ctx.b.mark(verified);
         ctx.b.jz(rok, trap);
         ctx.regs.free(rok);
         ctx.regs.free(rlen);
     }
+    Ok((slot, nonce))
+}
 
-    for i in 0..ADDR_WORDS {
-        let ownv = load_slot(ctx, owner_slot + i, span)?;
-        let sigv = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi {
-            d: SCRATCH,
-            imm: SIGNER_ADDR_SCRATCH + i * WORD,
-        });
-        ctx.b.op(Instr::MLoad {
-            d: sigv,
-            a: SCRATCH,
-        });
-        ctx.b.op(Instr::Eq {
-            d: ownv,
-            a: ownv,
-            b: sigv,
-        });
-        ctx.b.jz(ownv, trap);
-        ctx.regs.free(sigv);
-        ctx.regs.free(ownv);
-    }
-
-    {
-        let one = ctx.regs.alloc(span)?;
-        ctx.b.op(Instr::Ldi { d: one, imm: 1 });
-        ctx.b.op(Instr::AddW {
-            d: nonce,
-            a: nonce,
-            b: one,
-        });
-        ctx.b.op(Instr::SStore { a: slot, b: nonce });
-        ctx.regs.free(one);
-    }
-
-    ctx.regs.free(dst);
-    ctx.regs.free(nonce);
-    ctx.regs.free(slot);
-    ctx.regs.free(ptr);
-    Ok(())
+fn order_message_len(field_specs: &[MsgField]) -> u64 {
+    MSG_FIELDS_OFF + field_specs.iter().map(|f| f.words * WORD).sum::<u64>()
 }
 
 fn lower_stmt(ctx: &mut Ctx, stmt: &Stmt, trap: Label) -> Result<(), CodegenError> {
@@ -5199,6 +5101,7 @@ fn lower_assign(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use qtv_vm::container::{selector, Container, Entry, StateAccess};
     use qtv_vm::interp::Interpreter;
     use quanta_ast::{Item, Stmt};
     use std::collections::BTreeMap;
@@ -5286,7 +5189,21 @@ mod tests {
             mem[at..at + 8].copy_from_slice(&val.to_be_bytes());
         }
 
-        let out = Interpreter::for_system_program(&code, &[], 100_000)
+        let sel = selector("run()");
+        let container = Container::new(
+            code,
+            vec![],
+            vec![Entry {
+                selector: sel,
+                offset: 0,
+                access: StateAccess {
+                    reads: layout.all_state_slots(),
+                    ..Default::default()
+                },
+            }],
+        );
+        let out = Interpreter::for_entry(&container, sel, 1_000_000)
+            .expect("entry")
             .with_storage(storage)
             .with_memory(&mem)
             .run()

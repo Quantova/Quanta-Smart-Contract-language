@@ -12,7 +12,7 @@ use qtv_vm::interp::{Effect, Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 
 mod common;
-use common::{nonce_key, put_addr_slots, signer_address, slot_key};
+use common::{bind_layout, nonce_key, put_addr_slots, signer_address, slot_key};
 
 const SRC: &str = include_str!("../../examples/QNS.qs");
 
@@ -20,7 +20,7 @@ const VAULT_SLOT: u64 = 35;
 const CONTRACT: [u8; 32] = [0x44; 32];
 const SCHEME_ML: u8 = 1;
 const GAS: u64 = 12_500_000;
-const SIGNED_TAG: &[u8; 8] = b"QTVSGN02";
+const SIGNED_TAG: &[u8; 8] = b"QTVSGN03";
 
 fn compiled() -> CompiledContract {
     let program = quanta_parser::parse(SRC).expect("parse");
@@ -66,7 +66,9 @@ fn member_message(
     msg
 }
 
+#[allow(clippy::too_many_arguments)]
 fn region(
+    cc: &CompiledContract,
     sel: [u8; SELECTOR_BYTES],
     pk: &[u8],
     sk: &ml_dsa::SecretKey,
@@ -75,7 +77,7 @@ fn region(
     to: &[u8; 32],
 ) -> Vec<u8> {
     let addr = signer_address(SCHEME_ML, pk);
-    let msg = member_message(sel, &addr, nonce, amount, to);
+    let msg = bind_layout(cc, member_message(sel, &addr, nonce, amount, to));
     let sig = ml_dsa::sign(sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     let mut r = Vec::new();
     r.extend_from_slice(pk);
@@ -125,7 +127,7 @@ fn withdraw_mem(
     let mut cursor = 8_192usize;
     for (slot, (gindex, keyidx, nonce)) in members.iter().enumerate() {
         let (pk, sk) = &keys[*keyidx];
-        let r = region(sel, pk, sk, *nonce, signed_amount, signed_to);
+        let r = region(cc, sel, pk, sk, *nonce, signed_amount, signed_to);
         let off = cursor;
         cursor += r.len();
         mem[off..off + r.len()].copy_from_slice(&r);

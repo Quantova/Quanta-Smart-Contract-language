@@ -146,7 +146,6 @@ fn a_genesis_that_breaks_an_invariant_traps() {
     let program = quanta_parser::parse(src).expect("parse");
     quanta_typeck::check(&program).expect("typecheck");
     let cc = compile_contract(&program.contracts[0]).expect("compile");
-    let selector = qtv_vm::container::selector(qtv_vm::container::GENESIS_SIGNATURE);
     let slot = cc
         .deploy_params
         .iter()
@@ -163,7 +162,7 @@ fn a_genesis_that_breaks_an_invariant_traps() {
         let at = slot.offset as usize;
         mem[at..at + 8].copy_from_slice(&drip.to_be_bytes());
         mem[sentinel..sentinel + 8].copy_from_slice(&GENESIS_SENTINEL.to_be_bytes());
-        qtv_vm::interp::Interpreter::for_entry(&cc.container, selector, 1_000_000)
+        qtv_vm::interp::Interpreter::for_genesis(&cc.container, 1_000_000)
             .expect("genesis")
             .with_memory(&mem)
             .run()

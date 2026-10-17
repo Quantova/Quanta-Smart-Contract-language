@@ -12,8 +12,8 @@ use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 
 mod common;
 use common::{
-    map_addr_word_key, map_key, nonce_key, put_addr_slots, read_addr_value, signer_address,
-    slot_key,
+    bind_layout, map_addr_word_key, map_key, nonce_key, put_addr_slots, read_addr_value,
+    signer_address, slot_key,
 };
 
 const SRC: &str = include_str!("../../examples/QCollectible.qs");
@@ -28,7 +28,7 @@ const CONTRACT: [u8; 32] = [0x33; 32];
 const SCHEME_ML: u8 = 1;
 const REGION_OFF: u64 = 8192;
 const GAS: u64 = 12_500_000;
-const SIGNED_TAG: &[u8; 8] = b"QTVSGN02";
+const SIGNED_TAG: &[u8; 8] = b"QTVSGN03";
 
 fn compiled() -> CompiledContract {
     let program = quanta_parser::parse(SRC).expect("parse");
@@ -96,14 +96,17 @@ fn mint_mem(
 ) -> Vec<u8> {
     let signer = signer_address(SCHEME_ML, pk);
     let sel = entry(cc, "mint").selector;
-    let msg = message(
-        chain,
-        sel,
-        &signer,
-        nonce,
-        signed.id,
-        &signed.to,
-        &signed.content,
+    let msg = bind_layout(
+        cc,
+        message(
+            chain,
+            sel,
+            &signer,
+            nonce,
+            signed.id,
+            &signed.to,
+            &signed.content,
+        ),
     );
     let sig = ml_dsa::sign(sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
 
@@ -311,7 +314,10 @@ fn an_order_captured_on_another_chain_does_not_verify_here() {
 
     let signer = signer_address(SCHEME_ML, &pk);
     let sel = entry(&cc, "mint").selector;
-    let msg = message(1, sel, &signer, 0, order.id, &order.to, &order.content);
+    let msg = bind_layout(
+        &cc,
+        message(1, sel, &signer, 0, order.id, &order.to, &order.content),
+    );
     let sig = ml_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     let mut region = Vec::new();
     region.extend_from_slice(&pk);

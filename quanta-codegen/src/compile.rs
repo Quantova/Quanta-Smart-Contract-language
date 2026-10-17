@@ -4,36 +4,8 @@
 use crate::emit::{Builder, LinkError};
 use crate::error::CodegenError;
 use crate::layout::{Layout, ADDR_WORDS};
-use crate::lower::{collect_signed_fields, lower_entry, EventSig};
+use crate::lower::{lower_entry, EventSig, OrderLayoutSlot};
 
-fn canonical_signed_fields(entry: &quanta_ast::EntryDecl, param: &str) -> Vec<String> {
-    let names: Vec<&str> = entry
-        .params
-        .iter()
-        .filter(|p| p.ty.name.text == "Q_Name")
-        .map(|p| p.name.text.as_str())
-        .collect();
-    let raw = collect_signed_fields(entry, param);
-    let mut out: Vec<String> = Vec::new();
-    let push = |canonical: String, out: &mut Vec<String>| {
-        if !out.contains(&canonical) {
-            out.push(canonical);
-        }
-    };
-    for key in &raw {
-        if names.contains(&key.as_str()) {
-            push(key.clone(), &mut out);
-            push(format!("{key}#len"), &mut out);
-            continue;
-        }
-        let canonical = match key.split_once('.') {
-            Some((base, "len")) if names.contains(&base) => format!("{base}#len"),
-            _ => key.clone(),
-        };
-        push(canonical, &mut out);
-    }
-    out
-}
 use crate::selector::{entry_selector, entry_signature, event_selector, event_signature};
 use qtv_vm::container::{
     Container, Entry, VerifyError, MAX_ACCESS_SLOTS, MAX_CODE_BYTES, MAX_CONSTS, MAX_ENTRIES,
@@ -69,12 +41,30 @@ pub struct EntryArtifact {
     pub args: Vec<ArgSlot>,
     pub sealed_params: Vec<String>,
     pub signed_orders: Vec<SignedOrder>,
+    pub quorum_orders: Vec<SignedOrder>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedOrder {
     pub param: String,
     pub fields: Vec<String>,
+    pub field_types: Vec<String>,
+    pub field_widths: Vec<u64>,
+    pub layout_hash: [u8; 32],
+}
+
+fn order_artifacts(layouts: &[OrderLayoutSlot], quorum: bool) -> Vec<SignedOrder> {
+    layouts
+        .iter()
+        .filter(|l| l.quorum == quorum)
+        .map(|l| SignedOrder {
+            param: l.param.clone(),
+            fields: l.fields.iter().map(|f| f.name.clone()).collect(),
+            field_types: l.fields.iter().map(|f| f.ty.clone()).collect(),
+            field_widths: l.fields.iter().map(|f| f.width).collect(),
+            layout_hash: l.hash,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,15 +268,8 @@ fn compile_entries(
                 .filter(|p| p.sealed)
                 .map(|p| p.name.text.clone())
                 .collect(),
-            signed_orders: entry
-                .params
-                .iter()
-                .filter(|p| p.signed_by.is_some())
-                .map(|p| SignedOrder {
-                    param: p.name.text.clone(),
-                    fields: canonical_signed_fields(entry, &p.name.text),
-                })
-                .collect(),
+            signed_orders: order_artifacts(args.order_layouts(), false),
+            quorum_orders: order_artifacts(args.order_layouts(), true),
         });
     }
 

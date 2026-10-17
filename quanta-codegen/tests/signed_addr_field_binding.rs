@@ -8,7 +8,7 @@ use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
 
 mod common;
-use common::{signer_address, slot_key};
+use common::{bind_layout, signer_address, slot_key};
 
 const SRC: &str = "contract Rotatable {\n\
   state { admin: Q_Address; owner: Q_Address; }\n\
@@ -63,7 +63,7 @@ fn words(addr: &[u8; 32]) -> [u64; 4] {
 
 fn canonical_message(signer: &[u8; 32], selector: [u8; 4], newowner: &[u8; 32]) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(b"QTVSGN03");
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
@@ -85,7 +85,7 @@ fn rotate_memory(
 ) -> Vec<u8> {
     let signer = signer_address(SCHEME_ML, pk);
     let selector = cc.container.entries[0].selector;
-    let msg = canonical_message(&signer, selector, signed_newowner);
+    let msg = bind_layout(cc, canonical_message(&signer, selector, signed_newowner));
     let sig = ml_dsa::sign(sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
 
     let mut region = Vec::new();
@@ -121,7 +121,7 @@ fn run(
     storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
 ) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
-    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 600_000)
+    Interpreter::for_entry(&cc.container, cc.entries[0].selector, 600_000)?
         .with_storage(storage)
         .with_memory(mem)
         .run()

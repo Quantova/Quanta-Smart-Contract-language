@@ -1,7 +1,7 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use quanta_codegen::CompiledContract;
+use quanta_codegen::{CompiledContract, SignedOrder};
 
 pub struct Emit {
     pub json: String,
@@ -90,23 +90,11 @@ fn contracts_json(contracts: &[CompiledContract], artifacts: &[Vec<u8>]) -> Stri
                     arg.offset, arg.width
                 ));
             }
-            out.push_str("],\"signed_orders\":[");
-            for (s, order) in entry.signed_orders.iter().enumerate() {
-                if s > 0 {
-                    out.push(',');
-                }
-                out.push_str("{\"param\":");
-                json_str(&mut out, &order.param);
-                out.push_str(",\"fields\":[");
-                for (fi, field) in order.fields.iter().enumerate() {
-                    if fi > 0 {
-                        out.push(',');
-                    }
-                    json_str(&mut out, field);
-                }
-                out.push_str("]}");
-            }
-            out.push_str("],\"sealed_params\":[");
+            out.push_str("],\"signed_orders\":");
+            orders_json(&mut out, &entry.signed_orders);
+            out.push_str(",\"quorum_orders\":");
+            orders_json(&mut out, &entry.quorum_orders);
+            out.push_str(",\"sealed_params\":[");
             for (k, name) in entry.sealed_params.iter().enumerate() {
                 if k > 0 {
                     out.push(',');
@@ -144,6 +132,42 @@ fn contracts_json(contracts: &[CompiledContract], artifacts: &[Vec<u8>]) -> Stri
     }
     out.push_str("]}");
     out
+}
+
+fn orders_json(out: &mut String, orders: &[SignedOrder]) {
+    out.push('[');
+    for (s, order) in orders.iter().enumerate() {
+        if s > 0 {
+            out.push(',');
+        }
+        out.push_str("{\"param\":");
+        json_str(out, &order.param);
+        out.push_str(",\"fields\":[");
+        for (fi, field) in order.fields.iter().enumerate() {
+            if fi > 0 {
+                out.push(',');
+            }
+            json_str(out, field);
+        }
+        out.push_str("],\"field_types\":[");
+        for (fi, ty) in order.field_types.iter().enumerate() {
+            if fi > 0 {
+                out.push(',');
+            }
+            json_str(out, ty);
+        }
+        out.push_str("],\"field_widths\":[");
+        for (fi, width) in order.field_widths.iter().enumerate() {
+            if fi > 0 {
+                out.push(',');
+            }
+            out.push_str(&width.to_string());
+        }
+        out.push_str("],\"layout_hash\":");
+        json_hex(out, &order.layout_hash);
+        out.push('}');
+    }
+    out.push(']');
 }
 
 fn error_json(src: &str, message: &str, offset: usize) -> String {
@@ -237,7 +261,7 @@ mod tests {
             "the caller context is a full address"
         );
         assert!(
-            emit.json.contains("\"signed_orders\":[{\"param\":\"order\",\"fields\":[\"order.amount\",\"order.to\"]}]"),
+            emit.json.contains("\"signed_orders\":[{\"param\":\"order\",\"fields\":[\"order.amount\",\"order.to\"],\"field_types\":[\"u128\",\"Q_Address\"],\"field_widths\":[16,32],\"layout_hash\":\""),
             "the descriptor exposes the signed fields in message order: {}",
             emit.json
         );
@@ -259,7 +283,7 @@ mod tests {
         );
         assert!(
             emit.json
-                .contains("\"signed_orders\":[{\"param\":\"who\",\"fields\":[\"who\"]}]"),
+                .contains("\"signed_orders\":[{\"param\":\"who\",\"fields\":[\"who\"],\"field_types\":[\"Q_Address\"],\"field_widths\":[32],\"layout_hash\":\""),
             "the signer binds the bare address parameter it authorizes: {}",
             emit.json
         );

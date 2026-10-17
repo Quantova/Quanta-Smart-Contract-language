@@ -8,7 +8,7 @@ use qtv_vm::interp::{Fault, Interpreter};
 use quanta_codegen::{compile_contract, CompiledContract};
 
 mod common;
-use common::{put_addr_slots, signer_address, slot_key};
+use common::{bind_layout, put_addr_slots, signer_address, slot_key};
 
 const BOARD: &str = "contract Board {\n\
   state { board: GuardianSet<3>; }\n\
@@ -21,7 +21,7 @@ const CONTRACT: [u8; 32] = [0x44; 32];
 const SCHEME_ML: u8 = 1;
 
 const SIGNER_ADDR_SCRATCH: u64 = 40960;
-const MSG_FIELDS_OFF: u64 = 104;
+const MSG_FIELDS_OFF: u64 = 136;
 
 fn compile(src: &str) -> CompiledContract {
     let program = quanta_parser::parse(src).expect("parse");
@@ -50,7 +50,7 @@ fn message(
 ) -> Vec<u8> {
     let selector = cc.container.entries[0].selector;
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(b"QTVSGN03");
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
@@ -60,7 +60,7 @@ fn message(
     for addr in new_board {
         msg.extend_from_slice(addr);
     }
-    msg
+    bind_layout(cc, msg)
 }
 
 fn ml_region(
@@ -107,7 +107,7 @@ fn run(
     storage: BTreeMap<[u8; 32], u64>,
     mem: &[u8],
 ) -> Result<BTreeMap<[u8; 32], u64>, Fault> {
-    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 6_000_000)
+    Interpreter::for_entry(&cc.container, cc.entries[0].selector, 6_000_000)?
         .with_storage(storage)
         .with_memory(mem)
         .run()

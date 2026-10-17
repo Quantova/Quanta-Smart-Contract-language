@@ -9,7 +9,7 @@ use qtv_vm::isa::{decode, OpCode};
 use quanta_codegen::{compile_contract, CompiledContract};
 
 mod common;
-use common::{put_addr_slots, signer_address, slot_key};
+use common::{bind_layout, put_addr_slots, signer_address, slot_key};
 
 const COUNTER: &str = "contract Counter {\n\
   state { owner: Q_Address; count: u64; }\n\
@@ -48,7 +48,7 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
 
 fn canonical_message(selector: [u8; 4], signer: &[u8; 32], nonce: u64, step: u64) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN02");
+    msg.extend_from_slice(b"QTVSGN03");
     msg.extend_from_slice(&0u64.to_be_bytes());
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
@@ -72,7 +72,10 @@ fn opcodes(code: &[u8]) -> Vec<OpCode> {
 
 fn place(cc: &CompiledContract, scheme: u64, pk: &[u8], sig: &[u8], step: u64) -> Vec<u8> {
     let signer = signer_address(scheme as u8, pk);
-    let msg = canonical_message(cc.container.entries[0].selector, &signer, 0, step);
+    let msg = bind_layout(
+        cc,
+        canonical_message(cc.container.entries[0].selector, &signer, 0, step),
+    );
     let mut region = Vec::new();
     region.extend_from_slice(pk);
     region.extend_from_slice(sig);
@@ -90,7 +93,10 @@ fn place(cc: &CompiledContract, scheme: u64, pk: &[u8], sig: &[u8], step: u64) -
 fn ml_bump(cc: &CompiledContract, step: u64) -> (Vec<u8>, [u8; 32]) {
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let signer = signer_address(1, &pk);
-    let msg = canonical_message(cc.container.entries[0].selector, &signer, 0, step);
+    let msg = bind_layout(
+        cc,
+        canonical_message(cc.container.entries[0].selector, &signer, 0, step),
+    );
     let sig = ml_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     (place(cc, 1, &pk, &sig, step), signer)
 }
@@ -98,7 +104,10 @@ fn ml_bump(cc: &CompiledContract, step: u64) -> (Vec<u8>, [u8; 32]) {
 fn slh_bump(cc: &CompiledContract, step: u64) -> (Vec<u8>, [u8; 32]) {
     let (sk, pk) = slh_dsa::keygen(&[1u8; 24], &[2u8; 24], &[3u8; 24]);
     let signer = signer_address(2, &pk);
-    let msg = canonical_message(cc.container.entries[0].selector, &signer, 0, step);
+    let msg = bind_layout(
+        cc,
+        canonical_message(cc.container.entries[0].selector, &signer, 0, step),
+    );
     let sig =
         slh_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[4u8; 24]).expect("sign");
     (place(cc, 2, &pk, &sig, step), signer)
@@ -110,7 +119,7 @@ fn run(cc: &CompiledContract, owner: Option<[u8; 32]>, mem: &[u8]) -> Result<u64
         put_addr_slots(&mut storage, OWNER_SLOT, &owner);
     }
     storage.insert(slot_key(COUNT_SLOT), 10);
-    Interpreter::for_system_program(&cc.container.code, &cc.container.consts, 500_000)
+    Interpreter::for_entry(&cc.container, cc.entries[0].selector, 1_000_000)?
         .with_storage(storage)
         .with_memory(mem)
         .run()
@@ -155,7 +164,10 @@ fn scheme_two_does_not_use_the_module_lattice_opcode() {
     let cc = compile(COUNTER);
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let signer = signer_address(1, &pk);
-    let msg = canonical_message(cc.container.entries[0].selector, &signer, 0, 4);
+    let msg = bind_layout(
+        &cc,
+        canonical_message(cc.container.entries[0].selector, &signer, 0, 4),
+    );
     let sig = ml_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     let mem = place(&cc, 2, &pk, &sig, 4);
     assert!(
@@ -169,7 +181,10 @@ fn an_unknown_scheme_reverts() {
     let cc = compile(COUNTER);
     let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
     let signer = signer_address(1, &pk);
-    let msg = canonical_message(cc.container.entries[0].selector, &signer, 0, 4);
+    let msg = bind_layout(
+        &cc,
+        canonical_message(cc.container.entries[0].selector, &signer, 0, 4),
+    );
     let sig = ml_dsa::sign(&sk, &msg, qtv_vm::crypto::VM_VERIFY_CONTEXT, &[0u8; 32]).expect("sign");
     let mem3 = place(&cc, 3, &pk, &sig, 4);
     assert_eq!(run(&cc, Some(signer), &mem3), Err(Fault::DivByZero));
