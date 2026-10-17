@@ -4974,6 +4974,41 @@ fn lower_assign(
             });
         }
         let words = count * ADDR_WORDS;
+        if let Expr::Ident(id) = value {
+            if !ctx.params.contains(&id.text) {
+                if let Some((src_base, src_count)) = ctx.layout.guardian_set(&id.text) {
+                    if src_count != count {
+                        return Err(CodegenError::Rejected {
+                            what: format!(
+                                "the guardian set `{}` copied into `{name}`, which holds a \
+                                 different number of members",
+                                id.text
+                            ),
+                            span,
+                        });
+                    }
+                    let any = ctx.regs.alloc(span)?;
+                    ctx.b.op(Instr::Ldi { d: any, imm: 0 });
+                    for w in 0..words {
+                        let r = load_slot(ctx, src_base + w, span)?;
+                        ctx.b.op(Instr::Or {
+                            d: any,
+                            a: any,
+                            b: r,
+                        });
+                        ctx.regs.free(r);
+                    }
+                    ctx.b.jz(any, ctx.trap);
+                    ctx.regs.free(any);
+                    for w in 0..words {
+                        let r = load_slot(ctx, src_base + w, span)?;
+                        store_slot(ctx, base + w, r, span)?;
+                        ctx.regs.free(r);
+                    }
+                    return Ok(());
+                }
+            }
+        }
         let src_off = match (ctx.is_genesis, deploy_param_name(value), value) {
             (true, Some(pname), _) => ctx.args.deploy_param_offset(pname, words * WORD),
             (_, _, Expr::Ident(id)) if ctx.params.contains(&id.text) => {
@@ -4981,8 +5016,8 @@ fn lower_assign(
             }
             _ => {
                 return Err(CodegenError::Unsupported {
-                    what: "a guardian set set from anything but a genesis deploy parameter or a \
-                           guardian set parameter"
+                    what: "a guardian set set from anything but a genesis deploy parameter, a \
+                           guardian set parameter or another guardian set field"
                         .into(),
                     span,
                 })
