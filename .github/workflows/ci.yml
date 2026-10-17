@@ -5,4 +5,4 @@ name: ci
 on: [push, pull_request]
 jobs:
   ci:
-    uses: Quantova/Quantova-Ci/.github/workflows/rust-ci.yml@f2a7a9c5bee34b20876b110ba903d0008b9e90d1
+    uses: Quantova/Quantova-Ci/.github/workflows/rust-ci.yml@3eedb4e772007f2c5a301a2e2c9cc013481e369c
