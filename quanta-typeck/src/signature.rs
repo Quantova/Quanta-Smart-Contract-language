@@ -2696,11 +2696,19 @@ fn forged_map_authority(
             }
         }
     }
+    let mut locals: HashMap<&str, &Expr> = HashMap::new();
     for stmt in &entry.body {
-        if let Stmt::Guard { expr, .. } = stmt {
-            if let Some((field, span)) = gate_expr(expr) {
-                return Some(map_authority_error(&field, span));
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                locals.insert(name.text.as_str(), value);
             }
+            Stmt::Guard { expr, .. } => {
+                let inlined = inline_locals(expr, &locals, 0);
+                if let Some((field, span)) = gate_expr(&inlined) {
+                    return Some(map_authority_error(&field, span));
+                }
+            }
+            _ => {}
         }
     }
     None
@@ -2739,14 +2747,76 @@ fn forged_lookup_permission(
             return Some(permission_lookup_error(&field, span));
         }
     }
+    let mut locals: HashMap<&str, &Expr> = HashMap::new();
     for stmt in &entry.body {
-        if let Stmt::Guard { expr, .. } = stmt {
-            if let Some((field, span)) = scan.find(expr, true) {
-                return Some(permission_lookup_error(&field, span));
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                locals.insert(name.text.as_str(), value);
             }
+            Stmt::Guard { expr, .. } => {
+                let inlined = inline_locals(expr, &locals, 0);
+                if let Some((field, span)) = scan.find(&inlined, true) {
+                    return Some(permission_lookup_error(&field, span));
+                }
+            }
+            _ => {}
         }
     }
     None
+}
+
+fn inline_locals(expr: &Expr, locals: &HashMap<&str, &Expr>, depth: usize) -> Expr {
+    if depth > 16 {
+        return expr.clone();
+    }
+    match expr {
+        Expr::Ident(id) => match locals.get(id.text.as_str()) {
+            Some(value) => inline_locals(value, locals, depth + 1),
+            None => expr.clone(),
+        },
+        Expr::Unary {
+            op,
+            expr: inner,
+            span,
+        } => Expr::Unary {
+            op: *op,
+            expr: Box::new(inline_locals(inner, locals, depth)),
+            span: *span,
+        },
+        Expr::Binary {
+            op,
+            left,
+            right,
+            span,
+        } => Expr::Binary {
+            op: *op,
+            left: Box::new(inline_locals(left, locals, depth)),
+            right: Box::new(inline_locals(right, locals, depth)),
+            span: *span,
+        },
+        Expr::Field { base, name, span } => Expr::Field {
+            base: Box::new(inline_locals(base, locals, depth)),
+            name: name.clone(),
+            span: *span,
+        },
+        Expr::Call { callee, args, span } => Expr::Call {
+            callee: Box::new(inline_locals(callee, locals, depth)),
+            args: args
+                .iter()
+                .map(|a| inline_locals(a, locals, depth))
+                .collect(),
+            span: *span,
+        },
+        Expr::Checked { expr: inner, span } => Expr::Checked {
+            expr: Box::new(inline_locals(inner, locals, depth)),
+            span: *span,
+        },
+        Expr::Wrapping { expr: inner, span } => Expr::Wrapping {
+            expr: Box::new(inline_locals(inner, locals, depth)),
+            span: *span,
+        },
+        _ => expr.clone(),
+    }
 }
 
 struct PermissionScan<'m, 'a> {

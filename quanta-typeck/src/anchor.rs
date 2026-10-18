@@ -5,7 +5,9 @@ use crate::error::TypeError;
 use crate::model::{is_asset_type, is_quorum_param, Model};
 use quanta_ast::{AfterTarget, AssignOp, BinOp, Clause, EntryDecl, Expr, Stmt};
 use quanta_lexer::Span;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+const MAX_LOCAL_DEPTH: usize = 16;
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
     for entry in &model.entries {
@@ -18,10 +20,11 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
 
 fn check_guard_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
-    let gate = GateScan {
+    let mut gate = GateScan {
         model,
         entry,
         params: &params,
+        locals: HashMap::new(),
     };
     for clause in &entry.clauses {
         match clause {
@@ -31,8 +34,12 @@ fn check_guard_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeErro
         }
     }
     for stmt in &entry.body {
-        if let Stmt::Guard { expr, .. } = stmt {
-            gate.scan(expr, true, &[])?;
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                gate.locals.insert(name.text.as_str(), value);
+            }
+            Stmt::Guard { expr, .. } => gate.scan(expr, true, &[])?,
+            _ => {}
         }
     }
     Ok(())
@@ -42,6 +49,7 @@ struct GateScan<'m, 'a> {
     model: &'m Model<'a>,
     entry: &'m EntryDecl,
     params: &'m HashSet<&'m str>,
+    locals: HashMap<&'m str, &'m Expr>,
 }
 
 impl GateScan<'_, '_> {
@@ -95,13 +103,15 @@ impl GateScan<'_, '_> {
                     return Ok(());
                 }
                 let mut reads: Vec<&Expr> = Vec::new();
-                collect_anchor_reads(self.model, self.params, left, &mut reads);
-                collect_anchor_reads(self.model, self.params, right, &mut reads);
+                collect_anchor_reads(self.model, self.params, &self.locals, left, &mut reads, 0);
+                collect_anchor_reads(self.model, self.params, &self.locals, right, &mut reads, 0);
                 for read in reads {
                     let Some(field) = anchor_field(read) else {
                         continue;
                     };
-                    if field_is_asset(self.model, field) || !records_time(self.model, field) {
+                    if field_is_asset(self.model, field)
+                        || (!records_time(self.model, field) && field_is_written(self.model, field))
+                    {
                         continue;
                     }
                     let live = read_starts_nonzero(self.model, read, field)
@@ -134,6 +144,33 @@ fn zero_test(expr: &Expr) -> Option<&Expr> {
         }
     }
     None
+}
+
+fn writes_field(stmt: &Stmt, field: &str) -> bool {
+    match stmt {
+        Stmt::Assign { target, .. } => matches!(target, Expr::Ident(id) if id.text == field),
+        Stmt::Expr {
+            expr: Expr::Call { callee, .. },
+            ..
+        } => matches!(
+            callee.as_ref(),
+            Expr::Field { base, name, .. }
+                if name.text == "set" && matches!(base.as_ref(), Expr::Ident(id) if id.text == field)
+        ),
+        _ => false,
+    }
+}
+
+fn field_is_written(model: &Model, field: &str) -> bool {
+    let in_entries = model
+        .entries
+        .iter()
+        .any(|entry| entry.body.iter().any(|stmt| writes_field(stmt, field)));
+    let in_genesis = model.contract.items.iter().any(|item| {
+        matches!(item, quanta_ast::Item::Genesis(genesis)
+            if genesis.body.iter().any(|stmt| writes_field(stmt, field)))
+    });
+    in_entries || in_genesis
 }
 
 fn records_time(model: &Model, field: &str) -> bool {
@@ -273,8 +310,8 @@ fn time_compared_fields<'a>(
                 for (side, other) in [(left, right), (right, left)] {
                     if mentions_now(side) {
                         let mut reads: Vec<&Expr> = Vec::new();
-                        collect_anchor_reads(model, params, other, &mut reads);
-                        collect_anchor_reads(model, params, side, &mut reads);
+                        collect_anchor_reads(model, params, &HashMap::new(), other, &mut reads, 0);
+                        collect_anchor_reads(model, params, &HashMap::new(), side, &mut reads, 0);
                         for read in reads {
                             if let Some(field) = anchor_field(read) {
                                 out.push((field, read.span()));
@@ -353,10 +390,10 @@ fn check_anchor_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeErr
         };
         let mut reads: Vec<&Expr> = Vec::new();
         if let AfterTarget::Expr(expr) = target {
-            collect_anchor_reads(model, &params, expr, &mut reads);
+            collect_anchor_reads(model, &params, &HashMap::new(), expr, &mut reads, 0);
         }
         if let Some(expr) = from {
-            collect_anchor_reads(model, &params, expr, &mut reads);
+            collect_anchor_reads(model, &params, &HashMap::new(), expr, &mut reads, 0);
         }
         for read in reads {
             let Some(field) = anchor_field(read) else {
@@ -386,13 +423,23 @@ fn check_anchor_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeErr
 fn collect_anchor_reads<'a>(
     model: &Model,
     params: &HashSet<&str>,
+    locals: &HashMap<&str, &'a Expr>,
     expr: &'a Expr,
     out: &mut Vec<&'a Expr>,
+    depth: usize,
 ) {
+    if depth > MAX_LOCAL_DEPTH {
+        return;
+    }
     match expr {
         Expr::Ident(id) => {
             let name = id.text.as_str();
-            if !params.contains(name) && model.state.contains_key(name) {
+            if params.contains(name) {
+                return;
+            }
+            if let Some(value) = locals.get(name) {
+                collect_anchor_reads(model, params, locals, value, out, depth + 1);
+            } else if model.state.contains_key(name) {
                 out.push(expr);
             }
         }
@@ -410,11 +457,11 @@ fn collect_anchor_reads<'a>(
             }
         }
         Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
-            collect_anchor_reads(model, params, expr, out)
+            collect_anchor_reads(model, params, locals, expr, out, depth)
         }
         Expr::Binary { left, right, .. } => {
-            collect_anchor_reads(model, params, left, out);
-            collect_anchor_reads(model, params, right, out);
+            collect_anchor_reads(model, params, locals, left, out, depth);
+            collect_anchor_reads(model, params, locals, right, out, depth);
         }
         _ => {}
     }
