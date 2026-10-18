@@ -32,12 +32,12 @@ dependencies = [
 [[package]]
 name = "qtv-crypto"
 version = "0.3.0"
-source = "git+https://github.com/Quantova/Q-Crypto.git?rev=03d1702150ed41f8db78d69affe0ce6565b1724c#03d1702150ed41f8db78d69affe0ce6565b1724c"
+source = "git+https://github.com/Quantova/Q-Crypto.git?rev=e47d6cd94e71c13b22e2990f8c2b0a2e3a2204d0#e47d6cd94e71c13b22e2990f8c2b0a2e3a2204d0"
 
 [[package]]
 name = "qtv-vm"
 version = "0.2.0"
-source = "git+https://github.com/Quantova/QVM.git?rev=c3d185dc863ac2480b90011dc0a7b03d21ccf3d7#c3d185dc863ac2480b90011dc0a7b03d21ccf3d7"
+source = "git+https://github.com/Quantova/QVM.git?rev=8c6eb5c003f1753bc23129ca02bb3610faf1cc9f#8c6eb5c003f1753bc23129ca02bb3610faf1cc9f"
 dependencies = [
  "qtv-crypto",
 ]
