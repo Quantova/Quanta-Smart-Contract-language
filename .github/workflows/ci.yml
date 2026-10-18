@@ -5,4 +5,7 @@ name: ci
 on: [push, pull_request]
 jobs:
   ci:
-    uses: Quantova/Quantova-Ci/.github/workflows/rust-ci.yml@3eedb4e772007f2c5a301a2e2c9cc013481e369c
+    uses: Quantova/Quantova-Ci/.github/workflows/rust-ci.yml@d945b9ed017de20a327f6103579dc1a416f46f70
+    with:
+      deny-unsafe-code: true
+      deny-float-arithmetic: true

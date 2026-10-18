@@ -26,6 +26,7 @@ struct Env<'a> {
     model: &'a Model<'a>,
     params: HashMap<&'a str, Ty>,
     locals: std::cell::RefCell<HashMap<String, Ty>>,
+    genesis: bool,
 }
 
 const MAX_GUARDIAN_SET: u64 = 256;
@@ -151,7 +152,7 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
     check_key_kinds(model)?;
     for item in &model.contract.items {
         if let Item::Genesis(genesis) = item {
-            let env = Env::new(model, HashMap::new());
+            let env = Env::new(model, HashMap::new()).in_genesis();
             for stmt in &genesis.body {
                 env.check_stmt_types(stmt)?;
                 asset_calls_consumed(stmt)?;
@@ -313,7 +314,13 @@ impl<'a> Env<'a> {
             model,
             params,
             locals: std::cell::RefCell::new(HashMap::new()),
+            genesis: false,
         }
+    }
+
+    fn in_genesis(mut self) -> Env<'a> {
+        self.genesis = true;
+        self
     }
 
     fn is_name_param(&self, expr: &Expr) -> bool {
@@ -391,8 +398,18 @@ impl<'a> Env<'a> {
                         }
                     }
                 }
+                let from_deploy_params = self.genesis
+                    && matches!(
+                        value,
+                        Expr::Field { base, .. } if matches!(base.as_ref(), Expr::Ident(id) if id.text == "deploy_params")
+                    );
                 let fits = match op {
-                    AssignOp::Set => compatible(slot, given),
+                    AssignOp::Set => {
+                        compatible(slot, given)
+                            || (slot == Ty::Collection
+                                && given == Ty::Unknown
+                                && from_deploy_params)
+                    }
                     AssignOp::Add | AssignOp::Sub => numeric(slot) && numeric(given),
                 };
                 if let Expr::Ident(id) = target {
@@ -848,7 +865,7 @@ fn compatible(want: Ty, got: Ty) -> bool {
         return want == got;
     }
     if want == Ty::Collection || got == Ty::Collection {
-        return want == got || want == Ty::Unknown || got == Ty::Unknown;
+        return want == got;
     }
     want == got || want == Ty::Unknown || got == Ty::Unknown || (one_word(want) && one_word(got))
 }
