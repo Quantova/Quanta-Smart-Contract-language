@@ -50,7 +50,7 @@ The compiler is a Rust workspace.
 - quanta-web is the browser compiler crate. It runs the whole compiler in the user's page with no backend, which keeps the compile off Quantova's servers and gives the IDE the same lexer, parser, checker, and code generator the command line runs.
 - quanta-cli is the command line front end, with parse, fmt, tokens, check, build, and emit subcommands.
 
-The QVM and the cryptography arrive as pinned dependencies, qtv-vm at commit f7d82ab and qtv-crypto at commit 12fefda, and are never reimplemented here.
+The QVM and the cryptography arrive as pinned dependencies, qtv-vm at commit 8c6eb5c and qtv-crypto at commit e47d6cd, and are never reimplemented here.
 
 ## Examples
 

@@ -6,7 +6,8 @@ all-features = true
 
 [bans]
 multiple-versions = "deny"
-wildcards = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
 deny = [
     "k256",
     "ed25519-dalek",
