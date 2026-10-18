@@ -1808,6 +1808,31 @@ pub fn lower_entry(
                 ctx.args.offset_of_width(key, ADDR_BYTES);
             }
         }
+        let regions: u64 = entry
+            .params
+            .iter()
+            .map(|p| match quorum_spec(p) {
+                Some((threshold, _, _)) => threshold,
+                None if p.signed_by.is_some() => 1,
+                None => 0,
+            })
+            .sum();
+        if regions > 0 {
+            let smallest = message_start(SCHEME_ML) + MSG_FIELDS_OFF;
+            let needed = regions
+                .saturating_mul(smallest)
+                .saturating_add(ARG_BASE + ctx.args.next);
+            if needed > SIGNER_ADDR_SCRATCH {
+                return Err(CodegenError::Rejected {
+                    what: format!(
+                        "an entry that needs {regions} signature regions of at least {smallest} bytes each, \
+                         more than fit below the scratch memory floor at {SIGNER_ADDR_SCRATCH}, so it could \
+                         never run; split it into entries that each carry fewer signatures"
+                    ),
+                    span: entry.span,
+                });
+            }
+        }
         zero_scalar_key_head(&mut ctx, entry.span)?;
         lower_name_prologue(&mut ctx, entry, trap)?;
         lower_signed_prologue(&mut ctx, entry, trap)?;
