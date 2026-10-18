@@ -77,8 +77,11 @@ impl<'a> Lexer<'a> {
             }
             let invisible = match (b[i], b.get(i + 1), b.get(i + 2)) {
                 (0xE2, Some(0x80), Some(&c)) => matches!(c, 0x8B..=0x8F | 0xA8..=0xAE),
-                (0xE2, Some(0x81), Some(&c)) => matches!(c, 0xA6..=0xA9),
+                (0xE2, Some(0x81), Some(&c)) => matches!(c, 0xA0..=0xA4 | 0xA6..=0xAF),
                 (0xEF, Some(0xBB), Some(0xBF)) => i > 0,
+                (0xEF, Some(0xBF), Some(&c)) => matches!(c, 0xB9..=0xBB),
+                (0xE1, Some(0xA0), Some(0x8E)) => true,
+                (0xC2, Some(0xAD), _) => true,
                 (0xD8, Some(0x9C), _) => true,
                 _ => false,
             };

@@ -29,6 +29,15 @@ fn main() {
         println!("cargo:rustc-env=QUANTA_BUILD_COMMIT={id}");
     }
     println!("cargo:rerun-if-changed=../.git/HEAD");
+    if let Ok(entries) = std::fs::read_dir("..") {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("quanta-") && entry.path().join("src").is_dir() {
+                println!("cargo:rerun-if-changed=../{name}/src");
+            }
+        }
+    }
+    println!("cargo:rerun-if-changed=../Cargo.lock");
     println!("cargo:rerun-if-changed=../.git/index");
     let head = std::fs::read_to_string("../.git/HEAD").unwrap_or_default();
     if let Some(reference) = head.trim().strip_prefix("ref: ") {

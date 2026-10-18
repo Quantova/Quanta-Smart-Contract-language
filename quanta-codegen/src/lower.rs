@@ -496,7 +496,8 @@ fn lower_call_value(
 }
 
 const DECLARED_ORDER_WORD_TYPES: &[&str] = &[
-    "bool", "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", "Q_Asset", "Time",
+    "bool", "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", "Q_Asset",
+    "Time", "Q_Hash", "Q_Id",
 ];
 
 const SCALAR_PARAM_TYPES: &[&str] = &[
@@ -1762,6 +1763,12 @@ pub fn lower_entry(
             })
             .collect();
         ctx.wide_keys = collect_wide_keys(layout, &params, &asset_params, events, entry);
+        ctx.wide_keys.retain(|key| {
+            !entry
+                .params
+                .iter()
+                .any(|p| &p.name.text == key && p.ty.name.text != WIDE_TYPE)
+        });
         ctx.args.offset_of_width(CALLER_KEY, ADDR_BYTES);
         ctx.args.offset_of_width(CONTRACT_KEY, ADDR_BYTES);
         ctx.args.offset_of_width(TIME_KEY, WORD);
