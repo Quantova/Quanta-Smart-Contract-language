@@ -20,6 +20,7 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
             for stmt in &g.body {
                 check_genesis_stmt(model, stmt)?;
             }
+            check_known_calls(&g.body)?;
         }
     }
     for entry in &model.entries {
@@ -358,7 +359,42 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         }
     }
     check_no_external_call(model, entry)?;
+    check_known_calls(&entry.body)?;
     Ok(())
+}
+
+const CALLABLE_BUILTINS: &[&str] = &["send", "send_asset", "mint", "mint_asset"];
+
+const CALLABLE_METHODS: &[&str] = &[
+    "get", "contains", "split", "set", "remove", "merge", "insert", "debit", "credit",
+];
+
+fn check_known_calls(body: &[Stmt]) -> Result<(), TypeError> {
+    let mut unknown = None;
+    for stmt in body {
+        for_each_expr(stmt, &mut |e| {
+            if unknown.is_some() {
+                return;
+            }
+            if let Expr::Call { callee, span, .. } = e {
+                let known = match callee.as_ref() {
+                    Expr::Ident(id) => CALLABLE_BUILTINS.contains(&id.text.as_str()),
+                    Expr::Field { name, .. } => CALLABLE_METHODS.contains(&name.text.as_str()),
+                    _ => false,
+                };
+                if !known {
+                    unknown = Some(*span);
+                }
+            }
+        });
+    }
+    match unknown {
+        Some(span) => Err(TypeError::new(
+            "this calls a function the language does not define",
+            span,
+        )),
+        None => Ok(()),
+    }
 }
 
 fn check_no_external_call(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
