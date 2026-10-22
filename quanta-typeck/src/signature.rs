@@ -1956,6 +1956,41 @@ fn credits_drawn_from_an_inflow_only_total(model: &Model, entry: &EntryDecl) -> 
     saw && all_drawn
 }
 
+fn credits_field_drawn_from_an_inflow_only_total(
+    model: &Model,
+    entry: &EntryDecl,
+    field: &str,
+) -> bool {
+    credits_drawn_from_an_inflow_only_total(model, entry)
+        && field_is_written_only_by_credits(entry, field)
+}
+
+fn field_is_written_only_by_credits(entry: &EntryDecl, field: &str) -> bool {
+    let mut credited = false;
+    let mut other_write = false;
+    for stmt in &entry.body {
+        if let Stmt::Assign { target, .. } = stmt {
+            if root_ident(target) == Some(field) {
+                other_write = true;
+            }
+        }
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if matches!(base.as_ref(), Expr::Ident(id) if id.text == field) {
+                        match name.text.as_str() {
+                            "credit" | "set" | "insert" => credited = true,
+                            "debit" | "remove" | "clear" | "merge" | "split" => other_write = true,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        });
+    }
+    credited && !other_write
+}
+
 fn entry_moves_asset(entry: &EntryDecl) -> bool {
     let mut found = false;
     for stmt in &entry.body {
@@ -2379,7 +2414,7 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
             if credits_only_what_was_paid_in(model, entry, field) {
                 continue;
             }
-            if credits_drawn_from_an_inflow_only_total(model, entry) {
+            if credits_field_drawn_from_an_inflow_only_total(model, entry, field) {
                 continue;
             }
             if only_reduces_the_field(entry, field) {
