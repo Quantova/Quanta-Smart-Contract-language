@@ -1032,25 +1032,31 @@ fn check_arithmetic(entry: &EntryDecl, params: &HashMap<&str, Ty>) -> Result<(),
                 continue;
             }
         }
-        let (target, addend, span) = match stmt {
+        let (target, addends, span): (&Expr, Vec<&Expr>, &quanta_lexer::Span) = match stmt {
             Stmt::Assign {
                 target,
                 op: AssignOp::Add,
                 value,
                 span,
-            } => (target, value, span),
+            } => {
+                let mut terms = Vec::new();
+                sum_terms(value, &mut terms);
+                (target, terms, span)
+            }
             Stmt::Assign {
                 target,
                 op: AssignOp::Set,
-                value:
-                    Expr::Binary {
-                        op: BinOp::Add,
-                        left,
-                        right,
-                        ..
-                    },
+                value: value @ Expr::Binary { op: BinOp::Add, .. },
                 span,
-            } if same_target(target, left) => (target, right.as_ref(), span),
+            } => {
+                let mut terms = Vec::new();
+                sum_terms(value, &mut terms);
+                let Some(at) = terms.iter().position(|t| same_target(target, t)) else {
+                    continue;
+                };
+                terms.remove(at);
+                (target, terms, span)
+            }
             _ => continue,
         };
         let name = match target {
@@ -1060,13 +1066,13 @@ fn check_arithmetic(entry: &EntryDecl, params: &HashMap<&str, Ty>) -> Result<(),
         if params.get(name).is_some() {
             continue;
         }
-        if bounded_addend(addend, &asset_params) {
+        if addends.iter().all(|addend| {
+            bounded_addend(addend, &asset_params)
+                || (entry_mints && is_minted_amount(addend, entry))
+        }) {
             continue;
         }
-        if entry_mints && is_minted_amount(addend, entry) {
-            continue;
-        }
-        if limits_names(entry, name) {
+        if limits_bound(entry, name) {
             continue;
         }
         return Err(TypeError::new(
@@ -1106,11 +1112,67 @@ fn bounded_addend(value: &Expr, asset_params: &[&str]) -> bool {
     }
 }
 
-fn limits_names(entry: &EntryDecl, field: &str) -> bool {
+fn sum_terms<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
+    match expr {
+        Expr::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        } => {
+            sum_terms(left, out);
+            sum_terms(right, out);
+        }
+        other => out.push(other),
+    }
+}
+
+fn limits_bound(entry: &EntryDecl, field: &str) -> bool {
     entry.clauses.iter().any(|c| match c {
-        Clause::Limits { expr, .. } => mentions(expr, field),
+        Clause::Limits { expr, .. } => caps_from_above(expr, field),
         _ => false,
     })
+}
+
+fn caps_from_above(expr: &Expr, field: &str) -> bool {
+    match expr {
+        Expr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+            ..
+        } => caps_from_above(left, field) || caps_from_above(right, field),
+        Expr::Binary {
+            op: BinOp::Le | BinOp::Lt,
+            left,
+            right,
+            ..
+        } => upper_bounds(left, right, field),
+        Expr::Binary {
+            op: BinOp::Ge | BinOp::Gt,
+            left,
+            right,
+            ..
+        } => upper_bounds(right, left, field),
+        _ => false,
+    }
+}
+
+fn upper_bounds(small: &Expr, large: &Expr, field: &str) -> bool {
+    (mentions(small, field) && !mentions(large, field))
+        || (!mentions(small, field) && subtracts(large, field))
+}
+
+fn subtracts(expr: &Expr, field: &str) -> bool {
+    match expr {
+        Expr::Binary {
+            op: BinOp::Sub,
+            left,
+            right,
+            ..
+        } => mentions(right, field) && !mentions(left, field),
+        _ => false,
+    }
 }
 
 fn mentions(expr: &Expr, name: &str) -> bool {
