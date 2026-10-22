@@ -15,6 +15,7 @@ pub struct Model<'a> {
     asset_universe: HashSet<String>,
     pub(crate) protection: RefCell<HashMap<String, bool>>,
     pub(crate) protection_steps: Cell<u64>,
+    pub(crate) protecting: RefCell<HashSet<String>>,
     pub(crate) caller_chosen_thresholds: RefCell<Option<HashSet<quanta_lexer::Span>>>,
 }
 
@@ -56,6 +57,7 @@ impl<'a> Model<'a> {
             asset_universe,
             protection: RefCell::new(HashMap::new()),
             protection_steps: Cell::new(0),
+            protecting: RefCell::new(HashSet::new()),
             caller_chosen_thresholds: RefCell::new(None),
         }
     }

@@ -2306,12 +2306,16 @@ pub(crate) fn authority_anchor_protected(model: &Model, field: &str) -> bool {
     if model.protection_steps.get() > COMPILE_STEP_BUDGET {
         return false;
     }
+    if !model.protecting.borrow_mut().insert(field.to_string()) {
+        return false;
+    }
     let mut prot = Prot {
         stack: HashSet::new(),
         memo: HashMap::new(),
         steps: 0,
     };
     let protected = anchor_protected(model, field, &mut prot).0;
+    model.protecting.borrow_mut().remove(field);
     model
         .protection_steps
         .set(model.protection_steps.get().saturating_add(prot.steps));
