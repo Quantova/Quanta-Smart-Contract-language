@@ -3,7 +3,7 @@ contract Vesting {
   state {
     beneficiary: Q_Address;
     locked: Q_Asset<QTOV>;
-    start: Time = 2026-01-01;
+    start: Time = @2026-01-01;
     total: u128;
     claimed: u128;
   }

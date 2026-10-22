@@ -225,7 +225,7 @@ fn a_recorded_now_anchor_that_a_reset_clears_still_compiles() {
 #[test]
 fn a_constant_default_anchor_still_compiles() {
     let src = "contract C {\n\
-      state { owner: Q_Address; vault: Q_Asset<QTOV>; unlock: Time = 2027-12-31; }\n\
+      state { owner: Q_Address; vault: Q_Asset<QTOV>; unlock: Time = @2027-12-31; }\n\
       genesis { owner = deployer; }\n\
       entry withdraw(order: WithdrawOrder signed by owner) conserves QTOV writes(vault)\n\
         after unlock { send(order.to, vault.split(order.amount)); }\n\

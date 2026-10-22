@@ -3,7 +3,7 @@ contract Timelock {
   state {
     owner: Q_Address;
     vault: Q_Asset<QTOV>;
-    unlock: Time = 2027-12-31;
+    unlock: Time = @2027-12-31;
   }
   genesis {
     owner = deployer;

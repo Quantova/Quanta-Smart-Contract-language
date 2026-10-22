@@ -1294,9 +1294,9 @@ mod tests {
         assert!(error_for(wide_flag).contains("does not fit"));
         ok("contract C { state { level: u8 = 255; paused: bool = 1; } }");
         ok("contract C { state { owner: Q_Address; unlock: Time; opened: u64; } \
-            genesis { owner = deployer; unlock = 2030-01-01; } \
+            genesis { owner = deployer; unlock = @2030-01-01; } \
             entry open(order: OpenOrder signed by owner) writes(opened) \
-            { guard now >= unlock; guard now < 2040-01-01; guard now >= unlock + 86400; opened = 1; } }");
+            { guard now >= unlock; guard now < @2040-01-01; guard now >= unlock + 86400; opened = 1; } }");
         let mistyped = "contract C { state { owner: Q_Address; count: u64 = owner; } }";
         assert!(error_for(mistyped).contains("cannot be stored"));
         ok("contract C { state { cap: u64 = 50_000; paused: bool = 0; } }");

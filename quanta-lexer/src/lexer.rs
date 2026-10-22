@@ -82,6 +82,7 @@ impl<'a> Lexer<'a> {
                 (0xEF, Some(0xBF), Some(&c)) => matches!(c, 0xB9..=0xBB),
                 (0xE1, Some(0xA0), Some(0x8E)) => true,
                 (0xC2, Some(0xAD), _) => true,
+                (0xC2, Some(0x85), _) => true,
                 (0xD8, Some(0x9C), _) => true,
                 _ => false,
             };
@@ -135,12 +136,11 @@ impl<'a> Lexer<'a> {
 
     fn scan_number(&mut self, start: usize) -> Result<Token, LexError> {
         if self.is_date_at(start) {
-            self.pos += 10;
-            let span = Span::new(start, self.pos);
-            return Ok(Token::new(
-                TokenKind::Date(self.slice(span).to_string()),
-                span,
-            ));
+            return Err(LexError {
+                message: "a date is written @YYYY-MM-DD, and a subtraction needs spaces around each minus"
+                    .to_string(),
+                span: Span::new(start, start + 10),
+            });
         }
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() || c == b'_' {
@@ -206,6 +206,14 @@ impl<'a> Lexer<'a> {
     fn scan_symbol(&mut self, start: usize) -> Result<Token, LexError> {
         let c = self.peek().unwrap();
         let next = self.peek_at(1);
+        if c == b'@' && self.is_date_at(start + 1) {
+            self.pos += 11;
+            let text = self.slice(Span::new(start + 1, self.pos)).to_string();
+            return Ok(Token::new(
+                TokenKind::Date(text),
+                Span::new(start, self.pos),
+            ));
+        }
         let (kind, len) = match (c, next) {
             (b'+', Some(b'=')) => (TokenKind::PlusEq, 2),
             (b'-', Some(b'=')) => (TokenKind::MinusEq, 2),
@@ -299,7 +307,7 @@ mod tests {
             vec![TokenKind::Int("50_000".to_string()), TokenKind::Eof]
         );
         assert_eq!(
-            kinds("2036-07-01"),
+            kinds("@2036-07-01"),
             vec![TokenKind::Date("2036-07-01".to_string()), TokenKind::Eof]
         );
         assert_eq!(

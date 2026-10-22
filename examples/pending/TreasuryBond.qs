@@ -5,7 +5,7 @@ contract TreasuryBond {
     holders: Registry<Q_Address>;
     treasury: Q_Asset<QSGD>;
     face_value: u64 = 1_000;
-    maturity: Time = 2036-07-01;
+    maturity: Time = @2036-07-01;
     coupon_bps: u16 = 425;
   }
   genesis {

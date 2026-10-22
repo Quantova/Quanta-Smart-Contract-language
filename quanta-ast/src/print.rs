@@ -242,7 +242,7 @@ const PREC_PRIMARY: u8 = 10;
 fn expr_str(e: &Expr, min_prec: u8) -> String {
     let (text, prec) = match e {
         Expr::Int(v) => (v.text.clone(), PREC_PRIMARY),
-        Expr::Date { text, .. } => (text.clone(), PREC_PRIMARY),
+        Expr::Date { text, .. } => (format!("@{text}"), PREC_PRIMARY),
         Expr::Str(v) => (format!("\"{}\"", v.value), PREC_PRIMARY),
         Expr::Ident(v) => (v.text.clone(), PREC_PRIMARY),
         Expr::Caller { .. } => ("caller".to_string(), PREC_PRIMARY),
