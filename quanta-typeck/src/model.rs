@@ -17,6 +17,7 @@ pub struct Model<'a> {
     pub(crate) protection_steps: Cell<u64>,
     pub(crate) protecting: RefCell<HashSet<String>>,
     pub(crate) caller_chosen_thresholds: RefCell<Option<HashSet<quanta_lexer::Span>>>,
+    pub(crate) guarded_positive_thresholds: RefCell<Option<HashSet<quanta_lexer::Span>>>,
 }
 
 impl<'a> Model<'a> {
@@ -59,6 +60,7 @@ impl<'a> Model<'a> {
             protection_steps: Cell::new(0),
             protecting: RefCell::new(HashSet::new()),
             caller_chosen_thresholds: RefCell::new(None),
+            guarded_positive_thresholds: RefCell::new(None),
         }
     }
 

@@ -4065,7 +4065,11 @@ fn caller_membership_present(model: &Model, expr: &Expr) -> bool {
         return false;
     };
     let lookup_left = is_caller_membership(model, left);
-    let bound = !is_int_literal(threshold) && !threshold_is_caller_chosen(model, threshold);
+    let bound = !is_int_literal(threshold)
+        && !threshold_is_caller_chosen(model, threshold)
+        && (!reads_only_state(model, threshold)
+            || threshold_is_provably_positive(model, threshold)
+            || threshold_is_guarded_positive(model, threshold));
     match (op, lookup_left) {
         (BinOp::Ge, true) | (BinOp::Le, false) => is_positive_int(threshold) || bound,
         (BinOp::Gt, true) | (BinOp::Lt, false) => is_nonnegative_int(threshold) || bound,
@@ -4073,6 +4077,118 @@ fn caller_membership_present(model: &Model, expr: &Expr) -> bool {
         (BinOp::Eq, _) => is_positive_int(threshold),
         _ => false,
     }
+}
+
+fn reads_only_state(model: &Model, expr: &Expr) -> bool {
+    let mut only_state = true;
+    walk(expr, &mut |e| match e {
+        Expr::Ident(id) if !model.state.contains_key(id.text.as_str()) => only_state = false,
+        Expr::Caller { .. } | Expr::Now { .. } | Expr::Native { .. } | Expr::InAsset { .. } => {
+            only_state = false
+        }
+        _ => {}
+    });
+    only_state
+}
+
+fn threshold_is_provably_positive(model: &Model, threshold: &Expr) -> bool {
+    let Expr::Ident(id) = threshold else {
+        return false;
+    };
+    let field = id.text.as_str();
+    let Some(decl) = model.state.get(field) else {
+        return false;
+    };
+    let mut starts_positive = decl.default.as_ref().is_some_and(is_positive_int);
+    for item in &model.contract.items {
+        if let quanta_ast::Item::Genesis(g) = item {
+            for stmt in &g.body {
+                if let Stmt::Assign { target, value, .. } = stmt {
+                    if root_ident(target) == Some(field) {
+                        starts_positive = is_positive_int(value);
+                    }
+                }
+            }
+        }
+    }
+    if !starts_positive {
+        return false;
+    }
+    let written_by_entries = model.entries.iter().any(|e| entry_writes_field(e, field));
+    if !written_by_entries {
+        return true;
+    }
+    if !authority_anchor_protected(model, field) {
+        return false;
+    }
+    model.entries.iter().all(|entry| {
+        entry.body.iter().all(|stmt| match stmt {
+            Stmt::Assign { target, value, .. } if root_ident(target) == Some(field) => {
+                is_positive_int(value) || entry_guards_positive(entry, value)
+            }
+            _ => true,
+        })
+    })
+}
+
+fn threshold_is_guarded_positive(model: &Model, threshold: &Expr) -> bool {
+    if model.guarded_positive_thresholds.borrow().is_none() {
+        let mut found: HashSet<Span> = HashSet::new();
+        for entry in &model.entries {
+            let mut gates: Vec<&Expr> = Vec::new();
+            for clause in &entry.clauses {
+                if let Clause::Limits { expr, .. } = clause {
+                    gates.push(expr);
+                }
+            }
+            for stmt in &entry.body {
+                if let Stmt::Guard { expr, .. } = stmt {
+                    gates.push(expr);
+                }
+            }
+            for gate in gates {
+                walk(gate, &mut |e| {
+                    let Expr::Binary { left, right, .. } = e else {
+                        return;
+                    };
+                    let candidate = if is_caller_membership(model, left) {
+                        right.as_ref()
+                    } else if is_caller_membership(model, right) {
+                        left.as_ref()
+                    } else {
+                        return;
+                    };
+                    if entry_guards_positive(entry, candidate) {
+                        found.insert(candidate.span());
+                    }
+                });
+            }
+        }
+        *model.guarded_positive_thresholds.borrow_mut() = Some(found);
+    }
+    model
+        .guarded_positive_thresholds
+        .borrow()
+        .as_ref()
+        .is_some_and(|set| set.contains(&threshold.span()))
+}
+
+fn entry_guards_positive(entry: &EntryDecl, value: &Expr) -> bool {
+    entry.body.iter().any(|stmt| match stmt {
+        Stmt::Guard {
+            expr: Expr::Binary {
+                op, left, right, ..
+            },
+            ..
+        } => match op {
+            BinOp::Gt => expr_eq(left, value) && is_nonnegative_int(right),
+            BinOp::Ge => expr_eq(left, value) && is_positive_int(right),
+            BinOp::Lt => expr_eq(right, value) && is_nonnegative_int(left),
+            BinOp::Le => expr_eq(right, value) && is_positive_int(left),
+            _ => false,
+        },
+        _ => false,
+    })
 }
 
 fn threshold_is_caller_chosen(model: &Model, threshold: &Expr) -> bool {
