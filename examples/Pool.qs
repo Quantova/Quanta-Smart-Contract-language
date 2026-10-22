@@ -60,7 +60,7 @@ contract Pool {
     reads(token_b, pending_a, reserve_a, reserve_b, total_shares, max_reserve)
     writes(pending_a, reserve_a, reserve_b, total_shares, shares, vault_b)
     conserves TOKB
-    limits reserve_b + funds.amount <= max_reserve && reserve_a + funds.amount <= max_reserve && total_shares + funds.amount <= max_reserve
+    limits reserve_b + funds.amount <= max_reserve && reserve_a + (funds.amount * reserve_a) / reserve_b <= max_reserve && total_shares + (funds.amount * total_shares) / reserve_b <= max_reserve
   {
     guard in_asset == token_b;
     guard total_shares > 0;

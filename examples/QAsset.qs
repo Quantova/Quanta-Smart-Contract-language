@@ -5,6 +5,7 @@ contract QAsset {
     owner: Q_Address;
     total_supply: u128;
     balances: Map<Q_Address, u128>;
+    max_supply: u128 = 1_000_000_000_000_000_000_000_000;
   }
   genesis {
     owner = deploy_params.owner;
@@ -13,7 +14,9 @@ contract QAsset {
   }
   entry mint(order: MintOrder signed by owner)
     mints QAT
+    reads(max_supply)
     writes(total_supply, balances)
+    limits total_supply + order.amount <= max_supply
   {
     total_supply += order.amount;
     balances.credit(order.to, order.amount);

@@ -23,6 +23,7 @@ contract NameRegistry {
   {
     guard caller == admin;
     names.remove(name);
+    owners.remove(name);
     emit ReleasedName(name);
   }
   event Registered(name: Q_Name, owner: Q_Address);
