@@ -687,20 +687,9 @@ fn asset_backed_scalars(model: &Model, here: &EntryDecl) -> HashSet<String> {
 }
 
 fn writes_field_only_into_an_empty_slot(model: &Model, entry: &EntryDecl, field: &str) -> bool {
-    let mut guards: Vec<&Expr> = Vec::new();
-    for clause in &entry.clauses {
-        match clause {
-            Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => guards.push(expr),
-            _ => {}
-        }
-    }
-    for stmt in &entry.body {
-        if let Stmt::Guard { expr, .. } = stmt {
-            guards.push(expr);
-        }
-    }
+    let required = required_conditions(entry);
     let mut parts: Vec<&Expr> = Vec::new();
-    for expr in &guards {
+    for expr in &required {
         split_and(expr, &mut parts);
     }
     let proves_empty = |key: &Expr| {
@@ -1051,20 +1040,9 @@ fn entry_requires_a_positive_amount(entry: &EntryDecl, param: &str) -> bool {
 }
 
 fn entry_guards_on_holding(model: &Model, entry: &EntryDecl, field: &str) -> bool {
-    let mut exprs: Vec<&Expr> = Vec::new();
-    for clause in &entry.clauses {
-        match clause {
-            Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => exprs.push(expr),
-            _ => {}
-        }
-    }
-    for stmt in &entry.body {
-        if let Stmt::Guard { expr, .. } = stmt {
-            exprs.push(expr);
-        }
-    }
+    let required = required_conditions(entry);
     let mut holds = false;
-    for expr in exprs {
+    for expr in &required {
         walk(expr, &mut |e| {
             if let Expr::Binary {
                 op: BinOp::Eq,
@@ -1569,6 +1547,66 @@ fn entry_debits_the_row_it_gated_on(entry: &EntryDecl, field: &str, key: &Expr) 
         });
     }
     debited
+}
+
+fn required_conditions(entry: &EntryDecl) -> Vec<Expr> {
+    let mut out = Vec::new();
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } => out.push(expr.clone()),
+            Clause::Denies { expr, .. } => out.extend(negated(expr)),
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            out.push(expr.clone());
+        }
+    }
+    out
+}
+
+fn negated(expr: &Expr) -> Vec<Expr> {
+    match expr {
+        Expr::Unary {
+            op: UnaryOp::Not,
+            expr,
+            ..
+        } => vec![expr.as_ref().clone()],
+        Expr::Binary {
+            op: BinOp::Or,
+            left,
+            right,
+            ..
+        } => {
+            let mut out = negated(left);
+            out.extend(negated(right));
+            out
+        }
+        Expr::Binary {
+            op,
+            left,
+            right,
+            span,
+        } => {
+            let flipped = match op {
+                BinOp::Eq => BinOp::Ne,
+                BinOp::Ne => BinOp::Eq,
+                BinOp::Lt => BinOp::Ge,
+                BinOp::Ge => BinOp::Lt,
+                BinOp::Gt => BinOp::Le,
+                BinOp::Le => BinOp::Gt,
+                _ => return Vec::new(),
+            };
+            vec![Expr::Binary {
+                op: flipped,
+                left: left.clone(),
+                right: right.clone(),
+                span: *span,
+            }]
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn split_and<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
