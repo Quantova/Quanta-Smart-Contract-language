@@ -2330,34 +2330,46 @@ struct Prot {
     stack: HashSet<String>,
     memo: HashMap<String, bool>,
     steps: u64,
+    time_anchor: bool,
 }
 
 const COMPILE_STEP_BUDGET: u64 = 2_000_000;
 
 pub(crate) fn authority_anchor_protected(model: &Model, field: &str) -> bool {
-    if let Some(&known) = model.protection.borrow().get(field) {
+    protected_as(model, field, false)
+}
+
+pub(crate) fn time_anchor_protected(model: &Model, field: &str) -> bool {
+    protected_as(model, field, true)
+}
+
+fn protected_as(model: &Model, field: &str, time_anchor: bool) -> bool {
+    let key = if time_anchor {
+        format!("time anchor {field}")
+    } else {
+        field.to_string()
+    };
+    if let Some(&known) = model.protection.borrow().get(&key) {
         return known;
     }
     if model.protection_steps.get() > COMPILE_STEP_BUDGET {
         return false;
     }
-    if !model.protecting.borrow_mut().insert(field.to_string()) {
+    if !model.protecting.borrow_mut().insert(key.clone()) {
         return false;
     }
     let mut prot = Prot {
         stack: HashSet::new(),
         memo: HashMap::new(),
         steps: 0,
+        time_anchor,
     };
     let protected = anchor_protected(model, field, &mut prot).0;
-    model.protecting.borrow_mut().remove(field);
+    model.protecting.borrow_mut().remove(&key);
     model
         .protection_steps
         .set(model.protection_steps.get().saturating_add(prot.steps));
-    model
-        .protection
-        .borrow_mut()
-        .insert(field.to_string(), protected);
+    model.protection.borrow_mut().insert(key, protected);
     protected
 }
 
@@ -2403,6 +2415,15 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
     let mut tainted = false;
     for entry in &model.entries {
         if entry_writes_field(entry, field) {
+            if prot.time_anchor {
+                let (authorized, sub_tainted) = writer_authorized(model, entry, prot);
+                if !authorized || copies_an_unprotected_field(model, entry, field, prot) {
+                    protected = false;
+                    break;
+                }
+                tainted |= sub_tainted;
+                continue;
+            }
             if writes_field_only_under_the_caller_key(entry, field)
                 && credits_caller_only_by_the_paid_amount(model, entry, field, prot)
             {

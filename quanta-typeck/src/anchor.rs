@@ -257,7 +257,7 @@ fn check_guard_anchors(model: &Model) -> Result<(), TypeError> {
             time_compared_fields(model, &params, gate, &mut anchors);
             for (field, span) in anchors {
                 if writes_other_than_time(model, field)
-                    && !crate::signature::authority_anchor_protected(model, field)
+                    && !crate::signature::time_anchor_protected(model, field)
                 {
                     return Err(TypeError::new(
                         format!(
@@ -406,7 +406,7 @@ fn check_anchor_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeErr
                 return Err(liveness_rejection(field, *span));
             }
             if writes_other_than_time(model, field)
-                && !crate::signature::authority_anchor_protected(model, field)
+                && !crate::signature::time_anchor_protected(model, field)
             {
                 return Err(TypeError::new(
                     format!(
