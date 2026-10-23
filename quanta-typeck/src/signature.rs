@@ -1255,7 +1255,7 @@ fn outflow_is_bounded_by_an_entitlement(model: &Model, entry: &EntryDecl) -> boo
         collect_conjuncts(expr, &mut musts);
     }
     for expr in musts {
-        walk(expr, &mut |e| {
+        let mut top = |e: &Expr| {
             if bounded {
                 return;
             }
@@ -1308,7 +1308,8 @@ fn outflow_is_bounded_by_an_entitlement(model: &Model, entry: &EntryDecl) -> boo
                 }
             }
             bounded = true;
-        });
+        };
+        top(expr.peel());
     }
     bounded
 }
@@ -1791,7 +1792,7 @@ fn split_and<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
 }
 
 fn collect_conjuncts<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
-    match e {
+    match e.peel() {
         Expr::Binary {
             op: BinOp::And,
             left,
