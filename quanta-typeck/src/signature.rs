@@ -334,7 +334,79 @@ fn asset_outflow_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> 
             }
         });
     }
-    saw_send && sends_only_to_caller
+    saw_send && sends_only_to_caller && every_payout_consumes_its_own_backing(entry)
+}
+
+fn every_payout_consumes_its_own_backing(entry: &EntryDecl) -> bool {
+    let mut debits: Vec<Expr> = Vec::new();
+    let mut payouts: Vec<Expr> = Vec::new();
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                match callee.as_ref() {
+                    Expr::Field { base, name, .. }
+                        if name.text == "debit"
+                            && matches!(base.as_ref(), Expr::Ident(_))
+                            && matches!(args.first(), Some(Expr::Caller { .. })) =>
+                    {
+                        if let Some(amount) = args.get(1) {
+                            debits.push(amount.clone());
+                        }
+                    }
+                    Expr::Ident(id) if id.text == "send_asset" => {
+                        if let Some(value) = args.get(2) {
+                            payouts.push(value.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+    let inflows: Vec<Expr> = entry
+        .params
+        .iter()
+        .filter(|p| crate::model::is_asset_param(p))
+        .map(|p| Expr::Field {
+            base: Box::new(Expr::Ident(p.name.clone())),
+            name: quanta_ast::Ident {
+                text: "amount".to_string(),
+                span: p.name.span,
+            },
+            span: p.name.span,
+        })
+        .collect();
+    let mut backing: Vec<Expr> = debits.iter().chain(inflows.iter()).cloned().collect();
+    let all_backing = backing.clone();
+    let mut consumed: Vec<Expr> = Vec::new();
+    for value in &payouts {
+        let amount = match value.peel() {
+            Expr::Call { callee, args, .. } if matches!(callee.as_ref(), Expr::Field { name, .. } if name.text == "split") => {
+                match args.first() {
+                    Some(a) => a.peel(),
+                    None => return false,
+                }
+            }
+            other => other,
+        };
+        if let Some(pos) = backing.iter().position(|b| expr_eq(b.peel(), amount)) {
+            consumed.push(backing.remove(pos));
+            continue;
+        }
+        if consumed.iter().any(|c| expr_eq(c.peel(), amount)) {
+            return false;
+        }
+        let mut drawn = false;
+        walk(amount, &mut |e| {
+            if all_backing.iter().any(|b| expr_eq(b.peel(), e)) {
+                drawn = true;
+            }
+        });
+        if !drawn {
+            return false;
+        }
+    }
+    true
 }
 
 fn ledger_move_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> bool {
@@ -351,6 +423,23 @@ fn ledger_move_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> bo
         .map(|p| p.name.text.as_str())
         .collect();
     let backed_scalars = asset_backed_scalars(model, entry);
+    let mut scalar_backer: HashMap<String, String> = HashMap::new();
+    for stmt in &entry.body {
+        if let Stmt::Assign {
+            target: Expr::Ident(id),
+            op: AssignOp::Set,
+            value,
+            ..
+        } = stmt
+        {
+            if backed_scalars.contains(id.text.as_str()) {
+                if let Some(param) = asset_amount_backer(value, &assets) {
+                    scalar_backer.insert(id.text.clone(), param.to_string());
+                }
+            }
+        }
+    }
+    let mut used: HashSet<String> = HashSet::new();
     let mut saw = false;
     let mut all_caller_keyed = true;
     for stmt in &entry.body {
@@ -368,11 +457,15 @@ fn ledger_move_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> bo
                             all_caller_keyed = false;
                         }
                         if matches!(name.text.as_str(), "credit" | "set" | "insert") {
-                            let paid = args.get(1).is_some_and(|v| {
-                                asset_amount_backer(v.peel(), &assets).is_some()
-                                    || matches!(v.peel(), Expr::Ident(id)
-                                        if backed_scalars.contains(id.text.as_str()))
+                            let backer = args.get(1).and_then(|v| {
+                                asset_amount_backer(v.peel(), &assets)
+                                    .map(str::to_string)
+                                    .or_else(|| match v.peel() {
+                                        Expr::Ident(id) => scalar_backer.get(&id.text).cloned(),
+                                        _ => None,
+                                    })
                             });
+                            let paid = backer.is_some_and(|b| used.insert(b));
                             if !paid {
                                 all_caller_keyed = false;
                             }
@@ -1942,10 +2035,16 @@ fn credits_drawn_from_an_inflow_only_total(model: &Model, entry: &EntryDecl) -> 
                         && matches!(name.text.as_str(), "credit" | "set" | "insert")
                     {
                         saw = true;
-                        if !args
-                            .get(1)
-                            .is_some_and(|v| drawn.iter().any(|d| expr_eq(d, v)))
-                        {
+                        let consumed = args.get(1).is_some_and(|v| {
+                            match drawn.iter().position(|d| expr_eq(d, v)) {
+                                Some(pos) => {
+                                    drawn.remove(pos);
+                                    true
+                                }
+                                None => false,
+                            }
+                        });
+                        if !consumed {
                             all_drawn = false;
                         }
                     }
@@ -3284,9 +3383,27 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
         .collect();
     let mut spends = self_spend_amounts(&ledgers, entry, &reads_of, &sub_locals);
     let backed_scalars = asset_backed_scalars(model, entry);
-    let backs = |value: &Expr| match value {
-        Expr::Ident(id) => backed_scalars.contains(id.text.as_str()),
-        _ => false,
+    let mut scalar_backer: HashMap<&str, &str> = HashMap::new();
+    for stmt in &entry.body {
+        if let Stmt::Assign {
+            target: Expr::Ident(id),
+            op: AssignOp::Set,
+            value,
+            ..
+        } = stmt
+        {
+            if backed_scalars.contains(id.text.as_str()) {
+                if let Some(param) = asset_amount_backer(value, &asset_params) {
+                    scalar_backer.insert(id.text.as_str(), param);
+                }
+            }
+        }
+    }
+    let backer_of = |value: &Expr| {
+        asset_amount_backer(value, &asset_params).or_else(|| match value {
+            Expr::Ident(id) => scalar_backer.get(id.text.as_str()).copied(),
+            _ => None,
+        })
     };
     let mut used_asset_backers: HashSet<&str> = HashSet::new();
     let mut pool_locals: HashMap<&str, (&str, Option<&Expr>)> = HashMap::new();
@@ -3378,9 +3495,8 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                             {
                                 let asset_backed = args
                                     .get(1)
-                                    .and_then(|v| asset_amount_backer(v, &asset_params))
-                                    .is_some_and(|a| used_asset_backers.insert(a))
-                                    || args.get(1).is_some_and(&backs);
+                                    .and_then(&backer_of)
+                                    .is_some_and(|a| used_asset_backers.insert(a));
                                 let spend_backed = !asset_backed
                                     && args.get(1).is_some_and(|v| {
                                         match spends.iter().position(|s| expr_eq(s, v)) {
