@@ -78,8 +78,8 @@ pub fn layout_hash_of(cc: &quanta_codegen::CompiledContract, selector: [u8; 4]) 
 }
 
 pub fn bind_layout(cc: &quanta_codegen::CompiledContract, mut msg: Vec<u8>) -> Vec<u8> {
-    let word = u64::from_be_bytes(msg[48..56].try_into().unwrap());
+    let word = u64::from_be_bytes(msg[80..88].try_into().unwrap());
     let hash = layout_hash_of(cc, (word as u32).to_be_bytes());
-    msg.splice(104..104, hash);
+    msg.splice(136..136, hash);
     msg
 }

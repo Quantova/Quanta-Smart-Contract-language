@@ -560,8 +560,13 @@ mod tests {
                     width: 32,
                 },
                 ArgSlot {
-                    key: "step".to_string(),
+                    key: "@genesis".to_string(),
                     offset: 120,
+                    width: 32,
+                },
+                ArgSlot {
+                    key: "step".to_string(),
+                    offset: 152,
                     width: 8,
                 },
             ]

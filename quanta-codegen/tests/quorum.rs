@@ -44,8 +44,9 @@ fn put_word(mem: &mut [u8], off: usize, value: u64) {
 fn message(cc: &CompiledContract, member: &[u8; 32], nonce: u64) -> Vec<u8> {
     let selector = cc.container.entries[0].selector;
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN03");
+    msg.extend_from_slice(b"QTVSGN04");
     msg.extend_from_slice(&0u64.to_be_bytes());
+    msg.extend_from_slice(&[0u8; 32]);
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
     msg.extend_from_slice(member);

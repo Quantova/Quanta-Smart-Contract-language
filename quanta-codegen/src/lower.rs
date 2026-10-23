@@ -43,6 +43,7 @@ const TIME_KEY: &str = "@time";
 const CHAIN_KEY: &str = "@chain";
 const VALUE_KEY: &str = "@value";
 const IN_ASSET_KEY: &str = "@in_asset";
+const GENESIS_KEY: &str = "@genesis";
 
 const SIGNER_ADDR_SCRATCH: u64 = 40960;
 const NONCE_PREIMAGE_SCRATCH: u64 = 41088;
@@ -65,7 +66,7 @@ const ADDR_TYPE: &str = "Q_Address";
 
 const WIDE_TYPE: &str = "u128";
 
-const SIGNED_MSG_TAG: u64 = u64::from_be_bytes(*b"QTVSGN03");
+const SIGNED_MSG_TAG: u64 = u64::from_be_bytes(*b"QTVSGN04");
 const ORDER_LAYOUT_TAG: &[u8; 8] = b"QTVLAYT1";
 pub(crate) const NONCE_TAG: u64 = u64::from_be_bytes(*b"QTVNONCE");
 const NAME_KEY_TAG: u64 = u64::from_be_bytes(*b"QTVNAME1");
@@ -1775,6 +1776,7 @@ pub fn lower_entry(
         ctx.args.offset_of_width(CHAIN_KEY, WORD);
         ctx.args.offset_of_width(VALUE_KEY, WORD);
         ctx.args.offset_of_width(IN_ASSET_KEY, ADDR_BYTES);
+        ctx.args.offset_of_width(GENESIS_KEY, ADDR_BYTES);
         ctx.args.sealed = asset_params.clone();
         for param in &entry.params {
             if quorum_spec(param).is_some() {
@@ -2734,6 +2736,8 @@ fn store_order_header(
     ctx.regs.free(tag);
     let chain_off = ctx.args.offset_of(CHAIN_KEY);
     copy_words_to_region(ctx, chain_off, dst, MSG_CHAIN_OFF, 1, span)?;
+    let genesis_off = ctx.args.offset_of_width(GENESIS_KEY, ADDR_BYTES);
+    copy_words_to_region(ctx, genesis_off, dst, MSG_GENESIS_OFF, ADDR_WORDS, span)?;
     let contract_off = ctx.args.offset_of(CONTRACT_KEY);
     copy_words_to_region(ctx, contract_off, dst, MSG_CONTRACT_OFF, ADDR_WORDS, span)?;
     copy_words_to_region(ctx, expiry_off, dst, MSG_EXPIRY_OFF, 1, span)?;
@@ -3260,13 +3264,14 @@ fn anchor_write_rejection(field: &str, span: Span) -> CodegenError {
 
 const MSG_TAG_OFF: u64 = 0;
 const MSG_CHAIN_OFF: u64 = 8;
-const MSG_CONTRACT_OFF: u64 = 16;
-const MSG_SELECTOR_OFF: u64 = 48;
-const MSG_SIGNER_OFF: u64 = 56;
-const MSG_NONCE_OFF: u64 = 88;
-const MSG_EXPIRY_OFF: u64 = 96;
-const MSG_LAYOUT_OFF: u64 = 104;
-const MSG_FIELDS_OFF: u64 = 136;
+const MSG_GENESIS_OFF: u64 = 16;
+const MSG_CONTRACT_OFF: u64 = 48;
+const MSG_SELECTOR_OFF: u64 = 80;
+const MSG_SIGNER_OFF: u64 = 88;
+const MSG_NONCE_OFF: u64 = 120;
+const MSG_EXPIRY_OFF: u64 = 128;
+const MSG_LAYOUT_OFF: u64 = 136;
+const MSG_FIELDS_OFF: u64 = 168;
 
 fn lower_signed_binding(
     ctx: &mut Ctx,

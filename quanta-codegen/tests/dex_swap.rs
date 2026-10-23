@@ -45,8 +45,9 @@ fn signed_swap_memory(
     let operator = signer_address(1, &pk);
 
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN03");
+    msg.extend_from_slice(b"QTVSGN04");
     msg.extend_from_slice(&0u64.to_be_bytes());
+    msg.extend_from_slice(&[0u8; 32]);
     msg.extend_from_slice(&DEX_CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
     msg.extend_from_slice(&operator);

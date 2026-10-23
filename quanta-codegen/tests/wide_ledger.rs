@@ -125,11 +125,11 @@ fn deploy(
     owner: &[u8; 32],
     initial_supply: u128,
 ) -> BTreeMap<[u8; 32], u64> {
-    let mut mem = vec![0u8; 120 + 32 + 16 + 8];
-    mem[120..152].copy_from_slice(owner);
-    mem[152..160].copy_from_slice(&(initial_supply as u64).to_be_bytes());
-    mem[160..168].copy_from_slice(&((initial_supply >> 64) as u64).to_be_bytes());
-    mem[168..176].copy_from_slice(&SENTINEL);
+    let mut mem = vec![0u8; 152 + 32 + 16 + 8];
+    mem[152..184].copy_from_slice(owner);
+    mem[184..192].copy_from_slice(&(initial_supply as u64).to_be_bytes());
+    mem[192..200].copy_from_slice(&((initial_supply >> 64) as u64).to_be_bytes());
+    mem[200..208].copy_from_slice(&SENTINEL);
     run(cc, selector(GENESIS_SIGNATURE), BTreeMap::new(), &mem)
         .expect("genesis initializes from the deploy parameters")
         .0
@@ -158,8 +158,9 @@ fn mint_message(
     to: &[u8; 32],
 ) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN03");
+    msg.extend_from_slice(b"QTVSGN04");
     msg.extend_from_slice(&0u64.to_be_bytes());
+    msg.extend_from_slice(&[0u8; 32]);
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector_of(cc, "mint")) as u64).to_be_bytes());
     msg.extend_from_slice(owner);

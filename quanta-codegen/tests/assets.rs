@@ -155,8 +155,9 @@ fn signed_mint_memory(cc: &CompiledContract, amount: u64) -> (Vec<u8>, [u8; 32])
 
     let selector = cc.container.entries[0].selector;
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN03");
+    msg.extend_from_slice(b"QTVSGN04");
     msg.extend_from_slice(&0u64.to_be_bytes());
+    msg.extend_from_slice(&[0u8; 32]);
     msg.extend_from_slice(&MINT_CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(selector) as u64).to_be_bytes());
     msg.extend_from_slice(&signer);

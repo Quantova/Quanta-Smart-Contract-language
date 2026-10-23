@@ -15,7 +15,7 @@ use quanta_codegen::{compile_contract, CompiledContract, EntryArtifact};
 mod common;
 use common::{bind_layout, map_addr_word_key, map_key, signer_address, slot_key};
 
-const SDK_CONTEXT_BYTES: u64 = 120;
+const SDK_CONTEXT_BYTES: u64 = 152;
 const SDK_WORD: u64 = 8;
 const SDK_ADDR: u64 = 32;
 const SDK_U128: u64 = 16;
@@ -25,6 +25,7 @@ const CTX_TIME_OFF: u64 = 64;
 const CTX_CHAIN_OFF: u64 = 72;
 const CTX_VALUE_OFF: u64 = 80;
 const CTX_IN_ASSET_OFF: u64 = 88;
+const CTX_GENESIS_OFF: u64 = 120;
 
 const GAS: u64 = 8_000_000;
 const CONTRACT: [u8; 32] = [0x99; 32];
@@ -98,12 +99,17 @@ fn assert_host_context(cc: &CompiledContract, name: &str) {
     assert_eq!(
         offset(cc, name, "@in_asset"),
         CTX_IN_ASSET_OFF,
-        "@in_asset closes the context"
+        "@in_asset follows the value word"
     );
     assert_eq!(
-        CTX_IN_ASSET_OFF + SDK_ADDR,
+        offset(cc, name, "@genesis"),
+        CTX_GENESIS_OFF,
+        "@genesis closes the context"
+    );
+    assert_eq!(
+        CTX_GENESIS_OFF + SDK_ADDR,
         SDK_CONTEXT_BYTES,
-        "the context spans one hundred and twenty bytes"
+        "the context spans one hundred and fifty two bytes"
     );
     for slot in &entry(cc, name).args {
         if slot.key.starts_with('@') {
@@ -147,7 +153,7 @@ fn the_qasset_mint_offsets_equal_the_sdk_canonical_layout() {
     );
     assert_eq!(
         (to, scheme, ptr, amount),
-        (120, 152, 160, 168),
+        (152, 184, 192, 200),
         "the frozen QAsset mint layout"
     );
 }
@@ -169,7 +175,7 @@ fn the_qasset_transfer_offsets_equal_the_sdk_canonical_layout() {
     );
     assert_eq!(
         (to, amount),
-        (120, 152),
+        (152, 184),
         "the frozen QAsset transfer layout"
     );
 }
@@ -193,7 +199,7 @@ fn scalar_argument_widths_equal_the_sdk_field_widths() {
     assert_eq!(a, SDK_CONTEXT_BYTES, "the first scalar opens the region");
     assert_eq!(b - a, SDK_U128, "a u128 argument is sixteen bytes wide");
     assert_eq!(d - b, SDK_WORD, "a u64 argument is eight bytes wide");
-    assert_eq!((a, b, d), (120, 136, 144), "the frozen width probe layout");
+    assert_eq!((a, b, d), (152, 168, 176), "the frozen width probe layout");
 }
 
 fn selector_of(cc: &CompiledContract, name: &str) -> [u8; 4] {
@@ -219,9 +225,9 @@ fn run(
 }
 
 fn deploy(cc: &CompiledContract, owner: &[u8; 32]) -> BTreeMap<[u8; 32], u64> {
-    let mut mem = vec![0u8; 120 + 32 + 16 + 8];
-    mem[120..152].copy_from_slice(owner);
-    mem[168..176].copy_from_slice(&SENTINEL);
+    let mut mem = vec![0u8; 152 + 32 + 16 + 8];
+    mem[152..184].copy_from_slice(owner);
+    mem[200..208].copy_from_slice(&SENTINEL);
     run(cc, selector(GENESIS_SIGNATURE), BTreeMap::new(), &mem)
         .expect("genesis initializes from the deploy parameters")
         .0
@@ -236,8 +242,9 @@ fn canonical_order_message(
     to: &[u8; 32],
 ) -> Vec<u8> {
     let mut msg = Vec::new();
-    msg.extend_from_slice(b"QTVSGN03");
+    msg.extend_from_slice(b"QTVSGN04");
     msg.extend_from_slice(&chain_id.to_be_bytes());
+    msg.extend_from_slice(&[0u8; 32]);
     msg.extend_from_slice(&CONTRACT);
     msg.extend_from_slice(&(u32::from_be_bytes(sel) as u64).to_be_bytes());
     msg.extend_from_slice(signer);
