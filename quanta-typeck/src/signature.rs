@@ -334,12 +334,68 @@ fn asset_outflow_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> 
             }
         });
     }
-    saw_send && sends_only_to_caller && every_payout_consumes_its_own_backing(entry)
+    saw_send && sends_only_to_caller && every_payout_consumes_its_own_backing(model, entry)
 }
 
-fn every_payout_consumes_its_own_backing(entry: &EntryDecl) -> bool {
+fn ledger_funding_tokens(model: &Model, map: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for entry in &model.entries {
+        let assets: HashSet<&str> = entry
+            .params
+            .iter()
+            .filter(|p| crate::model::is_asset_param(p))
+            .map(|p| p.name.text.as_str())
+            .collect();
+        let mut funds = false;
+        for stmt in &entry.body {
+            stmt_exprs(stmt, &mut |e| {
+                if let Expr::Call { callee, args, .. } = e {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if matches!(base.as_ref(), Expr::Ident(m) if m.text == map)
+                            && matches!(name.text.as_str(), "credit" | "set" | "insert")
+                            && args
+                                .get(1)
+                                .is_some_and(|v| asset_amount_backer(v.peel(), &assets).is_some())
+                        {
+                            funds = true;
+                        }
+                    }
+                }
+            });
+        }
+        if !funds {
+            continue;
+        }
+        for condition in required_conditions(entry) {
+            let mut parts = Vec::new();
+            split_and(&condition, &mut parts);
+            for part in parts {
+                if let Expr::Binary {
+                    op: BinOp::Eq,
+                    left,
+                    right,
+                    ..
+                } = part
+                {
+                    match (left.peel(), right.peel()) {
+                        (Expr::InAsset { .. }, Expr::Ident(t))
+                        | (Expr::Ident(t), Expr::InAsset { .. }) => {
+                            out.insert(t.text.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+fn every_payout_consumes_its_own_backing(model: &Model, entry: &EntryDecl) -> bool {
     let mut debits: Vec<Expr> = Vec::new();
+    let mut debit_maps: Vec<String> = Vec::new();
     let mut payouts: Vec<Expr> = Vec::new();
+    let mut payout_tokens: Vec<Option<String>> = Vec::new();
     for stmt in &entry.body {
         stmt_exprs(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
@@ -349,13 +405,18 @@ fn every_payout_consumes_its_own_backing(entry: &EntryDecl) -> bool {
                             && matches!(base.as_ref(), Expr::Ident(_))
                             && matches!(args.first(), Some(Expr::Caller { .. })) =>
                     {
-                        if let Some(amount) = args.get(1) {
+                        if let (Some(amount), Expr::Ident(map)) = (args.get(1), base.as_ref()) {
                             debits.push(amount.clone());
+                            debit_maps.push(map.text.clone());
                         }
                     }
                     Expr::Ident(id) if id.text == "send_asset" => {
                         if let Some(value) = args.get(2) {
                             payouts.push(value.clone());
+                            payout_tokens.push(match args.first().map(Expr::peel) {
+                                Some(Expr::Ident(t)) => Some(t.text.clone()),
+                                _ => None,
+                            });
                         }
                     }
                     _ => {}
@@ -379,7 +440,7 @@ fn every_payout_consumes_its_own_backing(entry: &EntryDecl) -> bool {
     let mut backing: Vec<Expr> = debits.iter().chain(inflows.iter()).cloned().collect();
     let all_backing = backing.clone();
     let mut consumed: Vec<Expr> = Vec::new();
-    for value in &payouts {
+    for (value, token) in payouts.iter().zip(payout_tokens.iter()) {
         let amount = match value.peel() {
             Expr::Call { callee, args, .. } if matches!(callee.as_ref(), Expr::Field { name, .. } if name.text == "split") => {
                 match args.first() {
@@ -390,6 +451,15 @@ fn every_payout_consumes_its_own_backing(entry: &EntryDecl) -> bool {
             other => other,
         };
         if let Some(pos) = backing.iter().position(|b| expr_eq(b.peel(), amount)) {
+            if let (Some(map), Some(token)) = (debit_maps.get(pos), token) {
+                let funding = ledger_funding_tokens(model, map);
+                if !funding.is_empty() && !funding.contains(token) {
+                    return false;
+                }
+            }
+            if pos < debit_maps.len() {
+                debit_maps.remove(pos);
+            }
             consumed.push(backing.remove(pos));
             continue;
         }
