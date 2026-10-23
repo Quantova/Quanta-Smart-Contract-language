@@ -575,28 +575,41 @@ fn unconditional_self_claim(model: &Model, entry: &EntryDecl) -> Option<TypeErro
         });
     }
     let (map, key) = claimed?;
-    let mut conditioned = false;
-    for stmt in &entry.body {
-        if let Stmt::Guard { expr, .. } = stmt {
-            walk(expr, &mut |e| {
-                if let Expr::Call { callee, args, .. } = e {
-                    if let Expr::Field { base, name, .. } = callee.as_ref() {
-                        if let Expr::Ident(m) = base.as_ref() {
-                            if matches!(name.text.as_str(), "get" | "contains" | "has")
-                                && model.state.contains_key(m.text.as_str())
-                            {
-                                if let Some(k @ Expr::Ident(kid)) = args.first() {
-                                    if kid.text == key
-                                        && entry_writes_field_under_key(entry, m.text.as_str(), k)
-                                    {
-                                        conditioned = true;
-                                    }
+    let reads_the_slot = |e: &Expr| {
+        let mut hit = false;
+        walk(e, &mut |x| {
+            if let Expr::Call { callee, args, .. } = x {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if matches!(name.text.as_str(), "get" | "contains" | "has")
+                            && model.state.contains_key(m.text.as_str())
+                        {
+                            if let Some(k @ Expr::Ident(kid)) = args.first() {
+                                if kid.text == key
+                                    && entry_writes_field_under_key(entry, m.text.as_str(), k)
+                                {
+                                    hit = true;
                                 }
                             }
                         }
                     }
                 }
-            });
+            }
+        });
+        hit
+    };
+    let mut conditioned = false;
+    for stmt in &entry.body {
+        let Stmt::Guard { expr, .. } = stmt else {
+            continue;
+        };
+        let mut parts = Vec::new();
+        split_and(expr, &mut parts);
+        if parts
+            .iter()
+            .any(|part| holds_in_every_branch(part, &reads_the_slot))
+        {
+            conditioned = true;
         }
     }
     if conditioned {
@@ -1619,7 +1632,7 @@ fn writing_your_own_row_only_spends_your_own(model: &Model, field: &str) -> bool
                 guards.push(expr);
             }
         }
-        for g in guards {
+        for g in guards.iter().flat_map(|g| firm_conjuncts(g)) {
             walk(g, &mut |e| {
                 if let Expr::Call { callee, args, .. } = e {
                     if let Expr::Field { base, name, .. } = callee.as_ref() {
@@ -1793,6 +1806,33 @@ fn split_and<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
         }
         other => out.push(other),
     }
+}
+
+fn holds_in_every_branch(e: &Expr, pred: &impl Fn(&Expr) -> bool) -> bool {
+    match e.peel() {
+        Expr::Binary {
+            op: BinOp::Or,
+            left,
+            right,
+            ..
+        } => holds_in_every_branch(left, pred) && holds_in_every_branch(right, pred),
+        other => pred(other),
+    }
+}
+
+fn firm_conjuncts(expr: &Expr) -> Vec<&Expr> {
+    let mut parts = Vec::new();
+    split_and(expr, &mut parts);
+    parts.retain(|part| {
+        let mut disjunctive = false;
+        walk(part, &mut |x| {
+            if matches!(x, Expr::Binary { op: BinOp::Or, .. }) {
+                disjunctive = true;
+            }
+        });
+        !disjunctive
+    });
+    parts
 }
 
 fn collect_conjuncts<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
@@ -4370,7 +4410,7 @@ fn threshold_is_guarded_positive(model: &Model, threshold: &Expr) -> bool {
                     gates.push(expr);
                 }
             }
-            for gate in gates {
+            for gate in gates.iter().flat_map(|g| firm_conjuncts(g)) {
                 walk(gate, &mut |e| {
                     let Expr::Binary { left, right, .. } = e else {
                         return;
