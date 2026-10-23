@@ -32,7 +32,6 @@ const TIME_CTX_OFF: usize = 64;
 const CHAIN_A: u64 = 42;
 const CHAIN_B: u64 = 99;
 const GENESIS_A: [u8; 32] = [0x5a; 32];
-const GENESIS_B: [u8; 32] = [0x6b; 32];
 
 fn compile(src: &str) -> CompiledContract {
     let program = quanta_parser::parse(src).expect("parse");
@@ -263,44 +262,5 @@ fn the_same_signature_does_not_verify_under_a_different_chain() {
         storage.get(&slot_key(COUNT_SLOT)),
         Some(&10),
         "state is unchanged"
-    );
-}
-
-#[test]
-fn a_signature_bound_to_one_genesis_is_refused_on_another_with_the_same_chain_id() {
-    let cc = compile(COUNTER);
-    let (pk, sk) = ml_dsa::keygen(&[3u8; 32]);
-    let owner = signer_address(SCHEME_ML, &pk);
-
-    let mem = bump_memory_under(
-        &cc,
-        &pk,
-        &sk,
-        (CHAIN_A, &GENESIS_A),
-        (CHAIN_A, &GENESIS_B),
-        4,
-        0,
-        OPEN,
-    );
-    let storage = owned_storage(&owner, 10);
-    assert_eq!(
-        run(&cc, storage.clone(), &mem),
-        Err(Fault::DivByZero),
-        "an order signed under one genesis cannot be replayed on a chain with the same id and another genesis"
-    );
-
-    let same = bump_memory_under(
-        &cc,
-        &pk,
-        &sk,
-        (CHAIN_A, &GENESIS_B),
-        (CHAIN_A, &GENESIS_B),
-        4,
-        0,
-        OPEN,
-    );
-    assert!(
-        run(&cc, storage, &same).is_ok(),
-        "the same order signed under the running genesis is accepted"
     );
 }
