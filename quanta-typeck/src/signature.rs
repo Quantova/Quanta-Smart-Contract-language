@@ -795,7 +795,10 @@ fn map_is_ever_paid_out(model: &Model, field: &str) -> bool {
                         Expr::Field { base, name, .. } => {
                             if let Expr::Ident(m) = base.as_ref() {
                                 if (m.text == field && name.text == "debit")
-                                    || (matches!(name.text.as_str(), "credit" | "debit")
+                                    || (matches!(
+                                        name.text.as_str(),
+                                        "credit" | "debit" | "set" | "insert"
+                                    ) && m.text != field
                                         && args.get(1).is_some_and(reads_field))
                                 {
                                     found = true;
@@ -1884,6 +1887,8 @@ fn credits_only_what_was_paid_in(model: &Model, entry: &EntryDecl, field: &str) 
     let backed_scalars = asset_backed_scalars(model, entry);
     let mut saw = false;
     let mut all_paid = true;
+    let mut holds_inflow: HashMap<String, String> = HashMap::new();
+    let mut used: HashSet<String> = HashSet::new();
     for stmt in &entry.body {
         stmt_exprs(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
@@ -1899,12 +1904,24 @@ fn credits_only_what_was_paid_in(model: &Model, entry: &EntryDecl, field: &str) 
                         }
                         if name.text == "credit" {
                             saw = true;
-                            let backed = args.get(1).is_some_and(|v| {
-                                asset_amount_backer(v, &assets).is_some()
-                                    || matches!(v, Expr::Ident(id)
-                                        if backed_scalars.contains(id.text.as_str()))
+                            let budget = args.get(1).and_then(|v| {
+                                asset_amount_backer(v, &assets)
+                                    .map(str::to_string)
+                                    .or_else(|| match v {
+                                        Expr::Ident(id)
+                                            if backed_scalars.contains(id.text.as_str()) =>
+                                        {
+                                            Some(
+                                                holds_inflow
+                                                    .get(&id.text)
+                                                    .cloned()
+                                                    .unwrap_or_else(|| id.text.clone()),
+                                            )
+                                        }
+                                        _ => None,
+                                    })
                             });
-                            if !backed {
+                            if !budget.is_some_and(|b| used.insert(b)) {
                                 all_paid = false;
                             }
                         }
@@ -1912,6 +1929,22 @@ fn credits_only_what_was_paid_in(model: &Model, entry: &EntryDecl, field: &str) 
                 }
             }
         });
+        if let Stmt::Assign {
+            target: Expr::Ident(id),
+            op: AssignOp::Set,
+            value,
+            ..
+        } = stmt
+        {
+            match asset_amount_backer(value, &assets) {
+                Some(param) => {
+                    holds_inflow.insert(id.text.clone(), param.to_string());
+                }
+                None => {
+                    holds_inflow.remove(&id.text);
+                }
+            }
+        }
     }
     saw && all_paid
 }
