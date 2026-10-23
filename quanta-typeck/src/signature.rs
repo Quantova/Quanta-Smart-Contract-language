@@ -1184,23 +1184,25 @@ fn entry_requires_a_positive_amount(entry: &EntryDecl, param: &str) -> bool {
             .unwrap_or(false),
         _ => true,
     };
+    let mut conjuncts: Vec<&Expr> = Vec::new();
     for expr in exprs {
-        walk(expr, &mut |e| {
-            if let Expr::Binary {
-                op, left, right, ..
-            } = e
-            {
-                let amount_left = is_asset_amount_expr(left, param);
-                let amount_right = is_asset_amount_expr(right, param);
-                match op {
-                    BinOp::Gt if amount_left => required = true,
-                    BinOp::Ge if amount_left && real_bound(right) => required = true,
-                    BinOp::Lt if amount_right => required = true,
-                    BinOp::Le if amount_right && real_bound(left) => required = true,
-                    _ => {}
-                }
+        collect_conjuncts(expr, &mut conjuncts);
+    }
+    for e in conjuncts {
+        if let Expr::Binary {
+            op, left, right, ..
+        } = e.peel()
+        {
+            let amount_left = is_asset_amount_expr(left, param);
+            let amount_right = is_asset_amount_expr(right, param);
+            match op {
+                BinOp::Gt if amount_left => required = true,
+                BinOp::Ge if amount_left && real_bound(right) => required = true,
+                BinOp::Lt if amount_right => required = true,
+                BinOp::Le if amount_right && real_bound(left) => required = true,
+                _ => {}
             }
-        });
+        }
     }
     required
 }
@@ -1208,26 +1210,28 @@ fn entry_requires_a_positive_amount(entry: &EntryDecl, param: &str) -> bool {
 fn entry_guards_on_holding(model: &Model, entry: &EntryDecl, field: &str) -> bool {
     let required = required_conditions(entry);
     let mut holds = false;
+    let mut conjuncts: Vec<&Expr> = Vec::new();
     for expr in &required {
-        walk(expr, &mut |e| {
-            if let Expr::Binary {
-                op: BinOp::Eq,
-                left,
-                right,
-                ..
-            } = e
-            {
-                for (a, b) in [(left, right), (right, left)] {
-                    if is_caller(b) {
-                        if let Some(m) = map_value_addr(model, a) {
-                            if m == field {
-                                holds = true;
-                            }
+        collect_conjuncts(expr, &mut conjuncts);
+    }
+    for e in conjuncts {
+        if let Expr::Binary {
+            op: BinOp::Eq,
+            left,
+            right,
+            ..
+        } = e.peel()
+        {
+            for (a, b) in [(left, right), (right, left)] {
+                if is_caller(b) {
+                    if let Some(m) = map_value_addr(model, a) {
+                        if m == field {
+                            holds = true;
                         }
                     }
                 }
             }
-        });
+        }
     }
     holds
 }
