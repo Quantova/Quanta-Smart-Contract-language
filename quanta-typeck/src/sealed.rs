@@ -68,8 +68,10 @@ fn pooled_settles_order(entry: &EntryDecl, pooled: &str, param: &str) -> bool {
                 if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") {
                     if let Some(recipient) = args.first() {
                         let recipient_from_order = mentions_ident(recipient, param);
-                        let pays_pool = args[1..].iter().any(|a| mentions_ident(a, pooled));
-                        if recipient_from_order && pays_pool {
+                        let pays_the_order_amount = args[1..]
+                            .iter()
+                            .any(|a| splits_order_amount(a, pooled, param));
+                        if recipient_from_order && pays_the_order_amount {
                             settles = true;
                         }
                     }
@@ -78,6 +80,25 @@ fn pooled_settles_order(entry: &EntryDecl, pooled: &str, param: &str) -> bool {
         });
     }
     settles
+}
+
+fn splits_order_amount(expr: &Expr, pooled: &str, param: &str) -> bool {
+    let mut found = false;
+    walk(expr, &mut |e| {
+        if let Expr::Call { callee, args, .. } = e {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if name.text == "split"
+                    && root_ident(base) == Some(pooled)
+                    && args
+                        .first()
+                        .is_some_and(|amount| mentions_ident(amount, param))
+                {
+                    found = true;
+                }
+            }
+        }
+    });
+    found
 }
 
 fn param_derived_locals(entry: &EntryDecl, param: &str) -> std::collections::HashSet<String> {
@@ -162,6 +183,11 @@ fn order_field_gates(entry: &EntryDecl, param: &str) -> bool {
                 }
             }
             Expr::Ident(id) if derived.contains(&id.text) => gates = true,
+            Expr::Binary { left, right, .. }
+                if prices_against_payment(entry, left, right, param) =>
+            {
+                gates = true
+            }
             _ => {}
         });
     };
@@ -176,6 +202,21 @@ fn order_field_gates(entry: &EntryDecl, param: &str) -> bool {
         }
     }
     gates
+}
+
+fn prices_against_payment(entry: &EntryDecl, left: &Expr, right: &Expr, param: &str) -> bool {
+    let is_param = |e: &Expr| matches!(e, Expr::Ident(id) if id.text == param);
+    let is_payment = |e: &Expr| match e {
+        Expr::Field { base, name, .. } if name.text == "amount" => match base.as_ref() {
+            Expr::Ident(id) => entry
+                .params
+                .iter()
+                .any(|p| p.name.text == id.text && is_asset_param(p)),
+            _ => false,
+        },
+        _ => false,
+    };
+    (is_param(left) && is_payment(right)) || (is_payment(left) && is_param(right))
 }
 
 fn root_ident(expr: &Expr) -> Option<&str> {
