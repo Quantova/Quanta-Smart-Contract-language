@@ -204,9 +204,19 @@ fn compile_entries(
 
     const RESERVED_EVENT_SELECTORS: [([u8; SELECTOR_BYTES], &str); 1] =
         [(*b"MINT", "the asset mint")];
+    let mut event_selectors: HashMap<[u8; SELECTOR_BYTES], String> = HashMap::new();
     for item in &contract.items {
         if let Item::Event(ev) = item {
             let selector = event_selector(ev);
+            if let Some(previous) = event_selectors.insert(selector, ev.name.text.clone()) {
+                return Err(CodegenError::Rejected {
+                    what: format!(
+                        "two events that share a selector, `{}` collides with `{}`",
+                        ev.name.text, previous
+                    ),
+                    span: ev.span,
+                });
+            }
             if let Some((_, what)) = RESERVED_EVENT_SELECTORS
                 .iter()
                 .find(|(s, _)| *s == selector)
