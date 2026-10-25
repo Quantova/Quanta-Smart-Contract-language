@@ -75,14 +75,19 @@ impl Builder {
     }
 
     fn route(&mut self, label: Label) -> Label {
-        if self.trap != Some(label) || self.reason == 0 {
+        if self.trap != Some(label) {
             return label;
         }
-        if let Some(stub) = self.stubs.get(&self.reason) {
+        let reason = if self.reason == 0 {
+            qtv_vm::abort::abort_code(qtv_vm::abort::Rule::Unknown, 0)
+        } else {
+            self.reason
+        };
+        if let Some(stub) = self.stubs.get(&reason) {
             return *stub;
         }
         let stub = self.label();
-        self.stubs.insert(self.reason, stub);
+        self.stubs.insert(reason, stub);
         stub
     }
 
