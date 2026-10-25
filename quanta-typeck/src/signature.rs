@@ -120,6 +120,12 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         return Err(no_asset_authority_error(entry));
     }
     if (entry_moves_asset(entry) || entry_moves_ledger_value(model, entry))
+        && !entry_binds_caller(model, entry, &signed)
+        && !every_backing_is_consumed_once(model, entry)
+    {
+        return Err(no_ledger_authority_error(entry));
+    }
+    if (entry_moves_asset(entry) || entry_moves_ledger_value(model, entry))
         && authority_is_membership_only(model, entry, &signed)
         && (moved_amount_is_caller_chosen(model, entry)
             || outflow_amount_is_a_self_written_row(model, entry))
@@ -668,6 +674,127 @@ fn reserve_token(model: &Model, field: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn resolve_locals(expr: &Expr, lets: &HashMap<String, Expr>, depth: u32) -> Expr {
+    if depth > 16 {
+        return expr.clone();
+    }
+    match expr.peel() {
+        Expr::Ident(id) => match lets.get(&id.text) {
+            Some(v) => resolve_locals(v, lets, depth + 1),
+            None => expr.peel().clone(),
+        },
+        Expr::Binary {
+            op,
+            left,
+            right,
+            span,
+        } => Expr::Binary {
+            op: *op,
+            left: Box::new(resolve_locals(left, lets, depth + 1)),
+            right: Box::new(resolve_locals(right, lets, depth + 1)),
+            span: *span,
+        },
+        other => other.clone(),
+    }
+}
+
+fn every_backing_is_consumed_once(model: &Model, entry: &EntryDecl) -> bool {
+    let ledgers = ledger_maps(model);
+    let mut lets: HashMap<String, Expr> = HashMap::new();
+    let mut backing: Vec<Expr> = entry
+        .params
+        .iter()
+        .filter(|p| crate::model::is_asset_param(p))
+        .map(|p| Expr::Field {
+            base: Box::new(Expr::Ident(p.name.clone())),
+            name: quanta_ast::Ident {
+                text: "amount".to_string(),
+                span: p.name.span,
+            },
+            span: p.name.span,
+        })
+        .collect();
+    let mut uses: Vec<(Expr, bool)> = Vec::new();
+    for stmt in &entry.body {
+        if let Stmt::Let { name, value, .. } = stmt {
+            let resolved = resolve_locals(value, &lets, 0);
+            lets.insert(name.text.clone(), resolved);
+        }
+        stmt_exprs(stmt, &mut |e| {
+            let Expr::Call { callee, args, .. } = e else {
+                return;
+            };
+            match callee.as_ref() {
+                Expr::Field { base, name, .. } => {
+                    let Expr::Ident(m) = base.as_ref() else {
+                        return;
+                    };
+                    match name.text.as_str() {
+                        "debit"
+                            if ledgers.contains(&m.text)
+                                && matches!(args.first(), Some(Expr::Caller { .. })) =>
+                        {
+                            if let Some(a) = args.get(1) {
+                                backing.push(resolve_locals(a, &lets, 0));
+                            }
+                        }
+                        "credit" if ledgers.contains(&m.text) => {
+                            if let Some(a) = args.get(1) {
+                                uses.push((resolve_locals(a, &lets, 0), true));
+                            }
+                        }
+                        "split" => {
+                            if let Some(a) = args.first() {
+                                uses.push((resolve_locals(a, &lets, 0), false));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Expr::Ident(id) if id.text == "send_asset" => {
+                    if let Some(a) = args.get(2) {
+                        let a = a.peel();
+                        let split = matches!(a, Expr::Call { callee, .. }
+                            if matches!(callee.as_ref(), Expr::Field { name, .. } if name.text == "split"));
+                        if !split {
+                            uses.push((resolve_locals(a, &lets, 0), false));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        });
+    }
+    if uses.len() < 2 {
+        return true;
+    }
+    let mut credits_unbacked = false;
+    for (used, credit) in &uses {
+        match backing
+            .iter()
+            .position(|b| payout_is_bounded_by(used.peel(), b.peel()))
+        {
+            Some(pos) => {
+                backing.remove(pos);
+            }
+            None => {
+                if *credit {
+                    credits_unbacked = true;
+                }
+                if uses
+                    .iter()
+                    .filter(|(u, _)| expr_eq(u.peel(), used.peel()))
+                    .count()
+                    > 1
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    !credits_unbacked
 }
 
 fn payout_is_bounded_by(amount: &Expr, backing: &Expr) -> bool {
