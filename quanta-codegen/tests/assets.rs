@@ -127,7 +127,7 @@ fn splitting_more_than_is_held_reverts() {
     let mem = memory_with(&cc, 0, &[("req.amount", 30)]);
     assert_eq!(
         run(&cc, storage.clone(), &mem),
-        Err(Fault::Overflow),
+        Err(Fault::DivByZero),
         "a split larger than the balance must fault"
     );
 }

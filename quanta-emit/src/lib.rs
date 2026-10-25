@@ -31,7 +31,7 @@ where
             ok: false,
         };
     }
-    match quanta_codegen::compile(&program) {
+    match quanta_codegen::compile_source(&program, src) {
         Ok(contracts) => {
             let mut artifacts = Vec::with_capacity(contracts.len());
             for cc in &contracts {

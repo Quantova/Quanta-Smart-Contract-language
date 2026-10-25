@@ -56,7 +56,7 @@ fn main() {
                     report(path, &src, &e.message, e.span.start);
                     exit(1);
                 }
-                match quanta_codegen::compile(&program) {
+                match quanta_codegen::compile_source(&program, &src) {
                     Ok(contracts) => build(path, src.as_bytes(), &contracts),
                     Err(e) => {
                         report(path, &src, &e.to_string(), e.span().start);

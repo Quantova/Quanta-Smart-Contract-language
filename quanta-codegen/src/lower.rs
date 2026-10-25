@@ -5,6 +5,7 @@ use crate::emit::{Builder, Label};
 use crate::error::CodegenError;
 use crate::layout::Layout;
 use crate::selector::entry_selector;
+use qtv_vm::abort::{abort_code, split_code, Rule};
 use qtv_vm::isa::{Instr, Reg, NUM_REGS};
 use quanta_ast::{
     AfterTarget, AssignOp, BinOp, Clause, Contract, EntryDecl, Expr, GenericArg, Item, Param, Stmt,
@@ -12,6 +13,47 @@ use quanta_ast::{
 };
 use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
+
+thread_local! {
+    static LINE_STARTS: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub fn with_source_lines<T>(source: &str, f: impl FnOnce() -> T) -> T {
+    let starts: Vec<usize> = std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
+    LINE_STARTS.with(|l| *l.borrow_mut() = starts);
+    let out = f();
+    LINE_STARTS.with(|l| l.borrow_mut().clear());
+    out
+}
+
+fn line_of(offset: usize) -> u32 {
+    LINE_STARTS.with(|l| {
+        let starts = l.borrow();
+        if starts.is_empty() {
+            return 0;
+        }
+        let line = match starts.binary_search(&offset) {
+            Ok(i) => i + 1,
+            Err(i) => i,
+        };
+        u32::try_from(line).unwrap_or(u32::MAX)
+    })
+}
+
+fn set_rule(ctx: &mut Ctx, rule: Rule, span: Span) -> u64 {
+    ctx.b.set_reason(abort_code(rule, line_of(span.start)))
+}
+
+fn narrow_rule(ctx: &mut Ctx, rule: Rule) -> u64 {
+    let current = ctx.b.reason();
+    match split_code(current) {
+        Some((Rule::BalanceTooLow | Rule::AssetTooLow, _)) => current,
+        Some((_, line)) => ctx.b.set_reason(abort_code(rule, line)),
+        None => ctx.b.set_reason(abort_code(rule, 0)),
+    }
+}
 
 const SCRATCH: Reg = 0;
 const FIRST_TEMP: Reg = 1;
@@ -666,7 +708,9 @@ fn asset_amount(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<Reg, CodegenE
 fn narrow_amount(ctx: &mut Ctx, value: &Expr) -> Result<Reg, CodegenError> {
     if is_wide_expr(ctx, value) {
         let (lo, hi) = eval_wide(ctx, value, false)?;
+        let prev = narrow_rule(ctx, Rule::ValueOutOfRange);
         ctx.b.jnz(hi, ctx.trap);
+        ctx.b.set_reason(prev);
         ctx.regs.free(hi);
         Ok(lo)
     } else {
@@ -679,6 +723,18 @@ fn lower_split(ctx: &mut Ctx, base: &Expr, args: &[Expr], span: Span) -> Result<
     let value = one_arg(args, span)?;
     let amt = narrow_amount(ctx, value)?;
     let rf = load_slot(ctx, slot, span)?;
+    {
+        let over = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::GtU {
+            d: over,
+            a: amt,
+            b: rf,
+        });
+        let prev = narrow_rule(ctx, Rule::AssetTooLow);
+        ctx.b.jnz(over, ctx.trap);
+        ctx.b.set_reason(prev);
+        ctx.regs.free(over);
+    }
     ctx.b.op(Instr::Sub {
         d: rf,
         a: rf,
@@ -743,7 +799,9 @@ fn trap_above(ctx: &mut Ctx, value: Reg, max: u64, span: Span) -> Result<(), Cod
         a: value,
         b: over,
     });
+    let prev = narrow_rule(ctx, Rule::ValueOutOfRange);
     ctx.b.jnz(over, ctx.trap);
+    ctx.b.set_reason(prev);
     ctx.regs.free(over);
     Ok(())
 }
@@ -865,8 +923,18 @@ fn lower_binary(
     {
         let (llo, lhi) = eval_wide(ctx, left, wrapping)?;
         let (rlo, rhi) = eval_wide(ctx, right, wrapping)?;
+        ctx.b.op(Instr::Or {
+            d: SCRATCH,
+            a: rlo,
+            b: rhi,
+        });
+        let prev = narrow_rule(ctx, Rule::DivisionByZero);
+        ctx.b.jz(SCRATCH, ctx.trap);
+        ctx.b.set_reason(prev);
         two_word_div(ctx, llo, lhi, rlo, rhi, matches!(op, BinOp::Rem));
+        let prev = narrow_rule(ctx, Rule::ValueOutOfRange);
         ctx.b.jnz(lhi, ctx.trap);
+        ctx.b.set_reason(prev);
         ctx.regs.free(lhi);
         return Ok(llo);
     }
@@ -883,6 +951,11 @@ fn lower_binary(
     }
     let l = lower_expr(ctx, left, wrapping)?;
     let r = lower_expr(ctx, right, wrapping)?;
+    if matches!(op, BinOp::Div | BinOp::Rem) {
+        let prev = narrow_rule(ctx, Rule::DivisionByZero);
+        ctx.b.jz(r, ctx.trap);
+        ctx.b.set_reason(prev);
+    }
     match op {
         BinOp::Add if wrapping => ctx.b.op(Instr::AddW { d: l, a: l, b: r }),
         BinOp::Add => ctx.b.op(Instr::Add { d: l, a: l, b: r }),
@@ -1212,6 +1285,16 @@ fn eval_wide(ctx: &mut Ctx, expr: &Expr, wrapping: bool) -> Result<(Reg, Reg), C
         {
             let (llo, lhi) = eval_wide(ctx, left, wrapping)?;
             let (rlo, rhi) = eval_wide(ctx, right, wrapping)?;
+            if matches!(op, BinOp::Div | BinOp::Rem) {
+                ctx.b.op(Instr::Or {
+                    d: SCRATCH,
+                    a: rlo,
+                    b: rhi,
+                });
+                let prev = narrow_rule(ctx, Rule::DivisionByZero);
+                ctx.b.jz(SCRATCH, ctx.trap);
+                ctx.b.set_reason(prev);
+            }
             match op {
                 BinOp::Add => two_word_add(ctx, llo, lhi, rlo, rhi, wrapping),
                 BinOp::Sub => two_word_sub(ctx, llo, lhi, rlo, rhi, wrapping),
@@ -1322,7 +1405,9 @@ fn two_word_add(ctx: &mut Ctx, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg, wrapping:
             a: rlo,
             b: rhi,
         });
+        let prev = narrow_rule(ctx, Rule::ArithmeticOverflow);
         ctx.b.jnz(rlo, ctx.trap);
+        ctx.b.set_reason(prev);
     }
     ctx.regs.free(rhi);
     ctx.regs.free(rlo);
@@ -1365,7 +1450,9 @@ fn two_word_sub(ctx: &mut Ctx, llo: Reg, lhi: Reg, rlo: Reg, rhi: Reg, wrapping:
             a: rlo,
             b: rhi,
         });
+        let prev = narrow_rule(ctx, Rule::ArithmeticOverflow);
         ctx.b.jnz(rlo, ctx.trap);
+        ctx.b.set_reason(prev);
     }
     ctx.regs.free(rhi);
     ctx.regs.free(rlo);
@@ -1477,7 +1564,9 @@ fn two_word_mul(
     ctx.b.op(Instr::Mov { d: llo, a: reslo });
     ctx.b.op(Instr::Mov { d: lhi, a: reshi });
     if let Some(ov) = ov {
+        let prev = narrow_rule(ctx, Rule::ArithmeticOverflow);
         ctx.b.jnz(ov, ctx.trap);
+        ctx.b.set_reason(prev);
     }
 
     if let Some(ov) = ov {
@@ -1836,9 +1925,12 @@ pub fn lower_entry(
             }
         }
         zero_scalar_key_head(&mut ctx, entry.span)?;
+        set_rule(&mut ctx, Rule::NameInvalid, entry.span);
         lower_name_prologue(&mut ctx, entry, trap)?;
+        set_rule(&mut ctx, Rule::Unknown, entry.span);
         lower_signed_prologue(&mut ctx, entry, trap)?;
         lower_quorum_prologue(&mut ctx, entry, trap)?;
+        set_rule(&mut ctx, Rule::TooEarly, entry.span);
         lower_after_prologue(&mut ctx, entry, trap)?;
         lower_bounds_prologue(&mut ctx, entry, trap)?;
         {
@@ -1858,6 +1950,7 @@ pub fn lower_entry(
                     a: value,
                     b: zero,
                 });
+                set_rule(&mut ctx, Rule::UnexpectedPayment, entry.span);
                 ctx.b.jz(value, trap);
                 ctx.regs.free(zero);
                 ctx.regs.free(value);
@@ -1871,17 +1964,20 @@ pub fn lower_entry(
                     a: amount,
                     b: value,
                 });
+                set_rule(&mut ctx, Rule::PaymentMismatch, entry.span);
                 ctx.b.jz(amount, trap);
                 ctx.regs.free(value);
                 ctx.regs.free(amount);
             }
         }
         if ctx.is_genesis {
+            set_rule(&mut ctx, Rule::AlreadyInitialised, entry.span);
             lower_genesis_guard(&mut ctx, entry.span)?;
         }
         for stmt in &entry.body {
             lower_stmt(&mut ctx, stmt, trap)?;
         }
+        set_rule(&mut ctx, Rule::DeployParams, entry.span);
         if ctx.is_genesis && !ctx.args.deploy_params().is_empty() {
             let sentinel_off = ctx.args.end();
             let got = load_arg(&mut ctx, sentinel_off, entry.span)?;
@@ -1901,10 +1997,12 @@ pub fn lower_entry(
         }
         if writes_state || ctx.is_genesis {
             for inv in invariants {
+                set_rule(&mut ctx, Rule::Invariant, inv.span());
                 let r = lower_expr(&mut ctx, inv, false)?;
                 ctx.b.jz(r, trap);
                 ctx.regs.free(r);
             }
+            ctx.b.set_reason(0);
         }
         if ctx.next_asset_local > EVENT_BASE
             || ctx.next_state_addr_scratch > qtv_vm::state::MEM_BYTES as u64
@@ -2238,6 +2336,7 @@ fn lower_quorum_member(
             a: index,
             b: bound,
         });
+        set_rule(ctx, Rule::QuorumNotMember, span);
         ctx.b.jz(ok, trap);
         ctx.regs.free(ok);
         ctx.regs.free(bound);
@@ -2250,6 +2349,7 @@ fn lower_quorum_member(
             a: index,
             b: prev,
         });
+        set_rule(ctx, Rule::QuorumDuplicate, span);
         ctx.b.jz(ok, trap);
         ctx.regs.free(ok);
         ctx.regs.free(prev);
@@ -2292,6 +2392,7 @@ fn lower_quorum_member(
                 a: gword,
                 b: mword,
             });
+            set_rule(ctx, Rule::QuorumNotMember, span);
             ctx.b.jz(gword, trap);
             ctx.regs.free(mword);
             ctx.regs.free(gword);
@@ -2397,12 +2498,14 @@ fn lower_bounds_prologue(
 ) -> Result<(), CodegenError> {
     for clause in &entry.clauses {
         match clause {
-            Clause::Limits { expr, .. } => {
+            Clause::Limits { expr, span } => {
+                set_rule(ctx, Rule::Limits, *span);
                 let r = lower_expr(ctx, expr, false)?;
                 ctx.b.jz(r, trap);
                 ctx.regs.free(r);
             }
-            Clause::Denies { expr, .. } => {
+            Clause::Denies { expr, span } => {
+                set_rule(ctx, Rule::Denies, *span);
                 let r = lower_expr(ctx, expr, false)?;
                 ctx.b.jnz(r, trap);
                 ctx.regs.free(r);
@@ -2767,6 +2870,7 @@ fn lower_expiry_check(
         a: now,
         b: expiry,
     });
+    set_rule(ctx, Rule::OrderExpired, span);
     ctx.b.jnz(now, trap);
     ctx.regs.free(expiry);
     ctx.regs.free(now);
@@ -3334,6 +3438,7 @@ fn lower_signed_binding(
             a: ownv,
             b: sigv,
         });
+        set_rule(ctx, Rule::SignerNotAuthorised, span);
         ctx.b.jz(ownv, trap);
         ctx.regs.free(sigv);
         ctx.regs.free(ownv);
@@ -3426,6 +3531,7 @@ fn select_scheme(
         a: SCRATCH,
     });
     let test = ctx.regs.alloc(span)?;
+    set_rule(ctx, Rule::OrderMalformed, span);
     for (id, label) in [(SCHEME_ML, ml_label), (SCHEME_SLH, slh_label)] {
         ctx.b.op(Instr::Ldi {
             d: SCRATCH,
@@ -3615,6 +3721,7 @@ fn emit_order_message(
             c: rok,
         });
         ctx.b.mark(verified);
+        set_rule(ctx, Rule::SignatureInvalid, span);
         ctx.b.jz(rok, trap);
         ctx.regs.free(rok);
         ctx.regs.free(rlen);
@@ -3627,6 +3734,19 @@ fn order_message_len(field_specs: &[MsgField]) -> u64 {
 }
 
 fn lower_stmt(ctx: &mut Ctx, stmt: &Stmt, trap: Label) -> Result<(), CodegenError> {
+    let stmt_span = match stmt {
+        Stmt::Guard { span, .. }
+        | Stmt::Let { span, .. }
+        | Stmt::Assign { span, .. }
+        | Stmt::Emit { span, .. }
+        | Stmt::Expr { span, .. } => *span,
+    };
+    let rule = if matches!(stmt, Stmt::Guard { .. }) {
+        Rule::Guard
+    } else {
+        Rule::ArithmeticOverflow
+    };
+    set_rule(ctx, rule, stmt_span);
     match stmt {
         Stmt::Guard { expr, .. } => {
             let r = lower_expr(ctx, expr, false)?;
@@ -4441,7 +4561,9 @@ fn ledger_amount(ctx: &mut Ctx, value: &Expr, span: Span) -> Result<Reg, Codegen
         asset_amount(ctx, value, span)
     } else if is_wide_expr(ctx, value) {
         let (lo, hi) = eval_wide(ctx, value, false)?;
+        let prev = narrow_rule(ctx, Rule::ValueOutOfRange);
         ctx.b.jnz(hi, ctx.trap);
+        ctx.b.set_reason(prev);
         ctx.regs.free(hi);
         Ok(lo)
     } else {
@@ -4484,6 +4606,16 @@ fn lower_map_credit(
             b: value,
         });
     } else {
+        let over = ctx.regs.alloc(span)?;
+        ctx.b.op(Instr::GtU {
+            d: over,
+            a: value,
+            b: cur,
+        });
+        let prev = narrow_rule(ctx, Rule::BalanceTooLow);
+        ctx.b.jnz(over, ctx.trap);
+        ctx.b.set_reason(prev);
+        ctx.regs.free(over);
         ctx.b.op(Instr::Sub {
             d: cur,
             a: cur,
@@ -4571,7 +4703,9 @@ fn lower_map_credit_wide(
     if add {
         two_word_add(ctx, clo, chi, vlo, vhi, false);
     } else {
+        let prev = narrow_rule(ctx, Rule::BalanceTooLow);
         two_word_sub(ctx, clo, chi, vlo, vhi, false);
+        ctx.b.set_reason(prev);
     }
     compute_map_key(ctx, mbase, key_off, span)?;
     {
@@ -5035,7 +5169,9 @@ fn lower_assign(
                         });
                         ctx.regs.free(r);
                     }
+                    let prev = narrow_rule(ctx, Rule::GuardianSetInvalid);
                     ctx.b.jz(any, ctx.trap);
+                    ctx.b.set_reason(prev);
                     ctx.regs.free(any);
                     for w in 0..words {
                         let r = load_slot(ctx, src_base + w, span)?;
@@ -5086,7 +5222,9 @@ fn lower_assign(
                     ctx.regs.free(b);
                     ctx.regs.free(a);
                 }
+                let prev = narrow_rule(ctx, Rule::GuardianSetInvalid);
                 ctx.b.jz(same, ctx.trap);
+                ctx.b.set_reason(prev);
                 ctx.regs.free(same);
             }
         }

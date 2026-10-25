@@ -17,6 +17,9 @@ enum Line {
 pub struct Builder {
     lines: Vec<Line>,
     next_label: Label,
+    trap: Option<Label>,
+    reason: u64,
+    stubs: std::collections::BTreeMap<u64, Label>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,22 +48,56 @@ impl Builder {
     }
 
     pub fn jmp(&mut self, label: Label) {
+        let label = self.route(label);
         self.lines.push(Line::Jmp(label));
     }
 
     pub fn jz(&mut self, cond: Reg, label: Label) {
+        let label = self.route(label);
         self.lines.push(Line::Jz(cond, label));
     }
 
     pub fn jnz(&mut self, cond: Reg, label: Label) {
+        let label = self.route(label);
         self.lines.push(Line::Jnz(cond, label));
+    }
+
+    pub fn set_trap(&mut self, label: Label) {
+        self.trap = Some(label);
+    }
+
+    pub fn reason(&self) -> u64 {
+        self.reason
+    }
+
+    pub fn set_reason(&mut self, code: u64) -> u64 {
+        std::mem::replace(&mut self.reason, code)
+    }
+
+    fn route(&mut self, label: Label) -> Label {
+        if self.trap != Some(label) || self.reason == 0 {
+            return label;
+        }
+        if let Some(stub) = self.stubs.get(&self.reason) {
+            return *stub;
+        }
+        let stub = self.label();
+        self.stubs.insert(self.reason, stub);
+        stub
     }
 
     pub fn link(self) -> Result<Vec<u8>, LinkError> {
         self.link_with_offsets().map(|(code, _)| code)
     }
 
-    pub fn link_with_offsets(self) -> Result<(Vec<u8>, Vec<Option<u32>>), LinkError> {
+    pub fn link_with_offsets(mut self) -> Result<(Vec<u8>, Vec<Option<u32>>), LinkError> {
+        let stubs = std::mem::take(&mut self.stubs);
+        for (code, label) in stubs {
+            self.lines.push(Line::Mark(label));
+            for instr in qtv_vm::abort::abort_stub(code) {
+                self.lines.push(Line::Op(instr));
+            }
+        }
         let mut offsets: Vec<Option<u32>> = vec![None; self.next_label as usize];
         let mut at: u32 = 0;
         for line in &self.lines {

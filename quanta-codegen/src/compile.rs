@@ -86,6 +86,13 @@ pub fn compile(program: &Program) -> Result<Vec<CompiledContract>, CodegenError>
     program.contracts.iter().map(compile_checked).collect()
 }
 
+pub fn compile_source(
+    program: &Program,
+    source: &str,
+) -> Result<Vec<CompiledContract>, CodegenError> {
+    crate::lower::with_source_lines(source, || compile(program))
+}
+
 fn event_field_words(ev: &EventDecl) -> Vec<u64> {
     ev.params.iter().map(|p| type_words(&p.ty)).collect()
 }
@@ -234,6 +241,7 @@ fn compile_entries(
 
     let mut b = Builder::new();
     let trap = b.label();
+    b.set_trap(trap);
 
     let mut artifacts = Vec::new();
     let mut placed = Vec::new();

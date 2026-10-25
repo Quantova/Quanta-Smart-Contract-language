@@ -9,8 +9,8 @@ pub mod lower;
 pub mod selector;
 
 pub use compile::{
-    compile, compile_contract, ArgSlot, CompiledContract, DeployParamArtifact, EntryArtifact,
-    EventArtifact, SignedOrder,
+    compile, compile_contract, compile_source, ArgSlot, CompiledContract, DeployParamArtifact,
+    EntryArtifact, EventArtifact, SignedOrder,
 };
 pub use error::CodegenError;
 pub use lower::{order_layout_hash, OrderField};
