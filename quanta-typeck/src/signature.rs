@@ -455,15 +455,16 @@ fn every_payout_consumes_its_own_backing(model: &Model, entry: &EntryDecl) -> bo
     let mut consumed: Vec<Expr> = Vec::new();
     let mut reserves: Vec<String> = Vec::new();
     for (value, token) in payouts.iter().zip(payout_tokens.iter()) {
-        let amount = match value.peel() {
+        let raw_amount = match value.peel() {
             Expr::Call { callee, args, .. } if matches!(callee.as_ref(), Expr::Field { name, .. } if name.text == "split") => {
                 match args.first() {
-                    Some(a) => a.peel(),
+                    Some(a) => a,
                     None => return false,
                 }
             }
-            other => other,
+            _ => value,
         };
+        let amount = raw_amount.peel();
         if let Some(pos) = backing.iter().position(|b| expr_eq(b.peel(), amount)) {
             if let (Some(map), Some(token)) = (debit_maps.get(pos), token) {
                 let funding = ledger_funding_tokens(model, map);
@@ -482,7 +483,7 @@ fn every_payout_consumes_its_own_backing(model: &Model, entry: &EntryDecl) -> bo
         }
         match backing
             .iter()
-            .position(|b| payout_is_bounded_by(amount, b.peel()))
+            .position(|b| payout_is_bounded_by(raw_amount, b.peel()))
         {
             Some(pos) => {
                 if pos < debit_maps.len() {
@@ -806,15 +807,26 @@ fn every_backing_is_consumed_once(model: &Model, entry: &EntryDecl) -> bool {
 }
 
 fn payout_is_bounded_by(amount: &Expr, backing: &Expr) -> bool {
-    if expr_eq(backing, amount) {
+    bounded_by_backing(amount, backing, false)
+}
+
+fn bounded_by_backing(amount: &Expr, backing: &Expr, wrapping: bool) -> bool {
+    if expr_eq(backing, amount.peel()) {
         return true;
     }
     match amount {
+        Expr::Checked { expr, .. } => bounded_by_backing(expr, backing, false),
+        Expr::Wrapping { expr, .. } => bounded_by_backing(expr, backing, true),
         Expr::Binary {
-            op: BinOp::Sub | BinOp::Div | BinOp::Shr | BinOp::Rem,
+            op: BinOp::Sub,
             left,
             ..
-        } => payout_is_bounded_by(left.peel(), backing),
+        } if !wrapping => bounded_by_backing(left, backing, wrapping),
+        Expr::Binary {
+            op: BinOp::Div | BinOp::Shr | BinOp::Rem,
+            left,
+            ..
+        } => bounded_by_backing(left, backing, wrapping),
         _ => false,
     }
 }
