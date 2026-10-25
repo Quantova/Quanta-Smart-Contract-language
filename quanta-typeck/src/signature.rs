@@ -438,8 +438,8 @@ fn every_payout_consumes_its_own_backing(model: &Model, entry: &EntryDecl) -> bo
         })
         .collect();
     let mut backing: Vec<Expr> = debits.iter().chain(inflows.iter()).cloned().collect();
-    let all_backing = backing.clone();
     let mut consumed: Vec<Expr> = Vec::new();
+    let mut reserves: Vec<String> = Vec::new();
     for (value, token) in payouts.iter().zip(payout_tokens.iter()) {
         let amount = match value.peel() {
             Expr::Call { callee, args, .. } if matches!(callee.as_ref(), Expr::Field { name, .. } if name.text == "split") => {
@@ -466,17 +466,222 @@ fn every_payout_consumes_its_own_backing(model: &Model, entry: &EntryDecl) -> bo
         if consumed.iter().any(|c| expr_eq(c.peel(), amount)) {
             return false;
         }
-        let mut drawn = false;
-        walk(amount, &mut |e| {
-            if all_backing.iter().any(|b| expr_eq(b.peel(), e)) {
-                drawn = true;
+        match backing
+            .iter()
+            .position(|b| payout_is_bounded_by(amount, b.peel()))
+        {
+            Some(pos) => {
+                if pos < debit_maps.len() {
+                    debit_maps.remove(pos);
+                }
+                consumed.push(backing.remove(pos));
             }
-        });
-        if !drawn {
-            return false;
+            None => match reserve_bounding_payout(model, entry, amount, &inflows, token.as_deref())
+            {
+                Some(reserve) if !reserves.contains(&reserve) => {
+                    reserves.push(reserve);
+                }
+                _ => return false,
+            },
         }
     }
     true
+}
+
+fn reserve_bounding_payout(
+    model: &Model,
+    entry: &EntryDecl,
+    amount: &Expr,
+    inflows: &[Expr],
+    payout_token: Option<&str>,
+) -> Option<String> {
+    let mut priced = false;
+    walk(amount, &mut |e| {
+        if inflows.iter().any(|i| expr_eq(i.peel(), e)) {
+            priced = true;
+        }
+    });
+    if !priced {
+        return None;
+    }
+    let mut guarded: Vec<String> = Vec::new();
+    let mut reduced: Vec<String> = Vec::new();
+    for stmt in &entry.body {
+        match stmt {
+            Stmt::Guard { expr, .. } => {
+                if let Expr::Binary {
+                    op, left, right, ..
+                } = expr.peel()
+                {
+                    let (reserve, bound) = match op {
+                        BinOp::Gt | BinOp::Ge => (left.peel(), right.peel()),
+                        BinOp::Lt | BinOp::Le => (right.peel(), left.peel()),
+                        _ => continue,
+                    };
+                    if let Expr::Ident(r) = reserve {
+                        if model.state.contains_key(r.text.as_str()) && expr_eq(bound, amount) {
+                            guarded.push(r.text.clone());
+                        }
+                    }
+                }
+            }
+            Stmt::Assign {
+                target: Expr::Ident(r),
+                op,
+                value,
+                ..
+            } if model.state.contains_key(r.text.as_str()) => {
+                let lowers = match op {
+                    AssignOp::Sub => expr_eq(value.peel(), amount),
+                    AssignOp::Set => matches!(
+                        value.peel(),
+                        Expr::Binary { op: BinOp::Sub, left, right, .. }
+                            if matches!(left.peel(), Expr::Ident(l) if l.text == r.text)
+                                && expr_eq(right.peel(), amount)
+                    ),
+                    AssignOp::Add => false,
+                };
+                if lowers {
+                    reduced.push(r.text.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    let token = payout_token?;
+    guarded
+        .into_iter()
+        .find(|r| reduced.contains(r) && reserve_token(model, r).as_deref() == Some(token))
+}
+
+fn reserve_token(model: &Model, field: &str) -> Option<String> {
+    for item in &model.contract.items {
+        if let quanta_ast::Item::Genesis(g) = item {
+            for stmt in &g.body {
+                if let Stmt::Assign { target, value, .. } = stmt {
+                    if matches!(target, Expr::Ident(id) if id.text == field)
+                        && !matches!(value.peel(), Expr::Int(i) if i.text.trim_start_matches('_').chars().all(|c| c == '0' || c == '_'))
+                    {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+    let mut tokens: HashSet<String> = HashSet::new();
+    for entry in &model.entries {
+        if !entry_writes_field(entry, field) {
+            continue;
+        }
+        let inflows: Vec<&str> = entry
+            .params
+            .iter()
+            .filter(|p| crate::model::is_asset_param(p))
+            .map(|p| p.name.text.as_str())
+            .collect();
+        let mut admitted: Vec<&str> = Vec::new();
+        let mut debits: Vec<(String, Expr)> = Vec::new();
+        for stmt in &entry.body {
+            if let Stmt::Guard { expr, .. } = stmt {
+                if let Expr::Binary {
+                    op: BinOp::Eq,
+                    left,
+                    right,
+                    ..
+                } = expr.peel()
+                {
+                    match (left.peel(), right.peel()) {
+                        (Expr::InAsset { .. }, Expr::Ident(t))
+                        | (Expr::Ident(t), Expr::InAsset { .. }) => admitted.push(t.text.as_str()),
+                        _ => {}
+                    }
+                }
+            }
+            stmt_exprs(stmt, &mut |e| {
+                if let Expr::Call { callee, args, .. } = e {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if name.text == "debit" && matches!(args.first(), Some(Expr::Caller { .. }))
+                        {
+                            if let (Expr::Ident(m), Some(a)) = (base.as_ref(), args.get(1)) {
+                                debits.push((m.text.clone(), a.clone()));
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        for stmt in &entry.body {
+            let Stmt::Assign {
+                target: Expr::Ident(r),
+                op,
+                value,
+                ..
+            } = stmt
+            else {
+                continue;
+            };
+            if r.text != field {
+                continue;
+            }
+            let added = match op {
+                AssignOp::Sub => continue,
+                AssignOp::Add => value.peel(),
+                AssignOp::Set => match value.peel() {
+                    Expr::Binary {
+                        op: BinOp::Sub,
+                        left,
+                        ..
+                    } if matches!(left.peel(), Expr::Ident(l) if l.text == field) => continue,
+                    Expr::Binary {
+                        op: BinOp::Add,
+                        left,
+                        right,
+                        ..
+                    } if matches!(left.peel(), Expr::Ident(l) if l.text == field) => right.peel(),
+                    other => other,
+                },
+            };
+            let paid = matches!(added, Expr::Field { base, name, .. }
+                if name.text == "amount"
+                    && matches!(base.as_ref(), Expr::Ident(a) if inflows.contains(&a.text.as_str())));
+            if paid {
+                if admitted.len() != 1 {
+                    return None;
+                }
+                tokens.insert(admitted[0].to_string());
+                continue;
+            }
+            match debits.iter().find(|(_, a)| expr_eq(a.peel(), added)) {
+                Some((map, _)) => {
+                    let funding = ledger_funding_tokens(model, map);
+                    if funding.len() != 1 {
+                        return None;
+                    }
+                    tokens.extend(funding);
+                }
+                None => return None,
+            }
+        }
+    }
+    if tokens.len() == 1 {
+        tokens.into_iter().next()
+    } else {
+        None
+    }
+}
+
+fn payout_is_bounded_by(amount: &Expr, backing: &Expr) -> bool {
+    if expr_eq(backing, amount) {
+        return true;
+    }
+    match amount {
+        Expr::Binary {
+            op: BinOp::Sub | BinOp::Div | BinOp::Shr | BinOp::Rem,
+            left,
+            ..
+        } => payout_is_bounded_by(left.peel(), backing),
+        _ => false,
+    }
 }
 
 fn ledger_move_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> bool {
