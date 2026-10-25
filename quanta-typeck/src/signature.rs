@@ -1125,6 +1125,7 @@ fn map_is_ever_paid_out(model: &Model, field: &str) -> bool {
         hit
     };
     for entry in &model.entries {
+        let (reads_of, sub_locals) = local_seize_taint(entry);
         let mut aliases: HashSet<String> = HashSet::new();
         for stmt in &entry.body {
             if let Stmt::Let { name, value, .. } = stmt {
@@ -1159,7 +1160,14 @@ fn map_is_ever_paid_out(model: &Model, field: &str) -> bool {
                         }
                         Expr::Field { base, name, .. } => {
                             if let Expr::Ident(m) = base.as_ref() {
+                                let self_decrement = m.text == field
+                                    && matches!(name.text.as_str(), "set" | "insert")
+                                    && args.get(1).is_some_and(|v| {
+                                        expr_reads_map(field, v, &reads_of)
+                                            && expr_has_sub(v, &sub_locals)
+                                    });
                                 if (m.text == field && name.text == "debit")
+                                    || self_decrement
                                     || (matches!(
                                         name.text.as_str(),
                                         "credit" | "debit" | "set" | "insert"
