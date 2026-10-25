@@ -416,8 +416,45 @@ fn check_anchor_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeErr
                 ));
             }
         }
+        if let AfterTarget::Expr(expr) = target {
+            if let Some(field) = bare_deadline_field(model, expr) {
+                if !field_is_asset(model, field)
+                    && field_written_by_entry(model, field)
+                    && !crate::signature::time_anchor_protected(model, field)
+                {
+                    return Err(TypeError::new(
+                        format!(
+                            "an `after` gate opens at `{field}`, an absolute deadline, so an entry \
+                             with no authority that writes `{field}`, for example `{field} = now`, \
+                             can open the lock early; write `{field}` only from an entry that \
+                             carries the same authority as the lock"
+                        ),
+                        *span,
+                    ));
+                }
+            }
+        }
     }
     Ok(())
+}
+
+fn bare_deadline_field<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
+    match expr {
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            bare_deadline_field(model, expr)
+        }
+        _ => {
+            let field = anchor_field(expr)?;
+            model.state.contains_key(field).then_some(field)
+        }
+    }
+}
+
+fn field_written_by_entry(model: &Model, field: &str) -> bool {
+    model
+        .entries
+        .iter()
+        .any(|entry| entry.body.iter().any(|stmt| writes_field(stmt, field)))
 }
 
 fn collect_anchor_reads<'a>(
