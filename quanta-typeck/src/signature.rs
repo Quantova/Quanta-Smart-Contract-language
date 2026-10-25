@@ -126,6 +126,14 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         return Err(no_ledger_authority_error(entry));
     }
     if (entry_moves_asset(entry) || entry_moves_ledger_value(model, entry))
+        && !has_protected_signed_authority(model, entry)
+        && caller_binding_rests_on_first_come_slots(model, entry)
+        && !asset_outflow_is_paid_for_by_the_caller(model, entry)
+        && !ledger_move_is_paid_for_by_the_caller(model, entry)
+    {
+        return Err(no_ledger_authority_error(entry));
+    }
+    if (entry_moves_asset(entry) || entry_moves_ledger_value(model, entry))
         && authority_is_membership_only(model, entry, &signed)
         && (moved_amount_is_caller_chosen(model, entry)
             || outflow_amount_is_a_self_written_row(model, entry))
@@ -2406,10 +2414,11 @@ fn foreign_rows_are_paid_for_at_par(entry: &EntryDecl) -> bool {
                         return;
                     }
                     if matches!(args.first(), Some(Expr::Caller { .. })) {
-                        if name.text == "credit"
-                            && !args
-                                .get(1)
-                                .is_some_and(|v| asset_amount_backer(v, &assets).is_some())
+                        if matches!(name.text.as_str(), "set" | "insert")
+                            || (name.text == "credit"
+                                && !args
+                                    .get(1)
+                                    .is_some_and(|v| asset_amount_backer(v, &assets).is_some()))
                         {
                             all_paid = false;
                         }
@@ -4629,6 +4638,49 @@ fn map_value_addr<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
         }
     }
     None
+}
+
+fn caller_binding_rests_on_first_come_slots(model: &Model, entry: &EntryDecl) -> bool {
+    let mut binding = 0usize;
+    let mut first_come = 0usize;
+    let mut binders: Vec<&Expr> = Vec::new();
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } if caller_necessary(model, expr) => binders.push(expr),
+            Clause::Denies { expr, .. } if caller_necessary_denied(model, expr) => {
+                binders.push(expr)
+            }
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            if caller_necessary(model, expr) {
+                binders.push(expr);
+            }
+        }
+    }
+    for expr in binders {
+        binding += 1;
+        let mut names_first_come = false;
+        walk(expr, &mut |e| {
+            if let Some(map) = map_value_addr(model, e) {
+                if map_slots_are_first_come(model, map) {
+                    names_first_come = true;
+                }
+            }
+        });
+        if names_first_come {
+            first_come += 1;
+        }
+    }
+    binding > 0 && binding == first_come
+}
+
+fn map_slots_are_first_come(model: &Model, map: &str) -> bool {
+    model.entries.iter().any(|entry| {
+        entry_writes_field(entry, map) && writes_field_only_into_an_empty_slot(model, entry, map)
+    })
 }
 
 fn is_addr_valued(model: &Model, ident: &str) -> bool {
