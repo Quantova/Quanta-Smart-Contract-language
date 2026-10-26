@@ -4861,7 +4861,9 @@ fn caller_binding_rests_on_first_come_slots(model: &Model, entry: &EntryDecl) ->
 
 fn map_slots_are_first_come(model: &Model, map: &str) -> bool {
     model.entries.iter().any(|entry| {
-        entry_writes_field(entry, map) && writes_field_only_into_an_empty_slot(model, entry, map)
+        entry_writes_field(entry, map)
+            && writes_field_only_into_an_empty_slot(model, entry, map)
+            && !has_protected_signed_authority(model, entry)
     })
 }
 
