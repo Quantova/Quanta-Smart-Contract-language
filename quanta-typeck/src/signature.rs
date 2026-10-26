@@ -141,6 +141,9 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     {
         return Err(unbacked_membership_error(entry));
     }
+    if entry_moves_asset(entry) && !every_caller_asset_payout_is_token_sourced(model, entry) {
+        return Err(no_asset_authority_error(entry));
+    }
     Ok(())
 }
 
@@ -405,6 +408,115 @@ fn ledger_funding_tokens(model: &Model, map: &str) -> HashSet<String> {
     out
 }
 
+fn admitted_inflow_token(entry: &EntryDecl) -> Option<String> {
+    let mut found: Option<String> = None;
+    for condition in required_conditions(entry) {
+        let mut parts = Vec::new();
+        split_and(&condition, &mut parts);
+        for part in parts {
+            if let Expr::Binary {
+                op: BinOp::Eq,
+                left,
+                right,
+                ..
+            } = part
+            {
+                let tok = match (left.peel(), right.peel()) {
+                    (Expr::InAsset { .. }, Expr::Ident(t))
+                    | (Expr::Ident(t), Expr::InAsset { .. }) => Some(t.text.clone()),
+                    _ => None,
+                };
+                if let Some(t) = tok {
+                    if found.as_deref().is_some_and(|f| f != t) {
+                        return None;
+                    }
+                    found = Some(t);
+                }
+            }
+        }
+    }
+    found
+}
+
+fn backing_token_mismatch(backing: &Option<String>, payout: Option<&str>) -> bool {
+    matches!((backing.as_deref(), payout), (Some(b), Some(p)) if b != p)
+}
+
+fn caller_asset_payout_tokens(entry: &EntryDecl) -> Vec<String> {
+    let mut out = Vec::new();
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send_asset")
+                    && matches!(args.get(1), Some(Expr::Caller { .. }))
+                {
+                    if let Some(Expr::Ident(t)) = args.first().map(Expr::peel) {
+                        out.push(t.text.clone());
+                    }
+                }
+            }
+        });
+    }
+    out
+}
+
+fn every_caller_asset_payout_is_token_sourced(model: &Model, entry: &EntryDecl) -> bool {
+    let payouts = caller_asset_payout_tokens(entry);
+    if payouts.is_empty() {
+        return true;
+    }
+    let mut sources: HashSet<String> = HashSet::new();
+    if let Some(t) = admitted_inflow_token(entry) {
+        sources.insert(t);
+    }
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if name.text == "debit" && matches!(args.first(), Some(Expr::Caller { .. })) {
+                        if let Expr::Ident(m) = base.as_ref() {
+                            for t in ledger_funding_tokens(model, &m.text) {
+                                sources.insert(t);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    for stmt in &entry.body {
+        if let Stmt::Assign {
+            target: Expr::Ident(r),
+            op,
+            value,
+            ..
+        } = stmt
+        {
+            if !model.state.contains_key(r.text.as_str()) {
+                continue;
+            }
+            let lowers = match op {
+                AssignOp::Sub => true,
+                AssignOp::Set => matches!(
+                    value.peel(),
+                    Expr::Binary { op: BinOp::Sub, left, .. }
+                        if matches!(left.peel(), Expr::Ident(l) if l.text == r.text)
+                ),
+                AssignOp::Add => false,
+            };
+            if lowers {
+                if let Some(t) = reserve_token(model, &r.text) {
+                    sources.insert(t);
+                }
+            }
+        }
+    }
+    if sources.is_empty() {
+        return true;
+    }
+    payouts.iter().all(|t| sources.contains(t))
+}
+
 fn every_payout_consumes_its_own_backing(model: &Model, entry: &EntryDecl) -> bool {
     let mut debits: Vec<Expr> = Vec::new();
     let mut debit_maps: Vec<String> = Vec::new();
@@ -452,6 +564,20 @@ fn every_payout_consumes_its_own_backing(model: &Model, entry: &EntryDecl) -> bo
         })
         .collect();
     let mut backing: Vec<Expr> = debits.iter().chain(inflows.iter()).cloned().collect();
+    let admitted = admitted_inflow_token(entry);
+    let mut backing_tokens: Vec<Option<String>> = Vec::with_capacity(backing.len());
+    for i in 0..backing.len() {
+        if i < debit_maps.len() {
+            let funding = ledger_funding_tokens(model, &debit_maps[i]);
+            backing_tokens.push(if funding.len() == 1 {
+                funding.into_iter().next()
+            } else {
+                None
+            });
+        } else {
+            backing_tokens.push(admitted.clone());
+        }
+    }
     let mut consumed: Vec<Expr> = Vec::new();
     let mut reserves: Vec<String> = Vec::new();
     for (value, token) in payouts.iter().zip(payout_tokens.iter()) {
@@ -466,15 +592,13 @@ fn every_payout_consumes_its_own_backing(model: &Model, entry: &EntryDecl) -> bo
         };
         let amount = raw_amount.peel();
         if let Some(pos) = backing.iter().position(|b| expr_eq(b.peel(), amount)) {
-            if let (Some(map), Some(token)) = (debit_maps.get(pos), token) {
-                let funding = ledger_funding_tokens(model, map);
-                if !funding.is_empty() && !funding.contains(token) {
-                    return false;
-                }
+            if backing_token_mismatch(&backing_tokens[pos], token.as_deref()) {
+                return false;
             }
             if pos < debit_maps.len() {
                 debit_maps.remove(pos);
             }
+            backing_tokens.remove(pos);
             consumed.push(backing.remove(pos));
             continue;
         }
@@ -486,9 +610,13 @@ fn every_payout_consumes_its_own_backing(model: &Model, entry: &EntryDecl) -> bo
             .position(|b| payout_is_bounded_by(raw_amount, b.peel()))
         {
             Some(pos) => {
+                if backing_token_mismatch(&backing_tokens[pos], token.as_deref()) {
+                    return false;
+                }
                 if pos < debit_maps.len() {
                     debit_maps.remove(pos);
                 }
+                backing_tokens.remove(pos);
                 consumed.push(backing.remove(pos));
             }
             None => match reserve_bounding_payout(model, entry, amount, &inflows, token.as_deref())
