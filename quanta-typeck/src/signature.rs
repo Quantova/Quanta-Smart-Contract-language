@@ -674,16 +674,17 @@ fn reserve_bounding_payout(
                 value,
                 ..
             } if model.state.contains_key(r.text.as_str()) => {
-                let lowers = match op {
-                    AssignOp::Sub => expr_eq(value.peel(), amount),
-                    AssignOp::Set => matches!(
-                        value.peel(),
-                        Expr::Binary { op: BinOp::Sub, left, right, .. }
-                            if matches!(left.peel(), Expr::Ident(l) if l.text == r.text)
-                                && expr_eq(right.peel(), amount)
-                    ),
-                    AssignOp::Add => false,
-                };
+                let lowers = !contains_wrapping(value)
+                    && match op {
+                        AssignOp::Sub => expr_eq(value.peel(), amount),
+                        AssignOp::Set => matches!(
+                            value.peel(),
+                            Expr::Binary { op: BinOp::Sub, left, right, .. }
+                                if matches!(left.peel(), Expr::Ident(l) if l.text == r.text)
+                                    && expr_eq(right.peel(), amount)
+                        ),
+                        AssignOp::Add => false,
+                    };
                 if lowers {
                     reduced.push(r.text.clone());
                 }
@@ -697,7 +698,23 @@ fn reserve_bounding_payout(
         .find(|r| reduced.contains(r) && reserve_token(model, r).as_deref() == Some(token))
 }
 
+fn contains_wrapping(e: &Expr) -> bool {
+    let mut found = false;
+    walk(e, &mut |x| {
+        if matches!(x, Expr::Wrapping { .. }) {
+            found = true;
+        }
+    });
+    found
+}
+
 fn reserve_token(model: &Model, field: &str) -> Option<String> {
+    if let Some(def) = model.state.get(field).and_then(|f| f.default.as_ref()) {
+        if !matches!(def.peel(), Expr::Int(i) if i.text.trim_start_matches('_').chars().all(|c| c == '0' || c == '_'))
+        {
+            return None;
+        }
+    }
     for item in &model.contract.items {
         if let quanta_ast::Item::Genesis(g) = item {
             for stmt in &g.body {
@@ -788,6 +805,23 @@ fn reserve_token(model: &Model, field: &str) -> Option<String> {
                 if name.text == "amount"
                     && matches!(base.as_ref(), Expr::Ident(a) if inflows.contains(&a.text.as_str())));
             if paid {
+                let mut double_used = false;
+                for s in &entry.body {
+                    stmt_exprs(s, &mut |e| {
+                        if let Expr::Call { callee, args, .. } = e {
+                            if let Expr::Field { name, .. } = callee.as_ref() {
+                                if matches!(name.text.as_str(), "credit" | "set" | "insert")
+                                    && args.get(1).is_some_and(|v| expr_eq(v.peel(), added))
+                                {
+                                    double_used = true;
+                                }
+                            }
+                        }
+                    });
+                }
+                if double_used {
+                    return None;
+                }
                 if admitted.len() != 1 {
                     return None;
                 }
