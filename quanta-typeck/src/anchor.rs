@@ -242,18 +242,20 @@ fn check_guard_anchors(model: &Model) -> Result<(), TypeError> {
     for entry in &model.entries {
         let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
         let locals = entry_locals(entry);
-        let mut gates: Vec<&Expr> = Vec::new();
+        let mut gates: Vec<(&Expr, bool)> = Vec::new();
         for clause in &entry.clauses {
-            if let Clause::Limits { expr, .. } | Clause::Denies { expr, .. } = clause {
-                gates.push(expr);
+            match clause {
+                Clause::Limits { expr, .. } => gates.push((expr, false)),
+                Clause::Denies { expr, .. } => gates.push((expr, true)),
+                _ => {}
             }
         }
         for stmt in &entry.body {
             if let Stmt::Guard { expr, .. } = stmt {
-                gates.push(expr);
+                gates.push((expr, false));
             }
         }
-        for gate in gates {
+        for (gate, negated) in gates {
             let mut anchors: Vec<(&str, Span)> = Vec::new();
             time_compared_fields(model, &params, &locals, gate, &mut anchors);
             for (field, span) in anchors {
@@ -271,11 +273,12 @@ fn check_guard_anchors(model: &Model) -> Result<(), TypeError> {
                 }
             }
             let mut bare_anchors: Vec<(&str, Span)> = Vec::new();
-            bare_now_compared_fields(model, gate, &locals, &mut bare_anchors);
+            bare_now_compared_fields(model, gate, &locals, negated, &mut bare_anchors);
             for (field, span) in bare_anchors {
                 if !field_is_asset(model, field)
                     && field_written_by_entry(model, field)
                     && !crate::signature::time_anchor_protected(model, field)
+                    && field_starts_nonzero(model, field)
                 {
                     return Err(TypeError::new(
                         format!(
@@ -437,24 +440,28 @@ fn check_anchor_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeErr
                 ));
             }
         }
+        let mut exposed: Vec<(&str, Span)> = Vec::new();
         if let AfterTarget::Expr(expr) = target {
-            let mut exposed: Vec<(&str, Span)> = Vec::new();
             exposed_deadline_fields(model, expr, &locals, 0, &mut exposed);
-            for (field, _) in exposed {
-                if !field_is_asset(model, field)
-                    && field_written_by_entry(model, field)
-                    && !crate::signature::time_anchor_protected(model, field)
-                {
-                    return Err(TypeError::new(
-                        format!(
-                            "an `after` gate opens at `{field}`, an absolute deadline, so an entry \
-                             with no authority that writes `{field}`, for example `{field} = now`, \
-                             can open the lock early; write `{field}` only from an entry that \
-                             carries the same authority as the lock"
-                        ),
-                        *span,
-                    ));
-                }
+        }
+        if let Some(expr) = from {
+            exposed_deadline_fields(model, expr, &locals, 0, &mut exposed);
+        }
+        for (field, _) in exposed {
+            if !field_is_asset(model, field)
+                && field_written_by_entry(model, field)
+                && !crate::signature::time_anchor_protected(model, field)
+                && field_starts_nonzero(model, field)
+            {
+                return Err(TypeError::new(
+                    format!(
+                        "an `after` gate opens at `{field}`, an absolute deadline, so an entry \
+                         with no authority that writes `{field}`, for example `{field} = now`, \
+                         can open the lock early; write `{field}` only from an entry that \
+                         carries the same authority as the lock"
+                    ),
+                    *span,
+                ));
             }
         }
     }
@@ -502,9 +509,9 @@ fn exposed_deadline_fields<'a>(
             right,
             ..
         } => {
-            if const_eval(right, locals, depth) == Some(0) {
+            if const_eval(right, locals, depth).is_some() {
                 exposed_deadline_fields(model, left, locals, depth, out);
-            } else if const_eval(left, locals, depth) == Some(0) {
+            } else if const_eval(left, locals, depth).is_some() {
                 exposed_deadline_fields(model, right, locals, depth, out);
             }
         }
@@ -662,9 +669,8 @@ fn now_ge<'a>(expr: &'a Expr, locals: &HashMap<&'a str, &'a Expr>, depth: usize)
         Expr::Binary {
             op: BinOp::Sub,
             left,
-            right,
             ..
-        } => now_ge(left, locals, depth) && const_eval(right, locals, depth) == Some(0),
+        } => now_ge(left, locals, depth),
         Expr::Binary {
             op: BinOp::Div,
             left,
@@ -681,35 +687,54 @@ fn now_ge<'a>(expr: &'a Expr, locals: &HashMap<&'a str, &'a Expr>, depth: usize)
     }
 }
 
+fn negate_cmp(op: BinOp) -> Option<BinOp> {
+    match op {
+        BinOp::Gt => Some(BinOp::Le),
+        BinOp::Ge => Some(BinOp::Lt),
+        BinOp::Lt => Some(BinOp::Ge),
+        BinOp::Le => Some(BinOp::Gt),
+        _ => None,
+    }
+}
+
 fn bare_now_compared_fields<'a>(
     model: &Model,
     expr: &'a Expr,
     locals: &HashMap<&'a str, &'a Expr>,
+    negated: bool,
     out: &mut Vec<(&'a str, Span)>,
 ) {
     match expr {
         Expr::Binary {
             op, left, right, ..
         } => {
-            if matches!(op, BinOp::Gt | BinOp::Ge) && now_ge(left, locals, 0) {
-                exposed_deadline_fields(model, right, locals, 0, out);
-            }
-            if matches!(op, BinOp::Lt | BinOp::Le) && now_ge(right, locals, 0) {
-                exposed_deadline_fields(model, left, locals, 0, out);
-            }
-            if matches!(op, BinOp::Eq) {
-                if is_bare_now(left, locals, 0) {
+            let eff = if negated { negate_cmp(*op) } else { Some(*op) };
+            if let Some(eff) = eff {
+                if matches!(eff, BinOp::Gt | BinOp::Ge) && now_ge(left, locals, 0) {
                     exposed_deadline_fields(model, right, locals, 0, out);
                 }
-                if is_bare_now(right, locals, 0) {
+                if matches!(eff, BinOp::Lt | BinOp::Le) && now_ge(right, locals, 0) {
                     exposed_deadline_fields(model, left, locals, 0, out);
                 }
+                if !negated && matches!(eff, BinOp::Eq) {
+                    if is_bare_now(left, locals, 0) {
+                        exposed_deadline_fields(model, right, locals, 0, out);
+                    }
+                    if is_bare_now(right, locals, 0) {
+                        exposed_deadline_fields(model, left, locals, 0, out);
+                    }
+                }
             }
-            bare_now_compared_fields(model, left, locals, out);
-            bare_now_compared_fields(model, right, locals, out);
+            bare_now_compared_fields(model, left, locals, negated, out);
+            bare_now_compared_fields(model, right, locals, negated, out);
         }
+        Expr::Unary {
+            op: quanta_ast::UnaryOp::Not,
+            expr,
+            ..
+        } => bare_now_compared_fields(model, expr, locals, !negated, out),
         Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
-            bare_now_compared_fields(model, expr, locals, out)
+            bare_now_compared_fields(model, expr, locals, negated, out)
         }
         _ => {}
     }
@@ -810,6 +835,15 @@ fn genesis_arms_nonzero(model: &Model, field: &str) -> bool {
         }
     }
     false
+}
+
+fn field_starts_nonzero(model: &Model, field: &str) -> bool {
+    let has_nonzero_default = match model.state.get(field).and_then(|f| f.default.as_ref()) {
+        None => false,
+        Some(Expr::Int(lit)) => lit.text.replace('_', "").parse::<u128>() != Ok(0),
+        Some(_) => true,
+    };
+    has_nonzero_default || genesis_arms_nonzero(model, field)
 }
 
 fn read_starts_nonzero(model: &Model, read: &Expr, field: &str) -> bool {
