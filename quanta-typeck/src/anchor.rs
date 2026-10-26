@@ -517,6 +517,12 @@ fn const_eval(expr: &Expr) -> Option<u128> {
         Expr::Binary {
             op, left, right, ..
         } => {
+            if matches!(op, BinOp::Sub) && crate::signature::expr_eq(left, right) {
+                return Some(0);
+            }
+            if matches!(op, BinOp::Div) && crate::signature::expr_eq(left, right) {
+                return Some(1);
+            }
             let l = const_eval(left)?;
             let r = const_eval(right)?;
             match op {

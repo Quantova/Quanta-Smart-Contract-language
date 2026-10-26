@@ -4257,7 +4257,7 @@ fn subtracted_amount(expr: &Expr) -> Option<&Expr> {
     None
 }
 
-fn expr_eq(a: &Expr, b: &Expr) -> bool {
+pub(crate) fn expr_eq(a: &Expr, b: &Expr) -> bool {
     match (a, b) {
         (Expr::Int(x), Expr::Int(y)) => x.text.replace('_', "") == y.text.replace('_', ""),
         (Expr::Str(x), Expr::Str(y)) => x.value == y.value,
