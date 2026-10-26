@@ -466,31 +466,43 @@ fn bare_deadline_field<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
             left,
             right,
             ..
-        } if is_zero_lit(right) => bare_deadline_field(model, left),
+        } if const_eval(right) == Some(0) => bare_deadline_field(model, left),
         Expr::Binary {
             op: BinOp::Add,
             left,
             right,
             ..
-        } if is_zero_lit(left) => bare_deadline_field(model, right),
+        } if const_eval(left) == Some(0) => bare_deadline_field(model, right),
         Expr::Binary {
             op: BinOp::Sub,
             left,
             right,
             ..
-        } if is_zero_lit(right) => bare_deadline_field(model, left),
+        } if const_eval(right) == Some(0) => bare_deadline_field(model, left),
         Expr::Binary {
             op: BinOp::Mul,
             left,
             right,
             ..
-        } if is_one_lit(right) => bare_deadline_field(model, left),
+        } if const_eval(right) == Some(1) => bare_deadline_field(model, left),
         Expr::Binary {
             op: BinOp::Mul,
             left,
             right,
             ..
-        } if is_one_lit(left) => bare_deadline_field(model, right),
+        } if const_eval(left) == Some(1) => bare_deadline_field(model, right),
+        Expr::Binary {
+            op: BinOp::Div,
+            left,
+            right,
+            ..
+        } if const_eval(right) == Some(1) => bare_deadline_field(model, left),
+        Expr::Binary {
+            op: BinOp::Shr,
+            left,
+            right,
+            ..
+        } if const_eval(right) == Some(0) => bare_deadline_field(model, left),
         _ => {
             let field = anchor_field(expr)?;
             model.state.contains_key(field).then_some(field)
@@ -498,12 +510,28 @@ fn bare_deadline_field<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
     }
 }
 
-fn is_zero_lit(expr: &Expr) -> bool {
-    matches!(expr, Expr::Int(n) if n.text.replace('_', "").trim_start_matches('0').is_empty())
-}
-
-fn is_one_lit(expr: &Expr) -> bool {
-    matches!(expr, Expr::Int(n) if n.text.replace('_', "").parse::<u128>() == Ok(1))
+fn const_eval(expr: &Expr) -> Option<u128> {
+    match expr {
+        Expr::Int(n) => n.text.replace('_', "").parse::<u128>().ok(),
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => const_eval(expr),
+        Expr::Binary {
+            op, left, right, ..
+        } => {
+            let l = const_eval(left)?;
+            let r = const_eval(right)?;
+            match op {
+                BinOp::Add => l.checked_add(r),
+                BinOp::Sub => l.checked_sub(r),
+                BinOp::Mul => l.checked_mul(r),
+                BinOp::Div => l.checked_div(r),
+                BinOp::Rem => l.checked_rem(r),
+                BinOp::Shr if r < 128 => Some(l >> r),
+                BinOp::Shr => Some(0),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 fn is_bare_now(expr: &Expr) -> bool {
@@ -515,19 +543,37 @@ fn is_bare_now(expr: &Expr) -> bool {
             left,
             right,
             ..
-        } => (is_bare_now(left) && is_zero_lit(right)) || (is_zero_lit(left) && is_bare_now(right)),
+        } => {
+            (is_bare_now(left) && const_eval(right) == Some(0))
+                || (const_eval(left) == Some(0) && is_bare_now(right))
+        }
         Expr::Binary {
             op: BinOp::Sub,
             left,
             right,
             ..
-        } => is_bare_now(left) && is_zero_lit(right),
+        } => is_bare_now(left) && const_eval(right) == Some(0),
         Expr::Binary {
             op: BinOp::Mul,
             left,
             right,
             ..
-        } => (is_bare_now(left) && is_one_lit(right)) || (is_one_lit(left) && is_bare_now(right)),
+        } => {
+            (is_bare_now(left) && const_eval(right) == Some(1))
+                || (const_eval(left) == Some(1) && is_bare_now(right))
+        }
+        Expr::Binary {
+            op: BinOp::Div,
+            left,
+            right,
+            ..
+        } => is_bare_now(left) && const_eval(right) == Some(1),
+        Expr::Binary {
+            op: BinOp::Shr,
+            left,
+            right,
+            ..
+        } => is_bare_now(left) && const_eval(right) == Some(0),
         _ => false,
     }
 }
@@ -537,12 +583,12 @@ fn bare_now_compared_fields<'a>(model: &Model, expr: &'a Expr, out: &mut Vec<(&'
         Expr::Binary {
             op, left, right, ..
         } => {
-            if matches!(op, BinOp::Gt | BinOp::Ge) && is_bare_now(left) {
+            if matches!(op, BinOp::Gt | BinOp::Ge | BinOp::Eq) && is_bare_now(left) {
                 if let Some(field) = bare_deadline_field(model, right) {
                     out.push((field, right.span()));
                 }
             }
-            if matches!(op, BinOp::Lt | BinOp::Le) && is_bare_now(right) {
+            if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Eq) && is_bare_now(right) {
                 if let Some(field) = bare_deadline_field(model, left) {
                     out.push((field, left.span()));
                 }
