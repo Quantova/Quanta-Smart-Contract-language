@@ -632,6 +632,55 @@ fn is_bare_now<'a>(expr: &'a Expr, locals: &HashMap<&'a str, &'a Expr>, depth: u
     }
 }
 
+fn now_ge<'a>(expr: &'a Expr, locals: &HashMap<&'a str, &'a Expr>, depth: usize) -> bool {
+    if depth > MAX_LOCAL_DEPTH {
+        return false;
+    }
+    match expr {
+        Expr::Now { .. } => true,
+        Expr::Ident(id) => locals
+            .get(id.text.as_str())
+            .is_some_and(|e| now_ge(e, locals, depth + 1)),
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => now_ge(expr, locals, depth),
+        Expr::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        } => now_ge(left, locals, depth) || now_ge(right, locals, depth),
+        Expr::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+            ..
+        } => {
+            (now_ge(left, locals, depth)
+                && const_eval(right, locals, depth).is_some_and(|v| v >= 1))
+                || (const_eval(left, locals, depth).is_some_and(|v| v >= 1)
+                    && now_ge(right, locals, depth))
+        }
+        Expr::Binary {
+            op: BinOp::Sub,
+            left,
+            right,
+            ..
+        } => now_ge(left, locals, depth) && const_eval(right, locals, depth) == Some(0),
+        Expr::Binary {
+            op: BinOp::Div,
+            left,
+            right,
+            ..
+        } => now_ge(left, locals, depth) && const_eval(right, locals, depth) == Some(1),
+        Expr::Binary {
+            op: BinOp::Shr,
+            left,
+            right,
+            ..
+        } => now_ge(left, locals, depth) && const_eval(right, locals, depth) == Some(0),
+        _ => false,
+    }
+}
+
 fn bare_now_compared_fields<'a>(
     model: &Model,
     expr: &'a Expr,
@@ -642,11 +691,19 @@ fn bare_now_compared_fields<'a>(
         Expr::Binary {
             op, left, right, ..
         } => {
-            if matches!(op, BinOp::Gt | BinOp::Ge | BinOp::Eq) && is_bare_now(left, locals, 0) {
+            if matches!(op, BinOp::Gt | BinOp::Ge) && now_ge(left, locals, 0) {
                 exposed_deadline_fields(model, right, locals, 0, out);
             }
-            if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Eq) && is_bare_now(right, locals, 0) {
+            if matches!(op, BinOp::Lt | BinOp::Le) && now_ge(right, locals, 0) {
                 exposed_deadline_fields(model, left, locals, 0, out);
+            }
+            if matches!(op, BinOp::Eq) {
+                if is_bare_now(left, locals, 0) {
+                    exposed_deadline_fields(model, right, locals, 0, out);
+                }
+                if is_bare_now(right, locals, 0) {
+                    exposed_deadline_fields(model, left, locals, 0, out);
+                }
             }
             bare_now_compared_fields(model, left, locals, out);
             bare_now_compared_fields(model, right, locals, out);
