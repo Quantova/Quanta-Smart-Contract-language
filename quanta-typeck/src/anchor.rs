@@ -241,6 +241,7 @@ fn guard_liveness_rejection(field: &str, span: Span) -> TypeError {
 fn check_guard_anchors(model: &Model) -> Result<(), TypeError> {
     for entry in &model.entries {
         let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
+        let locals = entry_locals(entry);
         let mut gates: Vec<&Expr> = Vec::new();
         for clause in &entry.clauses {
             if let Clause::Limits { expr, .. } | Clause::Denies { expr, .. } = clause {
@@ -254,7 +255,7 @@ fn check_guard_anchors(model: &Model) -> Result<(), TypeError> {
         }
         for gate in gates {
             let mut anchors: Vec<(&str, Span)> = Vec::new();
-            time_compared_fields(model, &params, gate, &mut anchors);
+            time_compared_fields(model, &params, &locals, gate, &mut anchors);
             for (field, span) in anchors {
                 if writes_other_than_time(model, field)
                     && !crate::signature::time_anchor_protected(model, field)
@@ -270,7 +271,7 @@ fn check_guard_anchors(model: &Model) -> Result<(), TypeError> {
                 }
             }
             let mut bare_anchors: Vec<(&str, Span)> = Vec::new();
-            bare_now_compared_fields(model, gate, &mut bare_anchors);
+            bare_now_compared_fields(model, gate, &locals, &mut bare_anchors);
             for (field, span) in bare_anchors {
                 if !field_is_asset(model, field)
                     && field_written_by_entry(model, field)
@@ -317,6 +318,7 @@ fn mentions_now(expr: &Expr) -> bool {
 fn time_compared_fields<'a>(
     model: &Model,
     params: &HashSet<&str>,
+    locals: &HashMap<&'a str, &'a Expr>,
     expr: &'a Expr,
     out: &mut Vec<(&'a str, Span)>,
 ) {
@@ -328,8 +330,8 @@ fn time_compared_fields<'a>(
                 for (side, other) in [(left, right), (right, left)] {
                     if mentions_now(side) {
                         let mut reads: Vec<&Expr> = Vec::new();
-                        collect_anchor_reads(model, params, &HashMap::new(), other, &mut reads, 0);
-                        collect_anchor_reads(model, params, &HashMap::new(), side, &mut reads, 0);
+                        collect_anchor_reads(model, params, locals, other, &mut reads, 0);
+                        collect_anchor_reads(model, params, locals, side, &mut reads, 0);
                         for read in reads {
                             if let Some(field) = anchor_field(read) {
                                 out.push((field, read.span()));
@@ -338,11 +340,11 @@ fn time_compared_fields<'a>(
                     }
                 }
             }
-            time_compared_fields(model, params, left, out);
-            time_compared_fields(model, params, right, out);
+            time_compared_fields(model, params, locals, left, out);
+            time_compared_fields(model, params, locals, right, out);
         }
         Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
-            time_compared_fields(model, params, expr, out)
+            time_compared_fields(model, params, locals, expr, out)
         }
         _ => {}
     }
@@ -402,16 +404,17 @@ fn writes_other_than_time(model: &Model, field: &str) -> bool {
 
 fn check_anchor_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
+    let locals = entry_locals(entry);
     for clause in &entry.clauses {
         let Clause::After { target, from, span } = clause else {
             continue;
         };
         let mut reads: Vec<&Expr> = Vec::new();
         if let AfterTarget::Expr(expr) = target {
-            collect_anchor_reads(model, &params, &HashMap::new(), expr, &mut reads, 0);
+            collect_anchor_reads(model, &params, &locals, expr, &mut reads, 0);
         }
         if let Some(expr) = from {
-            collect_anchor_reads(model, &params, &HashMap::new(), expr, &mut reads, 0);
+            collect_anchor_reads(model, &params, &locals, expr, &mut reads, 0);
         }
         for read in reads {
             let Some(field) = anchor_field(read) else {
@@ -435,7 +438,9 @@ fn check_anchor_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeErr
             }
         }
         if let AfterTarget::Expr(expr) = target {
-            if let Some(field) = bare_deadline_field(model, expr) {
+            let mut exposed: Vec<(&str, Span)> = Vec::new();
+            exposed_deadline_fields(model, expr, &locals, 0, &mut exposed);
+            for (field, _) in exposed {
                 if !field_is_asset(model, field)
                     && field_written_by_entry(model, field)
                     && !crate::signature::time_anchor_protected(model, field)
@@ -456,64 +461,99 @@ fn check_anchor_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeErr
     Ok(())
 }
 
-fn bare_deadline_field<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
+fn entry_locals(entry: &EntryDecl) -> HashMap<&str, &Expr> {
+    let mut locals: HashMap<&str, &Expr> = HashMap::new();
+    for stmt in &entry.body {
+        if let Stmt::Let { name, value, .. } = stmt {
+            locals.insert(name.text.as_str(), value);
+        }
+    }
+    locals
+}
+
+fn exposed_deadline_fields<'a>(
+    model: &Model,
+    expr: &'a Expr,
+    locals: &HashMap<&'a str, &'a Expr>,
+    depth: usize,
+    out: &mut Vec<(&'a str, Span)>,
+) {
+    if depth > MAX_LOCAL_DEPTH {
+        return;
+    }
+    if const_eval(expr, locals, depth).is_some() {
+        return;
+    }
     match expr {
+        Expr::Ident(id) => {
+            let name = id.text.as_str();
+            if let Some(inner) = locals.get(name) {
+                exposed_deadline_fields(model, inner, locals, depth + 1, out);
+            } else if model.state.contains_key(name) {
+                out.push((name, id.span));
+            }
+        }
         Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
-            bare_deadline_field(model, expr)
+            exposed_deadline_fields(model, expr, locals, depth, out)
         }
         Expr::Binary {
             op: BinOp::Add,
             left,
             right,
             ..
-        } if const_eval(right) == Some(0) => bare_deadline_field(model, left),
-        Expr::Binary {
-            op: BinOp::Add,
-            left,
-            right,
-            ..
-        } if const_eval(left) == Some(0) => bare_deadline_field(model, right),
-        Expr::Binary {
-            op: BinOp::Sub,
-            left,
-            right,
-            ..
-        } if const_eval(right) == Some(0) => bare_deadline_field(model, left),
-        Expr::Binary {
-            op: BinOp::Mul,
-            left,
-            right,
-            ..
-        } if const_eval(right) == Some(1) => bare_deadline_field(model, left),
-        Expr::Binary {
-            op: BinOp::Mul,
-            left,
-            right,
-            ..
-        } if const_eval(left) == Some(1) => bare_deadline_field(model, right),
-        Expr::Binary {
-            op: BinOp::Div,
-            left,
-            right,
-            ..
-        } if const_eval(right) == Some(1) => bare_deadline_field(model, left),
-        Expr::Binary {
-            op: BinOp::Shr,
-            left,
-            right,
-            ..
-        } if const_eval(right) == Some(0) => bare_deadline_field(model, left),
-        _ => {
-            let field = anchor_field(expr)?;
-            model.state.contains_key(field).then_some(field)
+        } => {
+            if const_eval(right, locals, depth) == Some(0) {
+                exposed_deadline_fields(model, left, locals, depth, out);
+            } else if const_eval(left, locals, depth) == Some(0) {
+                exposed_deadline_fields(model, right, locals, depth, out);
+            }
         }
+        Expr::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+            ..
+        } => {
+            if const_eval(right, locals, depth) == Some(1) {
+                exposed_deadline_fields(model, left, locals, depth, out);
+            } else if const_eval(left, locals, depth) == Some(1) {
+                exposed_deadline_fields(model, right, locals, depth, out);
+            }
+        }
+        Expr::Binary {
+            op: BinOp::Sub | BinOp::Div | BinOp::Rem | BinOp::Shr,
+            left,
+            right,
+            ..
+        } => {
+            exposed_deadline_fields(model, left, locals, depth, out);
+            exposed_deadline_fields(model, right, locals, depth, out);
+        }
+        Expr::Call { .. } => {
+            if let Some(field) = anchor_field(expr) {
+                if model.state.contains_key(field) {
+                    out.push((field, expr.span()));
+                }
+            }
+        }
+        _ => {}
     }
 }
 
-fn const_eval(expr: &Expr) -> Option<u128> {
+fn const_eval<'a>(
+    expr: &'a Expr,
+    locals: &HashMap<&'a str, &'a Expr>,
+    depth: usize,
+) -> Option<u128> {
+    if depth > MAX_LOCAL_DEPTH {
+        return None;
+    }
     match expr {
         Expr::Int(n) => n.text.replace('_', "").parse::<u128>().ok(),
-        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => const_eval(expr),
+        Expr::Ident(id) => locals
+            .get(id.text.as_str())
+            .and_then(|e| const_eval(e, locals, depth + 1)),
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => const_eval(expr, locals, depth),
         Expr::Binary {
             op, left, right, ..
         } => {
@@ -523,8 +563,8 @@ fn const_eval(expr: &Expr) -> Option<u128> {
             if matches!(op, BinOp::Div) && crate::signature::expr_eq(left, right) {
                 return Some(1);
             }
-            let l = const_eval(left)?;
-            let r = const_eval(right)?;
+            let l = const_eval(left, locals, depth)?;
+            let r = const_eval(right, locals, depth)?;
             match op {
                 BinOp::Add => l.checked_add(r),
                 BinOp::Sub => l.checked_sub(r),
@@ -540,70 +580,79 @@ fn const_eval(expr: &Expr) -> Option<u128> {
     }
 }
 
-fn is_bare_now(expr: &Expr) -> bool {
+fn is_bare_now<'a>(expr: &'a Expr, locals: &HashMap<&'a str, &'a Expr>, depth: usize) -> bool {
+    if depth > MAX_LOCAL_DEPTH {
+        return false;
+    }
     match expr {
         Expr::Now { .. } => true,
-        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => is_bare_now(expr),
+        Expr::Ident(id) => locals
+            .get(id.text.as_str())
+            .is_some_and(|e| is_bare_now(e, locals, depth + 1)),
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            is_bare_now(expr, locals, depth)
+        }
         Expr::Binary {
             op: BinOp::Add,
             left,
             right,
             ..
         } => {
-            (is_bare_now(left) && const_eval(right) == Some(0))
-                || (const_eval(left) == Some(0) && is_bare_now(right))
+            (is_bare_now(left, locals, depth) && const_eval(right, locals, depth) == Some(0))
+                || (const_eval(left, locals, depth) == Some(0) && is_bare_now(right, locals, depth))
         }
         Expr::Binary {
             op: BinOp::Sub,
             left,
             right,
             ..
-        } => is_bare_now(left) && const_eval(right) == Some(0),
+        } => is_bare_now(left, locals, depth) && const_eval(right, locals, depth) == Some(0),
         Expr::Binary {
             op: BinOp::Mul,
             left,
             right,
             ..
         } => {
-            (is_bare_now(left) && const_eval(right) == Some(1))
-                || (const_eval(left) == Some(1) && is_bare_now(right))
+            (is_bare_now(left, locals, depth) && const_eval(right, locals, depth) == Some(1))
+                || (const_eval(left, locals, depth) == Some(1) && is_bare_now(right, locals, depth))
         }
         Expr::Binary {
             op: BinOp::Div,
             left,
             right,
             ..
-        } => is_bare_now(left) && const_eval(right) == Some(1),
+        } => is_bare_now(left, locals, depth) && const_eval(right, locals, depth) == Some(1),
         Expr::Binary {
             op: BinOp::Shr,
             left,
             right,
             ..
-        } => is_bare_now(left) && const_eval(right) == Some(0),
+        } => is_bare_now(left, locals, depth) && const_eval(right, locals, depth) == Some(0),
         _ => false,
     }
 }
 
-fn bare_now_compared_fields<'a>(model: &Model, expr: &'a Expr, out: &mut Vec<(&'a str, Span)>) {
+fn bare_now_compared_fields<'a>(
+    model: &Model,
+    expr: &'a Expr,
+    locals: &HashMap<&'a str, &'a Expr>,
+    out: &mut Vec<(&'a str, Span)>,
+) {
     match expr {
         Expr::Binary {
             op, left, right, ..
         } => {
-            if matches!(op, BinOp::Gt | BinOp::Ge | BinOp::Eq) && is_bare_now(left) {
-                if let Some(field) = bare_deadline_field(model, right) {
-                    out.push((field, right.span()));
-                }
+            if matches!(op, BinOp::Gt | BinOp::Ge | BinOp::Eq) && is_bare_now(left, locals, 0) {
+                exposed_deadline_fields(model, right, locals, 0, out);
             }
-            if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Eq) && is_bare_now(right) {
-                if let Some(field) = bare_deadline_field(model, left) {
-                    out.push((field, left.span()));
-                }
+            if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Eq) && is_bare_now(right, locals, 0) {
+                exposed_deadline_fields(model, left, locals, 0, out);
             }
-            bare_now_compared_fields(model, left, out);
-            bare_now_compared_fields(model, right, out);
+            bare_now_compared_fields(model, left, locals, out);
+            bare_now_compared_fields(model, right, locals, out);
         }
         Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
-            bare_now_compared_fields(model, expr, out)
+            bare_now_compared_fields(model, expr, locals, out)
         }
         _ => {}
     }
