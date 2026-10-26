@@ -269,6 +269,24 @@ fn check_guard_anchors(model: &Model) -> Result<(), TypeError> {
                     ));
                 }
             }
+            let mut bare_anchors: Vec<(&str, Span)> = Vec::new();
+            bare_now_compared_fields(model, gate, &mut bare_anchors);
+            for (field, span) in bare_anchors {
+                if !field_is_asset(model, field)
+                    && field_written_by_entry(model, field)
+                    && !crate::signature::time_anchor_protected(model, field)
+                {
+                    return Err(TypeError::new(
+                        format!(
+                            "a time gate compares `now` with `{field}`, an absolute deadline, so \
+                             an entry with no authority that writes `{field}`, for example \
+                             `{field} = now`, can open the lock early; write `{field}` only from \
+                             an entry that carries the same authority as the lock"
+                        ),
+                        span,
+                    ));
+                }
+            }
         }
     }
     Ok(())
@@ -443,10 +461,99 @@ fn bare_deadline_field<'a>(model: &Model, expr: &'a Expr) -> Option<&'a str> {
         Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
             bare_deadline_field(model, expr)
         }
+        Expr::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        } if is_zero_lit(right) => bare_deadline_field(model, left),
+        Expr::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        } if is_zero_lit(left) => bare_deadline_field(model, right),
+        Expr::Binary {
+            op: BinOp::Sub,
+            left,
+            right,
+            ..
+        } if is_zero_lit(right) => bare_deadline_field(model, left),
+        Expr::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+            ..
+        } if is_one_lit(right) => bare_deadline_field(model, left),
+        Expr::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+            ..
+        } if is_one_lit(left) => bare_deadline_field(model, right),
         _ => {
             let field = anchor_field(expr)?;
             model.state.contains_key(field).then_some(field)
         }
+    }
+}
+
+fn is_zero_lit(expr: &Expr) -> bool {
+    matches!(expr, Expr::Int(n) if n.text.replace('_', "").trim_start_matches('0').is_empty())
+}
+
+fn is_one_lit(expr: &Expr) -> bool {
+    matches!(expr, Expr::Int(n) if n.text.replace('_', "").parse::<u128>() == Ok(1))
+}
+
+fn is_bare_now(expr: &Expr) -> bool {
+    match expr {
+        Expr::Now { .. } => true,
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => is_bare_now(expr),
+        Expr::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        } => (is_bare_now(left) && is_zero_lit(right)) || (is_zero_lit(left) && is_bare_now(right)),
+        Expr::Binary {
+            op: BinOp::Sub,
+            left,
+            right,
+            ..
+        } => is_bare_now(left) && is_zero_lit(right),
+        Expr::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+            ..
+        } => (is_bare_now(left) && is_one_lit(right)) || (is_one_lit(left) && is_bare_now(right)),
+        _ => false,
+    }
+}
+
+fn bare_now_compared_fields<'a>(model: &Model, expr: &'a Expr, out: &mut Vec<(&'a str, Span)>) {
+    match expr {
+        Expr::Binary {
+            op, left, right, ..
+        } => {
+            if matches!(op, BinOp::Gt | BinOp::Ge) && is_bare_now(left) {
+                if let Some(field) = bare_deadline_field(model, right) {
+                    out.push((field, right.span()));
+                }
+            }
+            if matches!(op, BinOp::Lt | BinOp::Le) && is_bare_now(right) {
+                if let Some(field) = bare_deadline_field(model, left) {
+                    out.push((field, left.span()));
+                }
+            }
+            bare_now_compared_fields(model, left, out);
+            bare_now_compared_fields(model, right, out);
+        }
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            bare_now_compared_fields(model, expr, out)
+        }
+        _ => {}
     }
 }
 
