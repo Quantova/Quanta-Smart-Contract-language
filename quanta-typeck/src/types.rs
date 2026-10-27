@@ -85,7 +85,23 @@ fn storable(ty: &Type) -> Result<(), TypeError> {
             }
             Ok(())
         }
-        _ => Ok(()),
+        _ => {
+            let decl = ty_of_decl(ty);
+            if decl == Ty::Unknown {
+                return refuse(format!("`{}` is not a known type", type_text(ty)), ty.span);
+            }
+            let takes_no_args = matches!(
+                decl,
+                Ty::Int | Ty::Bool | Ty::Time | Ty::Address | Ty::Hash | Ty::Name
+            );
+            if takes_no_args && !ty.args.is_empty() {
+                return refuse(
+                    format!("`{}` does not take type arguments", ty.name.text),
+                    ty.span,
+                );
+            }
+            Ok(())
+        }
     }
 }
 
@@ -347,6 +363,7 @@ impl<'a> Env<'a> {
                 (Ty::Name, got) => got != Ty::Name || !self.is_name_param(arg),
                 (_, Ty::Name) => true,
                 (_, Ty::Collection) | (Ty::Collection, _) => true,
+                (want, Ty::Address) if one_word(want) => true,
                 _ => false,
             };
             if mismatch {
@@ -1211,6 +1228,28 @@ mod tests {
         let program = quanta_parser::parse(src).expect("source parses");
         let model = Model::build(&program.contracts[0]);
         super::check(&model).expect("checker should accept");
+    }
+
+    #[test]
+    fn unknown_and_malformed_declaration_types_are_rejected() {
+        let typo = "contract C { state { total: u128x; } }";
+        assert!(error_for(typo).contains("is not a known type"));
+        let misspelled = "contract C { state { owner: Q_Adress; } }";
+        assert!(error_for(misspelled).contains("is not a known type"));
+        let scalar_generic = "contract C { state { total: u64<u128>; } }";
+        assert!(error_for(scalar_generic).contains("does not take type arguments"));
+        ok("contract C { state { total: u128; } }");
+        ok("contract C { state { vault: Q_Asset<QTOV>; } }");
+    }
+
+    #[test]
+    fn an_address_cannot_be_emitted_as_a_scalar_event_field() {
+        let narrowed = "contract C { state { owner: Q_Address; } \
+                        entry poke() { emit Saved(caller); } event Saved(account: u64); }";
+        assert!(error_for(narrowed).contains("cannot carry"));
+        let proper = "contract C { state { owner: Q_Address; } \
+                      entry poke() { emit Saved(caller); } event Saved(account: Q_Address); }";
+        ok(proper);
     }
 
     #[test]
