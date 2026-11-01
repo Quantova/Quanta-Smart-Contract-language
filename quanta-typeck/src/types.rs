@@ -121,6 +121,27 @@ fn type_text(ty: &Type) -> String {
     format!("{}<{}>", ty.name.text, args.join(", "))
 }
 
+fn event_field_type(ty: &Type) -> Result<(), TypeError> {
+    let decl = ty_of_decl(ty);
+    if decl == Ty::Unknown {
+        return Err(TypeError::new(
+            format!("`{}` is not a known type", type_text(ty)),
+            ty.span,
+        ));
+    }
+    let takes_no_args = matches!(
+        decl,
+        Ty::Int | Ty::Bool | Ty::Time | Ty::Address | Ty::Hash | Ty::Name
+    );
+    if takes_no_args && !ty.args.is_empty() {
+        return Err(TypeError::new(
+            format!("`{}` does not take type arguments", ty.name.text),
+            ty.span,
+        ));
+    }
+    Ok(())
+}
+
 pub fn check(model: &Model) -> Result<(), TypeError> {
     let defaults = Env::new(model, HashMap::new());
     for item in &model.contract.items {
@@ -145,6 +166,13 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
                     value: value.clone(),
                     span: field.span,
                 })?;
+            }
+        }
+    }
+    for item in &model.contract.items {
+        if let Item::Event(event) = item {
+            for param in &event.params {
+                event_field_type(&param.ty)?;
             }
         }
     }
