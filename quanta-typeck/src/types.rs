@@ -14,7 +14,7 @@ enum Ty {
     Bool,
     Address,
     Asset,
-    Hash,
+    Word64,
     Name,
     Time,
     Str,
@@ -92,7 +92,7 @@ fn storable(ty: &Type) -> Result<(), TypeError> {
             }
             let takes_no_args = matches!(
                 decl,
-                Ty::Int | Ty::Bool | Ty::Time | Ty::Address | Ty::Hash | Ty::Name
+                Ty::Int | Ty::Bool | Ty::Time | Ty::Address | Ty::Word64 | Ty::Name
             );
             if takes_no_args && !ty.args.is_empty() {
                 return refuse(
@@ -131,11 +131,37 @@ fn event_field_type(ty: &Type) -> Result<(), TypeError> {
     }
     let takes_no_args = matches!(
         decl,
-        Ty::Int | Ty::Bool | Ty::Time | Ty::Address | Ty::Hash | Ty::Name
+        Ty::Int | Ty::Bool | Ty::Time | Ty::Address | Ty::Word64 | Ty::Name
     );
     if takes_no_args && !ty.args.is_empty() {
         return Err(TypeError::new(
             format!("`{}` does not take type arguments", ty.name.text),
+            ty.span,
+        ));
+    }
+    Ok(())
+}
+
+const DIGEST_NAME_TOKENS: &[&str] = &[
+    "digest",
+    "hash",
+    "fingerprint",
+    "checksum",
+    "commitment",
+    "merkle",
+];
+
+fn refuse_word64_as_digest(name: &str, ty: &Type) -> Result<(), TypeError> {
+    if ty.name.text != "Q_Word64" {
+        return Ok(());
+    }
+    let lower = name.to_ascii_lowercase();
+    if DIGEST_NAME_TOKENS.iter().any(|token| lower.contains(token)) {
+        return Err(TypeError::new(
+            format!(
+                "`{name}` is a Q_Word64, a single 64 bit word that cannot hold a 256 bit digest; \
+                 a value presented as a digest must be kept in a wider type"
+            ),
             ty.span,
         ));
     }
@@ -148,6 +174,7 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
         if let Item::State(block) = item {
             for field in &block.fields {
                 storable(&field.ty)?;
+                refuse_word64_as_digest(&field.name.text, &field.ty)?;
                 let Some(value) = &field.default else {
                     continue;
                 };
@@ -173,6 +200,7 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
         if let Item::Event(event) = item {
             for param in &event.params {
                 event_field_type(&param.ty)?;
+                refuse_word64_as_digest(&param.name.text, &param.ty)?;
             }
         }
     }
@@ -182,6 +210,7 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
     for entry in &model.entries {
         for param in &entry.params {
             guardian_bound(&param.ty)?;
+            refuse_word64_as_digest(&param.name.text, &param.ty)?;
         }
     }
     for item in &model.contract.items {
@@ -688,7 +717,7 @@ impl<'a> Env<'a> {
             } => self.ty_of_binary(*op, left, right),
             Expr::Field { name, .. } => Ok(match name.text.as_str() {
                 "amount" => Ty::Int,
-                "digest" => Ty::Hash,
+                "signer_bits" => Ty::Word64,
                 "first" => Ty::Time,
                 "len" => Ty::Int,
                 _ => Ty::Unknown,
@@ -808,7 +837,7 @@ impl Ty {
             Ty::Bool => "boolean",
             Ty::Address => "address",
             Ty::Asset => "asset",
-            Ty::Hash => "hash",
+            Ty::Word64 => "64 bit word",
             Ty::Name => "name",
             Ty::Time => "time",
             Ty::Str => "string",
@@ -946,7 +975,7 @@ fn ty_of_decl(ty: &Type) -> Ty {
         "bool" => Ty::Bool,
         "Q_Address" => Ty::Address,
         "Q_Asset" => Ty::Asset,
-        "Q_Hash" => Ty::Hash,
+        "Q_Word64" => Ty::Word64,
         "Q_Name" => Ty::Name,
         "Time" => Ty::Time,
         "Q_Id" => Ty::Int,

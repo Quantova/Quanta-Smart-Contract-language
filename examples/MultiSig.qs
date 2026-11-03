@@ -17,13 +17,13 @@ contract MultiSig {
     guard payment.amount <= vault.amount;
     let out = vault.split(payment.amount);
     send(payment.to, out);
-    emit Executed(payment.to, payment.amount, approvals.digest);
+    emit Executed(payment.to, payment.amount, approvals.signer_bits);
   }
   entry arm_rotation(approvals: Quorum<4 of 5, signers>)
     writes(rotation_armed)
   {
     rotation_armed = now;
-    emit RotationArmed(approvals.digest);
+    emit RotationArmed(approvals.signer_bits);
   }
   entry rotate(new_signers: GuardianSet<5>, approvals: Quorum<4 of 5, signers>)
     writes(signers, rotation_armed)
@@ -32,9 +32,9 @@ contract MultiSig {
   {
     signers = new_signers;
     rotation_armed = 0;
-    emit Rotated(approvals.digest);
+    emit Rotated(approvals.signer_bits);
   }
-  event Executed(to: Q_Address, amount: u128, digest: Q_Hash);
-  event RotationArmed(digest: Q_Hash);
-  event Rotated(digest: Q_Hash);
+  event Executed(to: Q_Address, amount: u128, signer_bits: Q_Word64);
+  event RotationArmed(signer_bits: Q_Word64);
+  event Rotated(signer_bits: Q_Word64);
 }

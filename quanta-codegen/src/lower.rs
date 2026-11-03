@@ -90,7 +90,7 @@ const GENESIS_KEY: &str = "@genesis";
 const SIGNER_ADDR_SCRATCH: u64 = 40960;
 const NONCE_PREIMAGE_SCRATCH: u64 = 41088;
 const NONCE_DIGEST_SCRATCH: u64 = 41216;
-const QUORUM_DIGEST_SCRATCH: u64 = 41336;
+const QUORUM_SIGNERS_SCRATCH: u64 = 41336;
 const SCALAR_KEY_SCRATCH: u64 = 41344;
 const MAP_PREIMAGE_SCRATCH: u64 = 41408;
 const MAP_KEY_SCRATCH: u64 = 41472;
@@ -540,12 +540,12 @@ fn lower_call_value(
 
 const DECLARED_ORDER_WORD_TYPES: &[&str] = &[
     "bool", "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", "Q_Asset",
-    "Time", "Q_Hash", "Q_Id",
+    "Time", "Q_Word64", "Q_Id",
 ];
 
 const SCALAR_PARAM_TYPES: &[&str] = &[
     "bool", "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", ADDR_TYPE,
-    NAME_TYPE, "Q_Asset", "Quorum", "Q_Hash", "Q_Id", "Time",
+    NAME_TYPE, "Q_Asset", "Quorum", "Q_Word64", "Q_Id", "Time",
 ];
 
 fn lower_ident(ctx: &mut Ctx, name: &str, span: Span) -> Result<Reg, CodegenError> {
@@ -633,12 +633,12 @@ fn lower_field(ctx: &mut Ctx, base: &Expr, field: &str, span: Span) -> Result<Re
             let off = ctx.args.offset_of(&format!("{}{NAME_LEN_SUFFIX}", id.text));
             return load_arg(ctx, off, span);
         }
-        if field == "digest" && ctx.quorum_params.contains(&id.text) {
+        if field == "signer_bits" && ctx.quorum_params.contains(&id.text) {
             let out = ctx.regs.alloc(span)?;
             let ptr = ctx.regs.alloc(span)?;
             ctx.b.op(Instr::Ldi {
                 d: ptr,
-                imm: QUORUM_DIGEST_SCRATCH,
+                imm: QUORUM_SIGNERS_SCRATCH,
             });
             ctx.b.op(Instr::MLoad { d: out, a: ptr });
             ctx.regs.free(ptr);
@@ -2040,8 +2040,8 @@ pub fn lower_entry(
             if threshold > 8 || count > 255 {
                 return Err(CodegenError::Unsupported {
                     what: format!(
-                        "a quorum of {threshold} of {count}, whose approval digest cannot \
-                         name every signer in one word"
+                        "a quorum of {threshold} of {count}, whose approving signers cannot \
+                         all be named in one word"
                     ),
                     span: entry.span,
                 });
@@ -2159,12 +2159,12 @@ fn lower_quorum_prologue(
             )?;
             prev_index_off = Some(index_off);
         }
-        derive_quorum_digest(ctx, name, threshold, span)?;
+        derive_quorum_signers(ctx, name, threshold, span)?;
     }
     Ok(())
 }
 
-fn derive_quorum_digest(
+fn derive_quorum_signers(
     ctx: &mut Ctx,
     name: &str,
     threshold: u64,
@@ -2193,7 +2193,7 @@ fn derive_quorum_digest(
     let ptr = ctx.regs.alloc(span)?;
     ctx.b.op(Instr::Ldi {
         d: ptr,
-        imm: QUORUM_DIGEST_SCRATCH,
+        imm: QUORUM_SIGNERS_SCRATCH,
     });
     ctx.b.op(Instr::MStore { a: ptr, b: acc });
     ctx.regs.free(ptr);

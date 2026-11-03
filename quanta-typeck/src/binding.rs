@@ -39,11 +39,11 @@ impl<'a> Authorized<'a> {
             });
         }
         if self.quorum.contains(base) {
-            return (field != "digest").then(|| {
+            return (field != "signer_bits").then(|| {
                 TypeError::new(
                     format!(
                         "`{base}.{field}` is caller data the guardians never sign; a quorum \
-                         parameter exposes only `digest`"
+                         parameter exposes only `signer_bits`"
                     ),
                     span,
                 )

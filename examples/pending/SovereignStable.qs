@@ -23,7 +23,7 @@ contract SovereignStable {
   {
     issued_this_month += order.amount;
     send(order.treasury, mint(order.amount));
-    emit Issued(order.amount, approvals.digest);
+    emit Issued(order.amount, approvals.signer_bits);
   }
   entry transfer(funds: Q_Asset<QSGD>, to: Q_Address)
     conserves QSGD
@@ -38,27 +38,27 @@ contract SovereignStable {
   {
     issued_this_month = 0;
     month_reset = now;
-    emit MonthRolled(approvals.digest);
+    emit MonthRolled(approvals.signer_bits);
   }
   entry sanction(order: SanctionOrder, approvals: Quorum<3 of 5, issuance_board>)
     writes(sanctions)
     denies sanctions.contains(order.who)
   {
     sanctions.insert(order.who);
-    emit Sanctioned(order.who, approvals.digest);
+    emit Sanctioned(order.who, approvals.signer_bits);
   }
   entry unsanction(order: SanctionOrder, approvals: Quorum<3 of 5, issuance_board>)
     writes(sanctions)
     denies !sanctions.contains(order.who)
   {
     sanctions.remove(order.who);
-    emit Unsanctioned(order.who, approvals.digest);
+    emit Unsanctioned(order.who, approvals.signer_bits);
   }
   entry arm_board_rotation(approvals: Quorum<4 of 5, issuance_board>)
     writes(board_rotation_armed)
   {
     board_rotation_armed = now;
-    emit BoardRotationArmed(approvals.digest);
+    emit BoardRotationArmed(approvals.signer_bits);
   }
   entry rotate_board(new_set: GuardianSet<5>,
                      approvals: Quorum<4 of 5, issuance_board>)
@@ -68,12 +68,12 @@ contract SovereignStable {
   {
     issuance_board = new_set;
     board_rotation_armed = 0;
-    emit BoardRotated(approvals.digest);
+    emit BoardRotated(approvals.signer_bits);
   }
-  event Issued(amount: u128, digest: Q_Hash);
-  event BoardRotationArmed(digest: Q_Hash);
-  event BoardRotated(digest: Q_Hash);
-  event MonthRolled(digest: Q_Hash);
-  event Sanctioned(who: Q_Address, digest: Q_Hash);
-  event Unsanctioned(who: Q_Address, digest: Q_Hash);
+  event Issued(amount: u128, signer_bits: Q_Word64);
+  event BoardRotationArmed(signer_bits: Q_Word64);
+  event BoardRotated(signer_bits: Q_Word64);
+  event MonthRolled(signer_bits: Q_Word64);
+  event Sanctioned(who: Q_Address, signer_bits: Q_Word64);
+  event Unsanctioned(who: Q_Address, signer_bits: Q_Word64);
 }

@@ -22,14 +22,14 @@ contract IssuerToken {
   {
     total_supply += order.amount;
     balances.credit(order.to, mint(order.amount));
-    emit Minted(order.to, order.amount, approvals.digest);
+    emit Minted(order.to, order.amount, approvals.signer_bits);
   }
   entry burn(order: BurnOrder, approvals: Quorum<3 of 5, guardians>)
     writes(total_supply, balances)
   {
     balances.debit(order.holder, order.amount);
     total_supply -= order.amount;
-    emit Burned(order.amount, approvals.digest);
+    emit Burned(order.amount, approvals.signer_bits);
   }
   entry transfer(to: Q_Address, amount: u64)
     reads(paused, frozen)
@@ -46,13 +46,13 @@ contract IssuerToken {
     writes(frozen)
   {
     frozen.insert(target.who);
-    emit Frozen(target.who, approvals.digest);
+    emit Frozen(target.who, approvals.signer_bits);
   }
   entry unfreeze(target: FreezeOrder, approvals: Quorum<3 of 5, guardians>)
     writes(frozen)
   {
     frozen.remove(target.who);
-    emit Unfrozen(target.who, approvals.digest);
+    emit Unfrozen(target.who, approvals.signer_bits);
   }
   entry clawback(order: ClawbackOrder, approvals: Quorum<3 of 5, guardians>)
     reads(frozen)
@@ -67,20 +67,20 @@ contract IssuerToken {
     writes(paused)
   {
     paused = 1;
-    emit Paused(approvals.digest);
+    emit Paused(approvals.signer_bits);
   }
   entry unpause(approvals: Quorum<3 of 5, guardians>)
     writes(paused)
   {
     paused = 0;
-    emit Unpaused(approvals.digest);
+    emit Unpaused(approvals.signer_bits);
   }
-  event Minted(to: Q_Address, amount: u128, digest: Q_Hash);
-  event Burned(amount: u128, digest: Q_Hash);
+  event Minted(to: Q_Address, amount: u128, signer_bits: Q_Word64);
+  event Burned(amount: u128, signer_bits: Q_Word64);
   event Transferred(sender: Q_Address, to: Q_Address, amount: u128);
-  event Frozen(who: Q_Address, digest: Q_Hash);
-  event Unfrozen(who: Q_Address, digest: Q_Hash);
-  event ClawedBack(holder: Q_Address, recovery: Q_Address, amount: u128, evidence: Q_Hash);
-  event Paused(digest: Q_Hash);
-  event Unpaused(digest: Q_Hash);
+  event Frozen(who: Q_Address, signer_bits: Q_Word64);
+  event Unfrozen(who: Q_Address, signer_bits: Q_Word64);
+  event ClawedBack(holder: Q_Address, recovery: Q_Address, amount: u128, evidence: Q_Word64);
+  event Paused(signer_bits: Q_Word64);
+  event Unpaused(signer_bits: Q_Word64);
 }

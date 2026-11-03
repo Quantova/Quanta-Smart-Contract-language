@@ -17,20 +17,20 @@ contract Custody {
     guard vault.amount >= order.amount;
     let out = vault.split(order.amount);
     send(order.to, out);
-    emit Disbursed(order.to, order.amount, approvals.digest);
+    emit Disbursed(order.to, order.amount, approvals.signer_bits);
   }
   entry freeze(order: FreezeOrder, approvals: Quorum<3 of 7, guardians>)
     writes(frozen, unfreeze_armed)
   {
     frozen = 1;
     unfreeze_armed = 0;
-    emit Frozen(approvals.digest);
+    emit Frozen(approvals.signer_bits);
   }
   entry arm_unfreeze(approvals: Quorum<5 of 7, guardians>)
     writes(unfreeze_armed)
   {
     unfreeze_armed = now;
-    emit UnfreezeArmed(approvals.digest);
+    emit UnfreezeArmed(approvals.signer_bits);
   }
   entry unfreeze(approvals: Quorum<5 of 7, guardians>)
     writes(frozen, unfreeze_armed)
@@ -39,10 +39,10 @@ contract Custody {
   {
     frozen = 0;
     unfreeze_armed = 0;
-    emit Unfrozen(approvals.digest);
+    emit Unfrozen(approvals.signer_bits);
   }
-  event Disbursed(to: Q_Address, amount: u128, digest: Q_Hash);
-  event Frozen(digest: Q_Hash);
-  event UnfreezeArmed(digest: Q_Hash);
-  event Unfrozen(digest: Q_Hash);
+  event Disbursed(to: Q_Address, amount: u128, signer_bits: Q_Word64);
+  event Frozen(signer_bits: Q_Word64);
+  event UnfreezeArmed(signer_bits: Q_Word64);
+  event Unfrozen(signer_bits: Q_Word64);
 }

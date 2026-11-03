@@ -41,12 +41,12 @@ fn any_other_quorum_pseudo_field_anchor_is_rejected() {
     let src = "contract C {\n\
       state { board: GuardianSet<3>; flag: u64; }\n\
       entry act(approvals: Quorum<2 of 3, board>) writes(flag)\n\
-        after 24 hours from approvals.digest { flag = 1; }\n\
+        after 24 hours from approvals.signer_bits { flag = 1; }\n\
     }\n";
     let what = rejection(src);
     assert!(
-        what.contains("approvals.digest"),
-        "the digest pseudo field is rejected too: {what}"
+        what.contains("approvals.signer_bits"),
+        "the signer_bits pseudo field is rejected too: {what}"
     );
 }
 
@@ -138,8 +138,8 @@ fn a_quorum_digest_in_an_event_still_compiles() {
     let src = "contract C {\n\
       state { board: GuardianSet<3>; flag: u64; }\n\
       entry act(approvals: Quorum<2 of 3, board>) writes(flag)\n\
-        { flag = 1; emit Acted(approvals.digest); }\n\
-      event Acted(digest: Q_Hash);\n\
+        { flag = 1; emit Acted(approvals.signer_bits); }\n\
+      event Acted(signer_bits: Q_Word64);\n\
     }\n";
     try_compile(src).expect("logging the quorum digest in an event is not a gate and compiles");
 }
