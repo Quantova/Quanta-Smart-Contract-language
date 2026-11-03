@@ -2665,6 +2665,66 @@ fn inflow_only_totals(model: &Model) -> HashSet<String> {
     candidate
 }
 
+fn is_zero_literal(e: &Expr) -> bool {
+    matches!(e.peel(), Expr::Int(i)
+        if i.text.trim_start_matches('_').chars().all(|c| c == '0' || c == '_'))
+}
+
+fn entry_consumes_entitlement(entry: &EntryDecl, map: &str, key: &Expr) -> bool {
+    let mut consumed = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if m.text == map
+                            && args.first().is_some_and(|k| expr_eq(k.peel(), key.peel()))
+                        {
+                            let zeroed =
+                                name.text == "set" && args.get(1).is_some_and(is_zero_literal);
+                            if name.text == "remove" || name.text == "debit" || zeroed {
+                                consumed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    consumed
+}
+
+fn entitlement_map_is_authority_written(model: &Model, map: &str) -> bool {
+    let signed: HashSet<&str> = HashSet::new();
+    for entry in &model.entries {
+        let mut creates = false;
+        for stmt in &entry.body {
+            stmt_exprs(stmt, &mut |e| {
+                if let Expr::Call { callee, args, .. } = e {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if let Expr::Ident(m) = base.as_ref() {
+                            if m.text == map {
+                                let zeroing =
+                                    name.text == "set" && args.get(1).is_some_and(is_zero_literal);
+                                if (matches!(name.text.as_str(), "insert" | "credit")
+                                    || name.text == "set")
+                                    && !zeroing
+                                {
+                                    creates = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        if creates && !entry_binds_caller(model, entry, &signed) {
+            return false;
+        }
+    }
+    true
+}
+
 fn credits_drawn_from_an_inflow_only_total(model: &Model, entry: &EntryDecl) -> bool {
     let totals = inflow_only_totals(model);
     if totals.is_empty() {
@@ -2704,9 +2764,64 @@ fn credits_drawn_from_an_inflow_only_total(model: &Model, entry: &EntryDecl) -> 
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
                     if matches!(base.as_ref(), Expr::Ident(_))
                         && matches!(name.text.as_str(), "credit" | "set" | "insert")
+                        && !(name.text == "set" && args.get(1).is_some_and(is_zero_literal))
                     {
                         saw = true;
                         let consumed = args.get(1).is_some_and(|v| {
+                            let (map, key) = match v.peel() {
+                                Expr::Call {
+                                    callee,
+                                    args: getargs,
+                                    ..
+                                } => match callee.as_ref() {
+                                    Expr::Field { base, name, .. } if name.text == "get" => {
+                                        match (base.as_ref(), getargs.first()) {
+                                            (Expr::Ident(m), Some(k))
+                                                if model.state.contains_key(m.text.as_str()) =>
+                                            {
+                                                (m.text.as_str(), k)
+                                            }
+                                            _ => return false,
+                                        }
+                                    }
+                                    _ => return false,
+                                },
+                                _ => return false,
+                            };
+                            if !entitlement_map_is_authority_written(model, map) {
+                                return false;
+                            }
+                            let recipient_bound_to_key = args.first().is_some_and(|r| {
+                                if expr_eq(r.peel(), key.peel()) {
+                                    return true;
+                                }
+                                if let Expr::Call {
+                                    callee,
+                                    args: rargs,
+                                    ..
+                                } = r.peel()
+                                {
+                                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                                        if name.text == "get" {
+                                            if let Expr::Ident(rmap) = base.as_ref() {
+                                                return rargs.first().is_some_and(|rk| {
+                                                    expr_eq(rk.peel(), key.peel())
+                                                }) && entitlement_map_is_authority_written(
+                                                    model,
+                                                    rmap.text.as_str(),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                                false
+                            });
+                            if !recipient_bound_to_key {
+                                return false;
+                            }
+                            if !entry_consumes_entitlement(entry, map, key) {
+                                return false;
+                            }
                             match drawn.iter().position(|d| expr_eq(d, v)) {
                                 Some(pos) => {
                                     drawn.remove(pos);
