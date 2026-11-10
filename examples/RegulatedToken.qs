@@ -41,6 +41,7 @@ contract RegulatedToken {
     writes(total_supply, balances)
   {
     balances.debit(order.holder, order.amount);
+    guard total_supply >= order.amount;
     total_supply -= order.amount;
     emit Burned(order.holder, order.amount);
   }

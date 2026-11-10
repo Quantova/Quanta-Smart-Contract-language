@@ -49,7 +49,7 @@ const ADD: &str = "contract W { state { total: u128; cap: u128; } genesis { tota
      { guard total <= cap; total += amount; } }";
 
 const SUB: &str = "contract W { state { total: u128; } genesis { total = 0; } \
-     entry take(amount: u64) writes(total) { total -= amount; } }";
+     entry take(amount: u64) writes(total) { guard total >= amount; total -= amount; } }";
 
 const LIT: &str = "contract W { state { total: u128; } genesis { total = 0; } \
      entry set() writes(total) { total = 20_000_000_000_000_000_000; } }";

@@ -28,6 +28,7 @@ contract IssuerToken {
     writes(total_supply, balances)
   {
     balances.debit(order.holder, order.amount);
+    guard total_supply >= order.amount;
     total_supply -= order.amount;
     emit Burned(order.amount, approvals.signer_bits);
   }

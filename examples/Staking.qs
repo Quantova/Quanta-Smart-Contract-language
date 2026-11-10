@@ -27,6 +27,7 @@ contract Staking {
   {
     guard order.amount > 0;
     stakes.debit(caller, order.amount);
+    guard total_staked >= order.amount;
     total_staked -= order.amount;
     let out = pool.split(order.amount);
     send(caller, out);

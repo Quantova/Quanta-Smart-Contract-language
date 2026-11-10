@@ -35,6 +35,7 @@ contract Token {
   {
     guard amount > 0;
     balances.debit(caller, amount);
+    guard total_supply >= amount;
     total_supply -= amount;
     emit Burned(caller, amount);
   }

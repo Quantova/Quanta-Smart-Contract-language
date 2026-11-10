@@ -378,6 +378,7 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         asset_calls_consumed(stmt)?;
     }
     check_arithmetic(entry, &env.params)?;
+    check_underflow(entry, &env.params)?;
     Ok(())
 }
 
@@ -1158,6 +1159,109 @@ fn check_arithmetic(entry: &EntryDecl, params: &HashMap<&str, Ty>) -> Result<(),
         ));
     }
     Ok(())
+}
+
+fn check_underflow(entry: &EntryDecl, params: &HashMap<&str, Ty>) -> Result<(), TypeError> {
+    let asset_params: Vec<&str> = entry
+        .params
+        .iter()
+        .filter(|p| is_asset_param(p))
+        .map(|p| p.name.text.as_str())
+        .collect();
+
+    for stmt in &entry.body {
+        if let Stmt::Assign { value, .. } = stmt {
+            if acknowledged(value) {
+                continue;
+            }
+        }
+        let (target, subtrahend, span): (&Expr, &Expr, &quanta_lexer::Span) = match stmt {
+            Stmt::Assign {
+                target,
+                op: AssignOp::Sub,
+                value,
+                span,
+            } => (target, value, span),
+            Stmt::Assign {
+                target,
+                op: AssignOp::Set,
+                value:
+                    Expr::Binary {
+                        op: BinOp::Sub,
+                        left,
+                        right,
+                        ..
+                    },
+                span,
+            } if same_target(target, left) => (target, right, span),
+            _ => continue,
+        };
+        let name = match target {
+            Expr::Ident(id) => id.text.as_str(),
+            _ => continue,
+        };
+        if params.get(name).is_some() {
+            continue;
+        }
+        if bounded_addend(subtrahend, &asset_params) {
+            continue;
+        }
+        if guarded_below(entry, name, subtrahend) {
+            continue;
+        }
+        return Err(TypeError::new(
+            format!(
+                "unchecked underflow: `{name}` shrinks by unbounded input with no guard; \
+                 add a guard or make wrapping explicit"
+            ),
+            *span,
+        ));
+    }
+    Ok(())
+}
+
+fn guarded_below(entry: &EntryDecl, field: &str, subtrahend: &Expr) -> bool {
+    let in_body = entry.body.iter().any(|stmt| match stmt {
+        Stmt::Guard { expr, .. } => bounds_below(expr, field, subtrahend),
+        _ => false,
+    });
+    if in_body {
+        return true;
+    }
+    entry.clauses.iter().any(|c| match c {
+        Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => {
+            bounds_below(expr, field, subtrahend)
+        }
+        _ => false,
+    })
+}
+
+fn bounds_below(expr: &Expr, field: &str, subtrahend: &Expr) -> bool {
+    match expr {
+        Expr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+            ..
+        } => bounds_below(left, field, subtrahend) || bounds_below(right, field, subtrahend),
+        Expr::Binary {
+            op: BinOp::Ge | BinOp::Gt,
+            left,
+            right,
+            ..
+        } => ident_is(left, field) && crate::signature::expr_eq(right, subtrahend),
+        Expr::Binary {
+            op: BinOp::Le | BinOp::Lt,
+            left,
+            right,
+            ..
+        } => crate::signature::expr_eq(left, subtrahend) && ident_is(right, field),
+        _ => false,
+    }
+}
+
+fn ident_is(expr: &Expr, field: &str) -> bool {
+    matches!(expr, Expr::Ident(id) if id.text == field)
 }
 
 fn acknowledged(value: &Expr) -> bool {
