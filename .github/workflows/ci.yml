@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   ci:
-    uses: Quantova/Quantova-Ci/.github/workflows/rust-ci.yml@709cc10c8c0407357a0a3fa2a2922312e71df0ea
+    uses: Quantova/Quantova-Ci/.github/workflows/rust-ci.yml@6b0c725cd35d1b28361a637d8e752719de125e28
     with:
       deny-unsafe-code: true
       deny-float-arithmetic: true
