@@ -3712,6 +3712,25 @@ fn split_arg(expr: &Expr) -> Option<&Expr> {
 }
 
 fn native_payout_backed_by_custom_ledger(model: &Model, entry: &EntryDecl) -> bool {
+    let mut aliases: HashMap<String, Expr> = HashMap::new();
+    for stmt in &entry.body {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                let resolved = resolve_locals(value, &aliases, 0);
+                aliases.insert(name.text.clone(), resolved);
+            }
+            Stmt::Assign {
+                target: Expr::Ident(id),
+                op: AssignOp::Set,
+                value,
+                ..
+            } => {
+                let resolved = resolve_locals(value, &aliases, 0);
+                aliases.insert(id.text.clone(), resolved);
+            }
+            _ => {}
+        }
+    }
     let mut custom_amounts: Vec<Expr> = Vec::new();
     for stmt in &entry.body {
         stmt_exprs(stmt, &mut |e| {
@@ -3721,7 +3740,8 @@ fn native_payout_backed_by_custom_ledger(model: &Model, entry: &EntryDecl) -> bo
                         if let Expr::Ident(map) = base.as_ref() {
                             if !ledger_funding_tokens(model, map.text.as_str()).is_empty() {
                                 if let Some(amt) = args.get(1) {
-                                    custom_amounts.push(amt.clone());
+                                    let resolved = resolve_locals(amt, &aliases, 0);
+                                    custom_amounts.push(strip_value_noops(&resolved).clone());
                                 }
                             }
                         }
@@ -3733,13 +3753,8 @@ fn native_payout_backed_by_custom_ledger(model: &Model, entry: &EntryDecl) -> bo
     if custom_amounts.is_empty() {
         return false;
     }
-    let mut lets: HashMap<String, Expr> = HashMap::new();
     let mut hit = false;
     for stmt in &entry.body {
-        if let Stmt::Let { name, value, .. } = stmt {
-            let resolved = resolve_locals(value, &lets, 0);
-            lets.insert(name.text.clone(), resolved);
-        }
         stmt_exprs(stmt, &mut |e| {
             if hit {
                 return;
@@ -3747,9 +3762,14 @@ fn native_payout_backed_by_custom_ledger(model: &Model, entry: &EntryDecl) -> bo
             if let Expr::Call { callee, args, .. } = e {
                 if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") {
                     if let Some(val) = args.get(1) {
-                        let resolved = resolve_locals(val, &lets, 0);
-                        if let Some(amt) = split_arg(&resolved) {
-                            if custom_amounts.iter().any(|d| expr_eq(d, amt)) {
+                        let resolved_val = resolve_locals(val, &aliases, 0);
+                        if let Some(amt) = split_arg(&resolved_val) {
+                            let resolved_amt = resolve_locals(amt, &aliases, 0);
+                            let amt = strip_value_noops(&resolved_amt);
+                            if custom_amounts
+                                .iter()
+                                .any(|d| expr_eq(strip_value_noops(d), amt))
+                            {
                                 hit = true;
                             }
                         }
@@ -6121,13 +6141,32 @@ fn folds_to_zero(expr: &Expr) -> bool {
             left,
             right,
             ..
-        } => expr_eq(left.peel(), right.peel()) || (folds_to_zero(left) && folds_to_zero(right)),
+        } => {
+            if expr_eq(left.peel(), right.peel()) || (folds_to_zero(left) && folds_to_zero(right)) {
+                return true;
+            }
+            if let Expr::Binary {
+                op: BinOp::Add,
+                left: a,
+                right: b,
+                ..
+            } = left.peel()
+            {
+                if expr_eq(b.peel(), right.peel()) {
+                    return folds_to_zero(a);
+                }
+                if expr_eq(a.peel(), right.peel()) {
+                    return folds_to_zero(b);
+                }
+            }
+            false
+        }
         Expr::Binary {
             op: BinOp::Rem,
             left,
             right,
             ..
-        } => expr_eq(left.peel(), right.peel()),
+        } => expr_eq(left.peel(), right.peel()) || folds_to_zero(left),
         Expr::Binary {
             op: BinOp::Mul,
             left,
@@ -6148,6 +6187,77 @@ fn folds_to_zero(expr: &Expr) -> bool {
         Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => folds_to_zero(expr),
         _ => false,
     }
+}
+
+fn is_one_literal(e: &Expr) -> bool {
+    matches!(e.peel(), Expr::Int(n) if n.text.replace('_', "").parse::<u128>() == Ok(1))
+}
+
+fn is_big_u64_literal(e: &Expr) -> bool {
+    matches!(e.peel(), Expr::Int(n) if n.text.replace('_', "").parse::<u128>().is_ok_and(|v| v >= u64::MAX as u128))
+}
+
+fn strip_value_noops(e: &Expr) -> &Expr {
+    let e = e.peel();
+    if let Expr::Binary {
+        op, left, right, ..
+    } = e
+    {
+        match op {
+            BinOp::Add => {
+                if folds_to_zero(right) {
+                    return strip_value_noops(left);
+                }
+                if folds_to_zero(left) {
+                    return strip_value_noops(right);
+                }
+            }
+            BinOp::Sub => {
+                if folds_to_zero(right) {
+                    return strip_value_noops(left);
+                }
+                if let Expr::Binary {
+                    op: BinOp::Add,
+                    left: a,
+                    right: b,
+                    ..
+                } = left.peel()
+                {
+                    if expr_eq(strip_value_noops(b), strip_value_noops(right)) {
+                        return strip_value_noops(a);
+                    }
+                    if expr_eq(strip_value_noops(a), strip_value_noops(right)) {
+                        return strip_value_noops(b);
+                    }
+                }
+            }
+            BinOp::Mul => {
+                if is_one_literal(right) {
+                    return strip_value_noops(left);
+                }
+                if is_one_literal(left) {
+                    return strip_value_noops(right);
+                }
+            }
+            BinOp::Div => {
+                if is_one_literal(right) {
+                    return strip_value_noops(left);
+                }
+            }
+            BinOp::Shr => {
+                if folds_to_zero(right) {
+                    return strip_value_noops(left);
+                }
+            }
+            BinOp::Rem => {
+                if is_big_u64_literal(right) {
+                    return strip_value_noops(left);
+                }
+            }
+            _ => {}
+        }
+    }
+    e
 }
 
 fn caller_membership_present(model: &Model, expr: &Expr) -> bool {
