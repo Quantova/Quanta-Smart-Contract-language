@@ -318,6 +318,29 @@ fn mentions_now(expr: &Expr) -> bool {
     }
 }
 
+fn mentions_now_local<'a>(
+    expr: &'a Expr,
+    locals: &HashMap<&'a str, &'a Expr>,
+    depth: usize,
+) -> bool {
+    if depth > MAX_LOCAL_DEPTH {
+        return false;
+    }
+    match expr {
+        Expr::Now { .. } => true,
+        Expr::Ident(id) => locals
+            .get(id.text.as_str())
+            .is_some_and(|e| mentions_now_local(e, locals, depth + 1)),
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            mentions_now_local(expr, locals, depth)
+        }
+        Expr::Binary { left, right, .. } => {
+            mentions_now_local(left, locals, depth) || mentions_now_local(right, locals, depth)
+        }
+        _ => false,
+    }
+}
+
 fn time_compared_fields<'a>(
     model: &Model,
     params: &HashSet<&str>,
@@ -331,7 +354,7 @@ fn time_compared_fields<'a>(
         } => {
             if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge) {
                 for (side, other) in [(left, right), (right, left)] {
-                    if mentions_now(side) {
+                    if mentions_now_local(side, locals, 0) {
                         let mut reads: Vec<&Expr> = Vec::new();
                         collect_anchor_reads(model, params, locals, other, &mut reads, 0);
                         collect_anchor_reads(model, params, locals, side, &mut reads, 0);
@@ -363,7 +386,8 @@ fn is_time_or_constant(value: &Expr) -> bool {
             right,
             ..
         } => {
-            matches!(left.as_ref(), Expr::Now { .. }) || matches!(right.as_ref(), Expr::Now { .. })
+            (matches!(left.as_ref(), Expr::Now { .. }) && constant_only(right))
+                || (matches!(right.as_ref(), Expr::Now { .. }) && constant_only(left))
         }
         _ => false,
     }
@@ -372,6 +396,9 @@ fn is_time_or_constant(value: &Expr) -> bool {
 fn writes_other_than_time(model: &Model, field: &str) -> bool {
     let mut other = false;
     for entry in &model.entries {
+        if crate::signature::entry_has_write_authority(model, entry) {
+            continue;
+        }
         for stmt in &entry.body {
             match stmt {
                 Stmt::Assign {

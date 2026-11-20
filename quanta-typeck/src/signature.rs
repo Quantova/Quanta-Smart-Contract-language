@@ -144,6 +144,17 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if entry_moves_asset(entry) && !every_caller_asset_payout_is_token_sourced(model, entry) {
         return Err(no_asset_authority_error(entry));
     }
+    if pays_unconsumed_entitlement(model, entry) {
+        return Err(TypeError::new(
+            format!(
+                "this entry `{}` pays out an amount read from a caller's authority-written \
+                 entitlement without consuming it, so the same grant can be redeemed again; \
+                 debit, remove or zero the entitlement row it pays from in this entry",
+                entry.name.text
+            ),
+            entry.name.span,
+        ));
+    }
     Ok(())
 }
 
@@ -450,8 +461,10 @@ fn caller_asset_payout_tokens(entry: &EntryDecl) -> Vec<String> {
                 if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send_asset")
                     && matches!(args.get(1), Some(Expr::Caller { .. }))
                 {
-                    if let Some(Expr::Ident(t)) = args.first().map(Expr::peel) {
-                        out.push(t.text.clone());
+                    match args.first().map(Expr::peel) {
+                        Some(Expr::Ident(t)) => out.push(t.text.clone()),
+                        Some(_) => out.push("\u{0}unresolved_issuer".to_string()),
+                        None => {}
                     }
                 }
             }
@@ -1558,6 +1571,26 @@ fn literal_at_least_one(e: &Expr) -> bool {
     }
 }
 
+pub(crate) fn entry_has_write_authority(model: &Model, entry: &EntryDecl) -> bool {
+    let signed: HashSet<&str> = entry
+        .params
+        .iter()
+        .filter(|p| p.signed_by.is_some())
+        .map(|p| p.name.text.as_str())
+        .collect();
+    if !signed.is_empty() || entry.params.iter().any(is_quorum_param) {
+        return true;
+    }
+    if entry_binds_caller(model, entry, &signed) {
+        return true;
+    }
+    entry
+        .params
+        .iter()
+        .filter(|p| crate::model::is_asset_param(p))
+        .any(|p| entry_requires_a_positive_amount(entry, p.name.text.as_str()))
+}
+
 fn anchor_writable_without_authority(model: &Model, field: &str) -> bool {
     for entry in &model.entries {
         if !entry_writes_field(entry, field) {
@@ -1710,13 +1743,29 @@ fn entry_requires_a_positive_amount(entry: &EntryDecl, param: &str) -> bool {
             exprs.push(expr);
         }
     }
-    let real_bound = |b: &Expr| match b {
+    let caller_chosen: HashSet<&str> = entry
+        .params
+        .iter()
+        .filter(|p| {
+            p.signed_by.is_none() && !crate::model::is_asset_param(p) && !is_quorum_param(p)
+        })
+        .map(|p| p.name.text.as_str())
+        .collect();
+    let mut floor_lets: HashMap<String, Expr> = HashMap::new();
+    for stmt in &entry.body {
+        if let Stmt::Let { name, value, .. } = stmt {
+            let resolved = resolve_locals(value, &floor_lets, 0);
+            floor_lets.insert(name.text.clone(), resolved);
+        }
+    }
+    let real_bound = |b: &Expr| match resolve_locals(b, &floor_lets, 0).peel() {
         Expr::Int(n) => n
             .text
             .replace('_', "")
             .parse::<u128>()
             .map(|v| v >= 1)
             .unwrap_or(false),
+        Expr::Ident(id) => !caller_chosen.contains(id.text.as_str()),
         _ => true,
     };
     let mut conjuncts: Vec<&Expr> = Vec::new();
@@ -2176,6 +2225,42 @@ fn writing_your_own_row_only_spends_your_own(model: &Model, field: &str) -> bool
     saw_a_spender && all_backed
 }
 
+fn entry_spends_its_own_row(entry: &EntryDecl, field: &str) -> bool {
+    let mut saw = false;
+    let mut all_backed = true;
+    let mut guards: Vec<&Expr> = Vec::new();
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => guards.push(expr),
+            _ => {}
+        }
+    }
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            guards.push(expr);
+        }
+    }
+    for g in guards.iter().flat_map(|g| firm_conjuncts(g)) {
+        walk(g, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if m.text == field && name.text == "get" {
+                            if let Some(k) = args.first() {
+                                saw = true;
+                                if !entry_debits_another_map_under(entry, field, k) {
+                                    all_backed = false;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    saw && all_backed
+}
+
 fn entry_debits_another_map_under(entry: &EntryDecl, field: &str, key: &Expr) -> bool {
     let mut backed = false;
     for stmt in &entry.body {
@@ -2186,6 +2271,7 @@ fn entry_debits_another_map_under(entry: &EntryDecl, field: &str, key: &Expr) ->
                         if m.text != field
                             && name.text == "debit"
                             && args.first().is_some_and(|k| expr_eq(k, key))
+                            && args.get(1).is_some_and(|amt| !folds_to_zero(amt))
                         {
                             backed = true;
                         }
@@ -2692,6 +2778,64 @@ fn entry_consumes_entitlement(entry: &EntryDecl, map: &str, key: &Expr) -> bool 
         });
     }
     consumed
+}
+
+fn pays_unconsumed_entitlement(model: &Model, entry: &EntryDecl) -> bool {
+    let mut lets: HashMap<String, Expr> = HashMap::new();
+    let mut amounts: Vec<Expr> = Vec::new();
+    for stmt in &entry.body {
+        if let Stmt::Let { name, value, .. } = stmt {
+            let resolved = resolve_locals(value, &lets, 0);
+            lets.insert(name.text.clone(), resolved);
+        }
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                match callee.as_ref() {
+                    Expr::Field { name, .. } if name.text == "split" => {
+                        if let Some(a) = args.first() {
+                            amounts.push(resolve_locals(a, &lets, 0));
+                        }
+                    }
+                    Expr::Ident(id) if id.text == "send_asset" || id.text == "send" => {
+                        let idx = if id.text == "send_asset" { 2 } else { 1 };
+                        if let Some(a) = args.get(idx) {
+                            amounts.push(resolve_locals(a, &lets, 0));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+    for amt in &amounts {
+        let mut unconsumed = false;
+        walk(amt, &mut |e| {
+            if unconsumed {
+                return;
+            }
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if name.text == "get" {
+                        if let Expr::Ident(m) = base.as_ref() {
+                            if let Some(k) = args.first() {
+                                if model.state.contains_key(m.text.as_str())
+                                    && is_addr_keyed(model, m.text.as_str())
+                                    && is_caller(k)
+                                    && !entry_consumes_entitlement(entry, m.text.as_str(), k)
+                                {
+                                    unconsumed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        if unconsumed {
+            return true;
+        }
+    }
+    false
 }
 
 fn entitlement_map_is_authority_written(model: &Model, map: &str) -> bool {
@@ -4364,7 +4508,7 @@ fn entry_value_move(model: &Model, entry: &EntryDecl, ledger_only: bool) -> bool
                                         writing_your_own_row_only_spends_your_own(
                                             model,
                                             map.text.as_str(),
-                                        );
+                                        ) && entry_spends_its_own_row(entry, map.text.as_str());
                                     if !decrement
                                         && !backed
                                         && !approves_own_holdings
@@ -4961,7 +5105,7 @@ fn caller_binding_rests_on_first_come_slots(model: &Model, entry: &EntryDecl) ->
         binding += 1;
         let mut names_first_come = false;
         walk(expr, &mut |e| {
-            if let Some(map) = map_value_addr(model, e) {
+            if let Some(map) = map_value_addr(model, e).or_else(|| membership_map(model, e)) {
                 if map_slots_are_first_come(model, map) {
                     names_first_come = true;
                 }
@@ -4997,6 +5141,37 @@ fn is_caller_membership(model: &Model, expr: &Expr) -> bool {
     membership_map(model, expr).is_some()
 }
 
+fn folds_to_zero(expr: &Expr) -> bool {
+    match expr.peel() {
+        Expr::Int(n) => n.text.replace('_', "").trim_start_matches('0').is_empty(),
+        Expr::Binary {
+            op: BinOp::Sub,
+            left,
+            right,
+            ..
+        } => expr_eq(left.peel(), right.peel()) || (folds_to_zero(left) && folds_to_zero(right)),
+        Expr::Binary {
+            op: BinOp::Rem,
+            left,
+            right,
+            ..
+        } => expr_eq(left.peel(), right.peel()),
+        Expr::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+            ..
+        } => folds_to_zero(left) || folds_to_zero(right),
+        Expr::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        } => folds_to_zero(left) && folds_to_zero(right),
+        _ => false,
+    }
+}
+
 fn caller_membership_present(model: &Model, expr: &Expr) -> bool {
     let Expr::Binary {
         op, left, right, ..
@@ -5018,7 +5193,9 @@ fn caller_membership_present(model: &Model, expr: &Expr) -> bool {
             || threshold_is_provably_positive(model, threshold)
             || threshold_is_guarded_positive(model, threshold));
     match (op, lookup_left) {
-        (BinOp::Ge, true) | (BinOp::Le, false) => is_positive_int(threshold) || bound,
+        (BinOp::Ge, true) | (BinOp::Le, false) => {
+            !folds_to_zero(threshold) && (is_positive_int(threshold) || bound)
+        }
         (BinOp::Gt, true) | (BinOp::Lt, false) => is_nonnegative_int(threshold) || bound,
         (BinOp::Ne, _) => is_zero_int(threshold),
         (BinOp::Eq, _) => is_positive_int(threshold),
@@ -5169,11 +5346,13 @@ fn caller_chosen_thresholds(model: &Model) -> HashSet<Span> {
                             && matches!(args.first(), Some(Expr::Caller { .. }))
                         {
                             if let Some(amount) = args.get(1) {
-                                walk(amount, &mut |x| {
-                                    if let Expr::Ident(id) = x {
-                                        spent.insert(id.text.clone());
-                                    }
-                                });
+                                if !folds_to_zero(amount) {
+                                    walk(amount, &mut |x| {
+                                        if let Expr::Ident(id) = x {
+                                            spent.insert(id.text.clone());
+                                        }
+                                    });
+                                }
                             }
                         }
                     }

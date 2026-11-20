@@ -1058,8 +1058,10 @@ fn is_wide_expr(ctx: &Ctx, expr: &Expr) -> bool {
         Expr::Binary {
             op, left, right, ..
         } => {
-            matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul)
-                && (is_wide_expr(ctx, left) || is_wide_expr(ctx, right))
+            matches!(
+                op,
+                BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem
+            ) && (is_wide_expr(ctx, left) || is_wide_expr(ctx, right))
         }
         _ => false,
     }
@@ -4185,8 +4187,13 @@ fn address_keys_expr(
                 }
             }
         }
-        if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") {
-            if let Some(to) = args.first() {
+        if let Expr::Ident(id) = callee.as_ref() {
+            let recipient = match id.text.as_str() {
+                "send" | "mint_asset" => args.first(),
+                "send_asset" => args.get(1),
+                _ => None,
+            };
+            if let Some(to) = recipient {
                 push_addr_key(to, params, out);
             }
         }
