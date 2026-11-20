@@ -147,6 +147,9 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if backing_amount_rewritten_before_payout(model, entry) {
         return Err(no_ledger_authority_error(entry));
     }
+    if payout_issuer_rewritten_before_send(model, entry) {
+        return Err(no_asset_authority_error(entry));
+    }
     if pays_unconsumed_entitlement(model, entry) {
         return Err(TypeError::new(
             format!(
@@ -3897,6 +3900,40 @@ fn backing_amount_rewritten_before_payout(model: &Model, entry: &EntryDecl) -> b
     false
 }
 
+fn payout_issuer_rewritten_before_send(model: &Model, entry: &EntryDecl) -> bool {
+    let mut sends: Vec<(usize, String)> = Vec::new();
+    for (idx, stmt) in entry.body.iter().enumerate() {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send_asset") {
+                    if let Some(Expr::Ident(issuer)) = args.first() {
+                        if model.state.contains_key(issuer.text.as_str()) {
+                            sends.push((idx, issuer.text.clone()));
+                        }
+                    }
+                }
+            }
+        });
+    }
+    for (sidx, issuer) in &sends {
+        for (i, stmt) in entry.body.iter().enumerate() {
+            if i >= *sidx {
+                break;
+            }
+            if let Stmt::Assign {
+                target: Expr::Ident(t),
+                ..
+            } = stmt
+            {
+                if t.text == *issuer {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn native_payout_backed_by_custom_ledger(model: &Model, entry: &EntryDecl) -> bool {
     let mut aliases: HashMap<String, Expr> = HashMap::new();
     for stmt in &entry.body {
@@ -3954,7 +3991,7 @@ fn native_payout_backed_by_custom_ledger(model: &Model, entry: &EntryDecl) -> bo
                             let amt = strip_value_noops(&resolved_amt);
                             if custom_amounts
                                 .iter()
-                                .any(|d| expr_eq(strip_value_noops(d), amt))
+                                .any(|d| bounded_by_backing(amt, d, false))
                             {
                                 hit = true;
                             }
@@ -4797,6 +4834,7 @@ fn writer_authorized(model: &Model, entry: &EntryDecl, prot: &mut Prot) -> (bool
         }
     }
     let mut assigned_before: HashSet<&str> = HashSet::new();
+    let mut lets: HashMap<String, Expr> = HashMap::new();
     for stmt in &entry.body {
         match stmt {
             Stmt::Guard { expr, .. } => {
@@ -4807,9 +4845,30 @@ fn writer_authorized(model: &Model, entry: &EntryDecl, prot: &mut Prot) -> (bool
                     }
                 }
             }
+            Stmt::Let { name, value, .. } => {
+                let resolved = resolve_locals(value, &lets, 0);
+                lets.insert(name.text.clone(), resolved);
+            }
             Stmt::Assign { target, .. } => {
                 if let Some(f) = root_ident(target) {
                     assigned_before.insert(f);
+                }
+            }
+            Stmt::Expr {
+                expr: Expr::Call { callee, args, .. },
+                ..
+            } => {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if matches!(name.text.as_str(), "set" | "credit" | "insert") {
+                        if let Expr::Ident(m) = base.as_ref() {
+                            let row_holds_protected_field = args.get(1).is_some_and(|v| {
+                                matches!(resolve_locals(v, &lets, 0), Expr::Ident(id) if model.state.contains_key(id.text.as_str()))
+                            });
+                            if !row_holds_protected_field {
+                                assigned_before.insert(m.text.as_str());
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
@@ -6320,6 +6379,9 @@ fn is_caller_membership(model: &Model, expr: &Expr) -> bool {
 }
 
 fn folds_to_zero(expr: &Expr) -> bool {
+    if const_eval(expr) == Some(0) {
+        return true;
+    }
     match expr.peel() {
         Expr::Int(n) => n.text.replace('_', "").trim_start_matches('0').is_empty(),
         Expr::Binary {
@@ -6375,12 +6437,35 @@ fn folds_to_zero(expr: &Expr) -> bool {
     }
 }
 
+fn const_eval(expr: &Expr) -> Option<u128> {
+    match expr.peel() {
+        Expr::Int(n) => n.text.replace('_', "").parse::<u128>().ok(),
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => const_eval(expr),
+        Expr::Binary {
+            op, left, right, ..
+        } => {
+            let l = const_eval(left)?;
+            let r = const_eval(right)?;
+            match op {
+                BinOp::Add => l.checked_add(r),
+                BinOp::Sub => l.checked_sub(r),
+                BinOp::Mul => l.checked_mul(r),
+                BinOp::Div => (r != 0).then(|| l / r),
+                BinOp::Rem => (r != 0).then(|| l % r),
+                BinOp::Shr => Some(if r >= 128 { 0 } else { l >> (r as u32) }),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 fn is_one_literal(e: &Expr) -> bool {
-    matches!(e.peel(), Expr::Int(n) if n.text.replace('_', "").parse::<u128>() == Ok(1))
+    const_eval(e) == Some(1)
 }
 
 fn is_big_u64_literal(e: &Expr) -> bool {
-    matches!(e.peel(), Expr::Int(n) if n.text.replace('_', "").parse::<u128>().is_ok_and(|v| v >= u64::MAX as u128))
+    const_eval(e).is_some_and(|v| v >= u64::MAX as u128)
 }
 
 fn strip_value_noops(e: &Expr) -> &Expr {
