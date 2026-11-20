@@ -1112,20 +1112,105 @@ fn map_is_deposit_backed_pool(model: &Model, map: &str, pool: Option<&str>) -> b
     false
 }
 
-fn payout_is_proportional_to_debit(payout: &Expr, debit: &Expr) -> bool {
-    if let Expr::Binary {
+fn payout_is_proportional_to_debit(
+    model: &Model,
+    entry: &EntryDecl,
+    payout: &Expr,
+    debit: &Expr,
+) -> bool {
+    let Expr::Binary {
         op: BinOp::Div,
         left,
+        right,
         ..
     } = payout.peel()
-    {
-        let mut references_debit = false;
-        walk(left, &mut |e| {
-            if expr_eq(e, debit) {
-                references_debit = true;
+    else {
+        return false;
+    };
+    let total = right.peel();
+    let Expr::Ident(id) = total else {
+        return false;
+    };
+    if !model.state.contains_key(id.text.as_str()) {
+        return false;
+    }
+    let mut references_debit = false;
+    walk(left, &mut |e| {
+        if expr_eq(e, debit) {
+            references_debit = true;
+        }
+    });
+    if !references_debit {
+        return false;
+    }
+    entry_guards_total_at_least_debit(entry, total, debit)
+}
+
+fn row_is_authority_mintable(model: &Model, m: &str) -> bool {
+    for entry in &model.entries {
+        if !(has_protected_signed_authority(model, entry) || entry_guarded_by_owner(model, entry)) {
+            continue;
+        }
+        let assets: HashSet<&str> = entry
+            .params
+            .iter()
+            .filter(|p| crate::model::is_asset_param(p))
+            .map(|p| p.name.text.as_str())
+            .collect();
+        let mut mints = false;
+        for stmt in &entry.body {
+            stmt_exprs(stmt, &mut |e| {
+                if let Expr::Call { callee, args, .. } = e {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if let Expr::Ident(map) = base.as_ref() {
+                            if map.text == m
+                                && matches!(name.text.as_str(), "credit" | "set" | "insert")
+                            {
+                                if let Some(v) = args.get(1) {
+                                    if !is_zero_literal(v)
+                                        && asset_amount_backer(v, &assets).is_none()
+                                    {
+                                        mints = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        if mints {
+            return true;
+        }
+    }
+    false
+}
+
+fn entry_guards_total_at_least_debit(entry: &EntryDecl, total: &Expr, debit: &Expr) -> bool {
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            let mut parts: Vec<&Expr> = Vec::new();
+            split_and(expr, &mut parts);
+            for p in parts {
+                if let Expr::Binary {
+                    op, left, right, ..
+                } = p.peel()
+                {
+                    let holds = match op {
+                        BinOp::Ge | BinOp::Gt => {
+                            expr_eq(left.peel(), total) && expr_eq(right.peel(), debit)
+                        }
+                        BinOp::Le | BinOp::Lt => {
+                            expr_eq(left.peel(), debit) && expr_eq(right.peel(), total)
+                        }
+                        _ => false,
+                    };
+                    if holds {
+                        return true;
+                    }
+                }
             }
-        });
-        return references_debit;
+        }
     }
     false
 }
@@ -1368,7 +1453,9 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
                     debit_used[i] = true;
                     return true;
                 }
-                if payout_is_proportional_to_debit(amount, debit_amt) {
+                if payout_is_proportional_to_debit(model, entry, amount, debit_amt)
+                    && !row_is_authority_mintable(model, m)
+                {
                     return true;
                 }
             }
