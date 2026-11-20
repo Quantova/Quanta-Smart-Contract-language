@@ -177,6 +177,19 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
             entry.name.span,
         ));
     }
+    if let Some(span) = self_credit_of_stale_scalar(model, entry) {
+        return Err(TypeError::new(
+            format!(
+                "this entry `{}` credits the caller from a stored amount that is not yet backed by \
+                 the caller's own incoming asset where it is read, so a later assignment from the \
+                 inflow cannot authorize the earlier credit and the caller is credited a prior \
+                 depositor's amount; assign the current inflow before the credit, or credit the \
+                 amount read directly from the incoming asset",
+                entry.name.text
+            ),
+            span,
+        ));
+    }
     if let Some(span) = self_service_payout_exceeds_backing(model, entry) {
         return Err(TypeError::new(
             format!(
@@ -189,6 +202,63 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
         ));
     }
     Ok(())
+}
+
+fn self_credit_of_stale_scalar(model: &Model, entry: &EntryDecl) -> Option<Span> {
+    let assets: HashSet<&str> = entry
+        .params
+        .iter()
+        .filter(|p| crate::model::is_asset_param(p))
+        .map(|p| p.name.text.as_str())
+        .collect();
+    let backed_scalars = asset_backed_scalars(model, entry);
+    let mut inflow_bound: HashSet<String> = HashSet::new();
+    let mut found: Option<Span> = None;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if found.is_some() {
+                return;
+            }
+            if let Expr::Call {
+                callee, args, span, ..
+            } = e
+            {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if name.text == "credit"
+                            && matches!(args.first(), Some(Expr::Caller { .. }))
+                            && map_is_ever_paid_out(model, m.text.as_str())
+                        {
+                            if let Some(v) = args.get(1) {
+                                if let Expr::Ident(id) = v.peel() {
+                                    if model.state.contains_key(id.text.as_str())
+                                        && backed_scalars.contains(id.text.as_str())
+                                        && !inflow_bound.contains(id.text.as_str())
+                                    {
+                                        found = Some(*span);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        if let Stmt::Assign {
+            target: Expr::Ident(id),
+            op: AssignOp::Set,
+            value,
+            ..
+        } = stmt
+        {
+            if asset_amount_backer(value, &assets).is_some() {
+                inflow_bound.insert(id.text.clone());
+            } else {
+                inflow_bound.remove(&id.text);
+            }
+        }
+    }
+    found
 }
 
 fn moved_amount_is_caller_chosen(model: &Model, entry: &EntryDecl) -> bool {
@@ -414,9 +484,9 @@ fn ledger_funding_tokens(model: &Model, map: &str) -> HashSet<String> {
                     if let Expr::Field { base, name, .. } = callee.as_ref() {
                         if matches!(base.as_ref(), Expr::Ident(m) if m.text == map)
                             && matches!(name.text.as_str(), "credit" | "set" | "insert")
-                            && args
-                                .get(1)
-                                .is_some_and(|v| asset_amount_backer(v.peel(), &assets).is_some())
+                            && args.get(1).is_some_and(|v| {
+                                resolved_asset_backer(entry, v, &assets, 0).is_some()
+                            })
                         {
                             funds = true;
                         }
@@ -677,6 +747,325 @@ fn every_payout_consumes_its_own_backing(model: &Model, entry: &EntryDecl) -> bo
     true
 }
 
+fn resolved_asset_backer(
+    entry: &EntryDecl,
+    value: &Expr,
+    assets: &HashSet<&str>,
+    depth: u32,
+) -> Option<String> {
+    if depth > 6 {
+        return None;
+    }
+    if let Some(a) = asset_amount_backer(value.peel(), assets) {
+        return Some(a.to_string());
+    }
+    match value.peel() {
+        Expr::Ident(id) => {
+            for stmt in &entry.body {
+                if let Stmt::Assign {
+                    target: Expr::Ident(t),
+                    value: v,
+                    ..
+                } = stmt
+                {
+                    if t.text == id.text {
+                        if let Some(a) = resolved_asset_backer(entry, v, assets, depth + 1) {
+                            return Some(a);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        Expr::Call { callee, .. } => {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if name.text == "get" {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        let mut cand: Vec<Expr> = Vec::new();
+                        for stmt in &entry.body {
+                            stmt_exprs(stmt, &mut |x| {
+                                if let Expr::Call {
+                                    callee: c2,
+                                    args: a2,
+                                    ..
+                                } = x
+                                {
+                                    if let Expr::Field {
+                                        base: b2, name: n2, ..
+                                    } = c2.as_ref()
+                                    {
+                                        if matches!(n2.text.as_str(), "set" | "credit" | "insert")
+                                            && matches!(b2.as_ref(), Expr::Ident(mm) if mm.text == m.text)
+                                        {
+                                            if let Some(v) = a2.get(1) {
+                                                cand.push(v.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            });
+                        }
+                        for v in &cand {
+                            if let Some(a) = resolved_asset_backer(entry, v, assets, depth + 1) {
+                                return Some(a);
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn entry_accrual_row(entry: &EntryDecl, amount: &Expr) -> Option<String> {
+    let mut row: Option<String> = None;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |x| {
+            if row.is_some() {
+                return;
+            }
+            if let Expr::Call { callee, args, .. } = x {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if name.text == "credit" && matches!(args.first(), Some(Expr::Caller { .. })) {
+                        if let (Expr::Ident(m), Some(v)) = (base.as_ref(), args.get(1)) {
+                            if expr_eq(v.peel(), amount.peel()) && !folds_to_zero(v) {
+                                row = Some(m.text.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        if row.is_some() {
+            break;
+        }
+    }
+    row
+}
+
+fn row_survives_fold(expr: &Expr, row: &str) -> bool {
+    match expr.peel() {
+        Expr::Call { callee, args, .. } => {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if name.text == "get"
+                    && matches!(base.as_ref(), Expr::Ident(m) if m.text == row)
+                    && matches!(args.first(), Some(Expr::Caller { .. }))
+                {
+                    return true;
+                }
+            }
+            false
+        }
+        Expr::Binary {
+            op: BinOp::Mul,
+            left,
+            right,
+            ..
+        } => {
+            if folds_to_zero(left) || folds_to_zero(right) {
+                return false;
+            }
+            row_survives_fold(left, row) || row_survives_fold(right, row)
+        }
+        Expr::Binary {
+            op: BinOp::Div | BinOp::Shr | BinOp::Rem,
+            left,
+            ..
+        } => !folds_to_zero(left) && row_survives_fold(left, row),
+        Expr::Binary { left, right, .. } => {
+            row_survives_fold(left, row) || row_survives_fold(right, row)
+        }
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => row_survives_fold(expr, row),
+        _ => false,
+    }
+}
+
+fn guard_counts_row(entry: &EntryDecl, row: &str) -> bool {
+    required_conditions(entry)
+        .iter()
+        .any(|c| row_survives_fold(c, row))
+}
+
+fn collateral_row_for(entry: &EntryDecl, accrued_row: &str) -> Option<String> {
+    for cond in required_conditions(entry) {
+        if let Expr::Binary {
+            op, left, right, ..
+        } = cond.peel()
+        {
+            let (small, large) = match op {
+                BinOp::Le | BinOp::Lt => (left.as_ref(), right.as_ref()),
+                BinOp::Ge | BinOp::Gt => (right.as_ref(), left.as_ref()),
+                _ => continue,
+            };
+            if row_survives_fold(small, accrued_row) {
+                let mut c: Option<String> = None;
+                walk(large, &mut |e| {
+                    if c.is_some() {
+                        return;
+                    }
+                    if let Expr::Call { callee, args, .. } = e {
+                        if let Expr::Field { base, name, .. } = callee.as_ref() {
+                            if name.text == "get"
+                                && matches!(args.first(), Some(Expr::Caller { .. }))
+                            {
+                                if let Expr::Ident(m) = base.as_ref() {
+                                    c = Some(m.text.clone());
+                                }
+                            }
+                        }
+                    }
+                });
+                if c.is_some() {
+                    return c;
+                }
+            }
+        }
+    }
+    None
+}
+
+fn row_is_freely_withdrawn(model: &Model, collateral: &str, debt: &str) -> bool {
+    for e in &model.entries {
+        let mut debits_collateral = false;
+        let mut reduces_debt = false;
+        let mut pays = false;
+        for stmt in &e.body {
+            stmt_exprs(stmt, &mut |x| {
+                if let Expr::Call { callee, .. } = x {
+                    match callee.as_ref() {
+                        Expr::Field { base, name, .. } if name.text == "debit" => {
+                            if let Expr::Ident(m) = base.as_ref() {
+                                if m.text == collateral {
+                                    debits_collateral = true;
+                                }
+                                if m.text == debt {
+                                    reduces_debt = true;
+                                }
+                            }
+                        }
+                        Expr::Ident(id) if id.text == "send" || id.text == "send_asset" => {
+                            pays = true;
+                        }
+                        _ => {}
+                    }
+                }
+            });
+        }
+        if debits_collateral && pays && !reduces_debt {
+            return true;
+        }
+    }
+    false
+}
+
+fn pool_is_deposit_backed(model: &Model, pool: Option<&str>) -> bool {
+    for e in &model.entries {
+        let assets: HashSet<&str> = e
+            .params
+            .iter()
+            .filter(|p| crate::model::is_asset_param(p))
+            .map(|p| p.name.text.as_str())
+            .collect();
+        if assets.is_empty() {
+            continue;
+        }
+        let mut found = false;
+        for stmt in &e.body {
+            stmt_exprs(stmt, &mut |x| {
+                if let Expr::Call { callee, args, .. } = x {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if name.text == "merge"
+                            && matches!(base.as_ref(), Expr::Ident(b) if pool.is_none_or(|p| b.text == p))
+                        {
+                            if let Some(Expr::Ident(f)) = args.first().map(|a| a.peel()) {
+                                if assets.contains(f.text.as_str()) {
+                                    found = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        if found {
+            return true;
+        }
+    }
+    false
+}
+
+fn row_inflated_before(entry: &EntryDecl, map: &str, before: usize) -> bool {
+    for stmt in entry.body.iter().take(before) {
+        let mut hit = false;
+        stmt_exprs(stmt, &mut |x| {
+            if let Expr::Call { callee, args, .. } = x {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if matches!(name.text.as_str(), "credit" | "set" | "insert")
+                        && matches!(base.as_ref(), Expr::Ident(m) if m.text == map)
+                        && matches!(args.first(), Some(Expr::Caller { .. }))
+                    {
+                        hit = true;
+                    }
+                }
+            }
+        });
+        if hit {
+            return true;
+        }
+    }
+    false
+}
+
+fn names_written_before(entry: &EntryDecl, before: usize) -> HashSet<String> {
+    let mut out: HashSet<String> = HashSet::new();
+    for stmt in entry.body.iter().take(before) {
+        if let Stmt::Assign {
+            target: Expr::Ident(id),
+            ..
+        } = stmt
+        {
+            out.insert(id.text.clone());
+        }
+        stmt_exprs(stmt, &mut |x| {
+            if let Expr::Call { callee, .. } = x {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if matches!(
+                        name.text.as_str(),
+                        "credit" | "debit" | "set" | "insert" | "remove"
+                    ) {
+                        if let Expr::Ident(m) = base.as_ref() {
+                            out.insert(m.text.clone());
+                        }
+                    }
+                }
+            }
+        });
+    }
+    out
+}
+
+fn amount_reads_written_state(amount: &Expr, written: &HashSet<String>) -> bool {
+    let mut dirty = false;
+    walk(amount, &mut |x| match x {
+        Expr::Ident(id) if written.contains(id.text.as_str()) => dirty = true,
+        Expr::Call { callee, .. } => {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if name.text == "get" {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if written.contains(m.text.as_str()) {
+                            dirty = true;
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    });
+    dirty
+}
+
 fn map_is_deposit_backed_pool(model: &Model, map: &str, pool: Option<&str>) -> bool {
     for e in &model.entries {
         let asset_params: HashSet<&str> = e
@@ -694,12 +1083,12 @@ fn map_is_deposit_backed_pool(model: &Model, map: &str, pool: Option<&str>) -> b
             stmt_exprs(stmt, &mut |x| {
                 if let Expr::Call { callee, args, .. } = x {
                     if let Expr::Field { base, name, .. } = callee.as_ref() {
-                        if name.text == "credit"
+                        if matches!(name.text.as_str(), "credit" | "set" | "insert")
                             && matches!(base.as_ref(), Expr::Ident(m) if m.text == map)
                         {
                             if let Some(v) = args.get(1) {
-                                if let Some(p) = asset_amount_backer(v.peel(), &asset_params) {
-                                    credited_from.insert(p.to_string());
+                                if let Some(p) = resolved_asset_backer(e, v, &asset_params, 0) {
+                                    credited_from.insert(p);
                                 }
                             }
                         }
@@ -735,21 +1124,74 @@ fn payout_within_debit(amount: &Expr, debit: &Expr) -> bool {
     false
 }
 
-fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Option<Span> {
-    let mut debits: Vec<(String, Expr)> = Vec::new();
-    for stmt in &entry.body {
-        stmt_exprs(stmt, &mut |e| {
-            if let Expr::Call { callee, args, .. } = e {
-                if let Expr::Field { base, name, .. } = callee.as_ref() {
-                    if name.text == "debit" && matches!(args.first(), Some(Expr::Caller { .. })) {
-                        if let (Expr::Ident(m), Some(amount)) = (base.as_ref(), args.get(1)) {
-                            debits.push((m.text.clone(), amount.clone()));
+fn scalar_never_assigned(model: &Model, name: &str) -> bool {
+    !model.entries.iter().any(|e| {
+        e.body
+            .iter()
+            .any(|s| matches!(s, Stmt::Assign { target: Expr::Ident(id), .. } if id.text == name))
+    })
+}
+
+fn payout_is_authority_bound(model: &Model, amount: &Expr, params: &HashSet<String>) -> bool {
+    match amount.peel() {
+        Expr::Int(_) => true,
+        Expr::Ident(id) => {
+            params.contains(id.text.as_str())
+                || (model.state.contains_key(id.text.as_str())
+                    && scalar_never_assigned(model, &id.text))
+        }
+        Expr::Field { base, name, .. } => {
+            matches!(base.as_ref(), Expr::Ident(id) if params.contains(id.text.as_str()))
+                || (name.text == "amount"
+                    && matches!(base.as_ref(), Expr::Ident(id) if model.state.contains_key(id.text.as_str())))
+        }
+        Expr::Binary {
+            op: BinOp::Sub | BinOp::Div | BinOp::Shr | BinOp::Rem,
+            left,
+            ..
+        } => payout_is_authority_bound(model, left, params),
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            payout_is_authority_bound(model, expr, params)
+        }
+        _ => false,
+    }
+}
+
+fn entry_guarded_by_owner(model: &Model, entry: &EntryDecl) -> bool {
+    let conds = required_conditions(entry);
+    let mut parts: Vec<&Expr> = Vec::new();
+    for c in &conds {
+        collect_conjuncts(c, &mut parts);
+    }
+    for p in parts {
+        if let Expr::Binary {
+            op: BinOp::Eq,
+            left,
+            right,
+            ..
+        } = p.peel()
+        {
+            for (a, b) in [
+                (left.as_ref(), right.as_ref()),
+                (right.as_ref(), left.as_ref()),
+            ] {
+                if matches!(a.peel(), Expr::Caller { .. }) {
+                    if let Expr::Ident(x) = b.peel() {
+                        if authority_anchor_protected(model, &x.text) {
+                            return true;
                         }
                     }
                 }
             }
-        });
+        }
     }
+    false
+}
+
+fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Option<Span> {
+    let has_auth =
+        has_protected_signed_authority(model, entry) || entry_guarded_by_owner(model, entry);
+    let all_params: HashSet<String> = entry.params.iter().map(|p| p.name.text.clone()).collect();
     let inflows: Vec<Expr> = entry
         .params
         .iter()
@@ -769,6 +1211,23 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
             let resolved = resolve_locals(value, &lets, 0);
             lets.insert(name.text.clone(), resolved);
         }
+    }
+    let mut debits: Vec<(String, Expr, bool)> = Vec::new();
+    for (idx, stmt) in entry.body.iter().enumerate() {
+        let written = names_written_before(entry, idx);
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if name.text == "debit" && matches!(args.first(), Some(Expr::Caller { .. })) {
+                        if let (Expr::Ident(m), Some(amount)) = (base.as_ref(), args.get(1)) {
+                            let valid = !row_inflated_before(entry, &m.text, idx)
+                                && !amount_reads_written_state(amount, &written);
+                            debits.push((m.text.clone(), resolve_locals(amount, &lets, 0), valid));
+                        }
+                    }
+                }
+            }
+        });
     }
     let mut splits: Vec<(String, Expr, Span)> = Vec::new();
     let mut mergebacks: Vec<(String, Expr)> = Vec::new();
@@ -830,37 +1289,58 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
             splits.remove(pos);
         }
     }
-    let resolved_debits: Vec<(String, Expr)> = debits
-        .iter()
-        .map(|(m, d)| (m.clone(), resolve_locals(d, &lets, 0)))
-        .collect();
-    let collateral_bounded =
-        !accumulating_state(entry).is_empty() && outflow_is_bounded_by_an_entitlement(model, entry);
-    let mut used = vec![false; resolved_debits.len()];
+    let entitlement_bounded = outflow_is_bounded_by_an_entitlement(model, entry);
+    let mut debit_used = vec![false; debits.len()];
+    let mut inflow_used = vec![false; inflows.len()];
     let mut consume = |pool: Option<&str>, amount: &Expr| -> bool {
-        let pool_backed = match pool {
-            Some(_) => model
-                .state
-                .keys()
-                .any(|m| map_is_deposit_backed_pool(model, m, pool)),
-            None => resolved_debits
-                .iter()
-                .any(|(m, _)| map_is_deposit_backed_pool(model, m, None)),
-        };
-        if !pool_backed {
+        if !pool_is_deposit_backed(model, pool) {
             return true;
         }
-        if inflows
-            .iter()
-            .any(|b| payout_is_bounded_by(amount, b.peel()))
-            || reserve_bounding_payout(model, entry, amount.peel(), &inflows, None).is_some()
-            || collateral_bounded
+        if has_auth && payout_is_authority_bound(model, amount, &all_params) {
+            return true;
+        }
+        for j in 0..inflows.len() {
+            if !inflow_used[j] && payout_is_bounded_by(amount, inflows[j].peel()) {
+                inflow_used[j] = true;
+                return true;
+            }
+        }
+        let priced_off_inflow = {
+            let mut hit = false;
+            walk(amount, &mut |e| {
+                if inflows.iter().any(|i| expr_eq(i.peel(), e)) {
+                    hit = true;
+                }
+            });
+            hit
+        };
+        if reserve_bounding_payout(model, entry, amount.peel(), &inflows, None).is_some()
+            || (entitlement_bounded
+                && (priced_off_inflow
+                    || entry_accrual_row(entry, amount).is_some_and(|row| {
+                        guard_counts_row(entry, &row)
+                            && collateral_row_for(entry, &row)
+                                .is_some_and(|c| !row_is_freely_withdrawn(model, &c, &row))
+                    })))
         {
             return true;
         }
-        for i in 0..resolved_debits.len() {
-            if !used[i] && payout_within_debit(amount, resolved_debits[i].1.peel()) {
-                used[i] = true;
+        for i in 0..debits.len() {
+            if debit_used[i] || !debits[i].2 {
+                continue;
+            }
+            let m = &debits[i].0;
+            let backs_pool = match pool {
+                Some(p) => map_is_deposit_backed_pool(model, m, Some(p)),
+                None => map_is_deposit_backed_pool(model, m, None),
+            };
+            let is_deposit_ledger = map_is_deposit_backed_pool(model, m, None);
+            if backs_pool {
+                if payout_within_debit(amount, debits[i].1.peel()) {
+                    debit_used[i] = true;
+                    return true;
+                }
+            } else if !is_deposit_ledger && !folds_to_zero(&debits[i].1) {
                 return true;
             }
         }
@@ -1691,7 +2171,7 @@ fn writes_field_only_into_an_empty_slot(model: &Model, entry: &EntryDecl, field:
     };
     let mut saw = false;
     let mut all_proven = true;
-    for stmt in &entry.body {
+    for (idx, stmt) in entry.body.iter().enumerate() {
         stmt_exprs(stmt, &mut |e| {
             if let Expr::Call { callee, args, .. } = e {
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
@@ -1711,6 +2191,12 @@ fn writes_field_only_into_an_empty_slot(model: &Model, entry: &EntryDecl, field:
                             }
                             if !args.first().is_some_and(&proves_empty) {
                                 all_proven = false;
+                                return;
+                            }
+                            if let Some(key) = args.first() {
+                                if !empty_slot_key_stable(entry, field, key, idx) {
+                                    all_proven = false;
+                                }
                             }
                         }
                     }
@@ -1719,6 +2205,77 @@ fn writes_field_only_into_an_empty_slot(model: &Model, entry: &EntryDecl, field:
         });
     }
     saw && all_proven
+}
+
+fn guard_part_proves_empty(field: &str, key: &Expr, e: &Expr) -> bool {
+    match e {
+        Expr::Binary {
+            op: BinOp::Eq,
+            left,
+            right,
+            ..
+        } => {
+            for (x, y) in [(left, right), (right, left)] {
+                if matches!(y.as_ref(), Expr::Int(n) if n.text == "0") {
+                    if let Some((m, k)) = any_map_get(x) {
+                        if m == field && expr_eq(k, key) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        }
+        Expr::Unary {
+            op: UnaryOp::Not,
+            expr,
+            ..
+        } => any_map_contains(expr).is_some_and(|(m, k)| m == field && expr_eq(k, key)),
+        _ => false,
+    }
+}
+
+fn empty_slot_key_stable(entry: &EntryDecl, field: &str, key: &Expr, write_idx: usize) -> bool {
+    let mut idents: HashSet<String> = HashSet::new();
+    walk(key, &mut |x| {
+        if let Expr::Ident(id) = x {
+            idents.insert(id.text.clone());
+        }
+    });
+    let mut last_reassign: Option<usize> = None;
+    for (i, stmt) in entry.body.iter().enumerate() {
+        if i >= write_idx {
+            break;
+        }
+        if let Stmt::Assign {
+            target: Expr::Ident(id),
+            ..
+        } = stmt
+        {
+            if idents.contains(id.text.as_str()) {
+                last_reassign = Some(i);
+            }
+        }
+    }
+    let Some(reassign) = last_reassign else {
+        return true;
+    };
+    for (i, stmt) in entry.body.iter().enumerate() {
+        if i <= reassign {
+            continue;
+        }
+        if i >= write_idx {
+            break;
+        }
+        if let Stmt::Guard { expr, .. } = stmt {
+            let mut parts: Vec<&Expr> = Vec::new();
+            split_and(expr, &mut parts);
+            if parts.iter().any(|p| guard_part_proves_empty(field, key, p)) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn any_map_get(e: &Expr) -> Option<(&str, &Expr)> {
@@ -5583,6 +6140,12 @@ fn folds_to_zero(expr: &Expr) -> bool {
             right,
             ..
         } => folds_to_zero(left) && folds_to_zero(right),
+        Expr::Binary {
+            op: BinOp::Div | BinOp::Shr,
+            left,
+            ..
+        } => folds_to_zero(left),
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => folds_to_zero(expr),
         _ => false,
     }
 }

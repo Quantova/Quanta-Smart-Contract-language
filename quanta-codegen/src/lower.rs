@@ -4196,6 +4196,11 @@ fn address_keys_expr(
             if let Some(to) = recipient {
                 push_addr_key(to, params, out);
             }
+            if id.text == "send_asset" {
+                if let Some(issuer) = args.first() {
+                    push_addr_key(issuer, params, out);
+                }
+            }
         }
         for arg in args {
             address_keys_expr(arg, layout, params, out);

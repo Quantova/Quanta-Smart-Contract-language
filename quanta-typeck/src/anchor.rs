@@ -38,6 +38,13 @@ fn check_guard_liveness(model: &Model, entry: &EntryDecl) -> Result<(), TypeErro
             Stmt::Let { name, value, .. } => {
                 gate.locals.insert(name.text.as_str(), value);
             }
+            Stmt::Assign {
+                target: Expr::Ident(id),
+                value,
+                ..
+            } => {
+                gate.locals.insert(id.text.as_str(), value);
+            }
             Stmt::Guard { expr, .. } => gate.scan(expr, true, &[])?,
             _ => {}
         }
@@ -241,7 +248,7 @@ fn guard_liveness_rejection(field: &str, span: Span) -> TypeError {
 fn check_guard_anchors(model: &Model) -> Result<(), TypeError> {
     for entry in &model.entries {
         let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
-        let locals = entry_locals(entry);
+        let locals = entry_locals_with_assigns(entry);
         let mut gates: Vec<(&Expr, bool)> = Vec::new();
         for clause in &entry.clauses {
             match clause {
@@ -336,6 +343,18 @@ fn mentions_now_local<'a>(
         }
         Expr::Binary { left, right, .. } => {
             mentions_now_local(left, locals, depth) || mentions_now_local(right, locals, depth)
+        }
+        Expr::Call { callee, args, .. } => {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if name.text == "get" && matches!(args.first(), Some(Expr::Caller { .. })) {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        return locals
+                            .get(m.text.as_str())
+                            .is_some_and(|e| mentions_now_local(e, locals, depth + 1));
+                    }
+                }
+            }
+            false
         }
         _ => false,
     }
@@ -500,6 +519,39 @@ fn entry_locals(entry: &EntryDecl) -> HashMap<&str, &Expr> {
     for stmt in &entry.body {
         if let Stmt::Let { name, value, .. } = stmt {
             locals.insert(name.text.as_str(), value);
+        }
+    }
+    locals
+}
+
+fn entry_locals_with_assigns(entry: &EntryDecl) -> HashMap<&str, &Expr> {
+    let mut locals: HashMap<&str, &Expr> = HashMap::new();
+    for stmt in &entry.body {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                locals.insert(name.text.as_str(), value);
+            }
+            Stmt::Assign {
+                target: Expr::Ident(id),
+                value,
+                ..
+            } => {
+                locals.insert(id.text.as_str(), value);
+            }
+            Stmt::Expr { expr, .. } => {
+                if let Expr::Call { callee, args, .. } = expr {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if matches!(name.text.as_str(), "set" | "credit" | "insert")
+                            && matches!(args.first(), Some(Expr::Caller { .. }))
+                        {
+                            if let (Expr::Ident(m), Some(v)) = (base.as_ref(), args.get(1)) {
+                                locals.insert(m.text.as_str(), v);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
     locals
