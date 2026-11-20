@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::error::TypeError;
-use crate::model::{asset_inner, Model};
+use crate::model::{asset_inner, is_asset_param, Model};
 use quanta_ast::{AssignOp, BinOp, Clause, EntryDecl, Expr, Stmt};
 use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
@@ -195,6 +195,20 @@ fn pin_matches_kind(model: &Model, entry: &EntryDecl, kind: &str, pin: &Expr) ->
 }
 
 fn asset_kind_is_stated(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
+    if let Some(param) = entry
+        .params
+        .iter()
+        .find(|p| is_asset_param(p) && asset_inner(&p.ty).is_none())
+    {
+        return Err(TypeError::new(
+            format!(
+                "`{}` is declared `Q_Asset` with no kind, so no guard can pin `in_asset` to it, \
+                 write `Q_Asset<KIND>` and pin `in_asset` to that kind",
+                param.name.text
+            ),
+            param.name.span,
+        ));
+    }
     let Some((param, kind)) = entry
         .params
         .iter()

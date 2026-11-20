@@ -144,6 +144,9 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     if entry_moves_asset(entry) && !every_caller_asset_payout_is_token_sourced(model, entry) {
         return Err(no_asset_authority_error(entry));
     }
+    if backing_amount_rewritten_before_payout(model, entry) {
+        return Err(no_ledger_authority_error(entry));
+    }
     if pays_unconsumed_entitlement(model, entry) {
         return Err(TypeError::new(
             format!(
@@ -3825,6 +3828,73 @@ fn split_arg(expr: &Expr) -> Option<&Expr> {
         }
     }
     None
+}
+
+fn backing_amount_rewritten_before_payout(model: &Model, entry: &EntryDecl) -> bool {
+    let mut debits: Vec<(usize, Expr)> = Vec::new();
+    let mut payouts: Vec<(usize, Expr)> = Vec::new();
+    for (idx, stmt) in entry.body.iter().enumerate() {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if name.text == "debit"
+                        && matches!(base.as_ref(), Expr::Ident(_))
+                        && matches!(args.first(), Some(Expr::Caller { .. }))
+                    {
+                        if let Some(amt) = args.get(1) {
+                            debits.push((idx, amt.clone()));
+                        }
+                    }
+                }
+                match callee.as_ref() {
+                    Expr::Ident(id) if id.text == "send" => {
+                        if let Some(a) = args.get(1).and_then(split_arg) {
+                            payouts.push((idx, a.clone()));
+                        }
+                    }
+                    Expr::Ident(id) if id.text == "send_asset" => {
+                        if let Some(v) = args.get(2) {
+                            payouts.push((idx, split_arg(v).unwrap_or(v).clone()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+    for (pidx, amt) in &payouts {
+        let mut states: HashSet<String> = HashSet::new();
+        walk(amt, &mut |e| {
+            if let Expr::Ident(id) = e {
+                if model.state.contains_key(id.text.as_str()) {
+                    states.insert(id.text.clone());
+                }
+            }
+        });
+        if states.is_empty() {
+            continue;
+        }
+        for (didx, damt) in &debits {
+            if didx >= pidx || !expr_eq(damt.peel(), amt.peel()) {
+                continue;
+            }
+            for (i, stmt) in entry.body.iter().enumerate() {
+                if i <= *didx || i >= *pidx {
+                    continue;
+                }
+                if let Stmt::Assign {
+                    target: Expr::Ident(t),
+                    ..
+                } = stmt
+                {
+                    if states.contains(t.text.as_str()) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 fn native_payout_backed_by_custom_ledger(model: &Model, entry: &EntryDecl) -> bool {
