@@ -863,6 +863,19 @@ fn is_asset_call(expr: &Expr) -> bool {
     }
 }
 
+fn arg_splits_a_pool(expr: &Expr) -> bool {
+    match expr {
+        Expr::Call { callee, .. } => {
+            matches!(callee.as_ref(), Expr::Field { name, .. } if name.text == "split")
+        }
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            arg_splits_a_pool(expr)
+        }
+        Expr::Binary { left, right, .. } => arg_splits_a_pool(left) || arg_splits_a_pool(right),
+        _ => false,
+    }
+}
+
 fn no_asset_call(expr: &Expr) -> Result<(), TypeError> {
     if is_asset_call(expr) {
         return Err(TypeError::new(
@@ -906,7 +919,22 @@ fn asset_calls_consumed(stmt: &Stmt) -> Result<(), TypeError> {
             ..
         } => {
             no_asset_call(callee)?;
-            args.iter().try_for_each(consumed_asset_call)
+            let number_sink = matches!(
+                callee.as_ref(),
+                Expr::Field { name, .. }
+                    if matches!(name.text.as_str(), "credit" | "debit" | "set" | "insert")
+            );
+            for arg in args {
+                if number_sink && arg_splits_a_pool(arg) {
+                    return Err(TypeError::new(
+                        "a split asset used as a ledger amount is dropped as a number; send or \
+                         merge the split asset, or record a plain amount",
+                        arg.span(),
+                    ));
+                }
+                consumed_asset_call(arg)?;
+            }
+            Ok(())
         }
         Stmt::Expr { expr, .. } | Stmt::Guard { expr, .. } => no_asset_call(expr),
         Stmt::Assign { target, value, .. } => {

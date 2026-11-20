@@ -3,7 +3,7 @@
 
 use crate::error::TypeError;
 use crate::model::{asset_inner, Model};
-use quanta_ast::{BinOp, Clause, EntryDecl, Expr, Stmt};
+use quanta_ast::{AssignOp, BinOp, Clause, EntryDecl, Expr, Stmt};
 use quanta_lexer::Span;
 use std::collections::{HashMap, HashSet};
 
@@ -345,10 +345,23 @@ fn amount_credited_while_sent(
 ) -> Option<TypeError> {
     let mut tainted: HashMap<String, String> = HashMap::new();
     for stmt in &entry.body {
-        if let Stmt::Let { name, value, .. } = stmt {
-            if let Some(asset) = credited_asset(value, kinds, &tainted) {
-                tainted.insert(name.text.clone(), asset);
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                if let Some(asset) = credited_asset(value, kinds, &tainted) {
+                    tainted.insert(name.text.clone(), asset);
+                }
             }
+            Stmt::Assign {
+                target: Expr::Ident(dest),
+                op: AssignOp::Set,
+                value,
+                ..
+            } => {
+                if let Some(asset) = credited_asset(value, kinds, &tainted) {
+                    tainted.insert(dest.text.clone(), asset);
+                }
+            }
+            _ => {}
         }
     }
     let mut credited: HashMap<String, Span> = HashMap::new();

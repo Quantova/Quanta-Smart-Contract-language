@@ -155,6 +155,17 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
             entry.name.span,
         ));
     }
+    if caller_paid_from_foreign_row(model, entry) {
+        return Err(TypeError::new(
+            format!(
+                "this entry `{}` pays the caller an amount read from a protected row keyed by \
+                 someone else, so any caller can drain another holder's entitlement; pay the \
+                 holder of the consumed row, or prove the caller owns the row it pays from",
+                entry.name.text
+            ),
+            entry.name.span,
+        ));
+    }
     Ok(())
 }
 
@@ -2838,6 +2849,76 @@ fn pays_unconsumed_entitlement(model: &Model, entry: &EntryDecl) -> bool {
     false
 }
 
+fn trusted_read_key(model: &Model, entry: &EntryDecl, amount: &Expr) -> Option<Expr> {
+    if let Expr::Ident(id) = amount {
+        for stmt in &entry.body {
+            if let Stmt::Let { name, value, .. } = stmt {
+                if name.text == id.text {
+                    return trusted_read_key(model, entry, value);
+                }
+            }
+        }
+        return None;
+    }
+    let Expr::Call { callee, args, .. } = amount else {
+        return None;
+    };
+    let Expr::Field { base, name, .. } = callee.as_ref() else {
+        return None;
+    };
+    if name.text == "split" {
+        return args
+            .first()
+            .and_then(|inner| trusted_read_key(model, entry, inner));
+    }
+    if name.text != "get" {
+        return None;
+    }
+    let Expr::Ident(m) = base.as_ref() else {
+        return None;
+    };
+    if model.state.contains_key(m.text.as_str())
+        && is_addr_keyed(model, m.text.as_str())
+        && authority_anchor_protected(model, m.text.as_str())
+        && !caller_sets_their_own_row(model, m.text.as_str())
+        && entry_consumes_the_row(entry, m.text.as_str())
+    {
+        return args.first().cloned();
+    }
+    None
+}
+
+fn caller_paid_from_foreign_row(model: &Model, entry: &EntryDecl) -> bool {
+    let mut hit = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if hit {
+                return;
+            }
+            if let Expr::Call { callee, args, .. } = e {
+                let recipient_amount = match callee.as_ref() {
+                    Expr::Ident(id) if id.text == "send" => args.first().zip(args.get(1)),
+                    Expr::Ident(id) if id.text == "send_asset" => args.get(1).zip(args.get(2)),
+                    _ => None,
+                };
+                if let Some((recipient, amount)) = recipient_amount {
+                    if is_caller(recipient) {
+                        if let Some(key) = trusted_read_key(model, entry, amount) {
+                            if !is_caller(&key) {
+                                hit = true;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+        if hit {
+            return true;
+        }
+    }
+    false
+}
+
 fn entitlement_map_is_authority_written(model: &Model, map: &str) -> bool {
     let signed: HashSet<&str> = HashSet::new();
     for entry in &model.entries {
@@ -3667,15 +3748,38 @@ fn writer_authorized(model: &Model, entry: &EntryDecl, prot: &mut Prot) -> (bool
             _ => {}
         }
     }
+    let mut assigned_before: HashSet<&str> = HashSet::new();
     for stmt in &entry.body {
-        if let Stmt::Guard { expr, .. } = stmt {
-            let (authorized, tainted) = gate_necessary_protected(model, expr, prot);
-            if authorized {
-                return (true, tainted);
+        match stmt {
+            Stmt::Guard { expr, .. } => {
+                if !guard_reads_assigned(expr, &assigned_before) {
+                    let (authorized, tainted) = gate_necessary_protected(model, expr, prot);
+                    if authorized {
+                        return (true, tainted);
+                    }
+                }
             }
+            Stmt::Assign { target, .. } => {
+                if let Some(f) = root_ident(target) {
+                    assigned_before.insert(f);
+                }
+            }
+            _ => {}
         }
     }
     (false, false)
+}
+
+fn guard_reads_assigned(expr: &Expr, assigned: &HashSet<&str>) -> bool {
+    let mut hit = false;
+    walk(expr, &mut |e| {
+        if let Expr::Ident(id) = e {
+            if assigned.contains(id.text.as_str()) {
+                hit = true;
+            }
+        }
+    });
+    hit
 }
 
 fn gate_necessary_protected(model: &Model, expr: &Expr, prot: &mut Prot) -> (bool, bool) {
@@ -4601,7 +4705,7 @@ fn asset_merged_into<'a>(model: &Model, entry: &'a EntryDecl, param: &str) -> Op
 }
 
 fn asset_amount_backer<'a>(value: &Expr, asset_params: &HashSet<&'a str>) -> Option<&'a str> {
-    if let Expr::Field { base, name, .. } = value {
+    if let Expr::Field { base, name, .. } = strip_amount_identity(value) {
         if name.text == "amount" {
             if let Expr::Ident(id) = base.as_ref() {
                 return asset_params.get(id.text.as_str()).copied();
@@ -4609,6 +4713,32 @@ fn asset_amount_backer<'a>(value: &Expr, asset_params: &HashSet<&'a str>) -> Opt
         }
     }
     None
+}
+
+fn strip_amount_identity(expr: &Expr) -> &Expr {
+    match expr {
+        Expr::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        } => {
+            if folds_to_zero(right) {
+                strip_amount_identity(left)
+            } else if folds_to_zero(left) {
+                strip_amount_identity(right)
+            } else {
+                expr
+            }
+        }
+        Expr::Binary {
+            op: BinOp::Sub,
+            left,
+            right,
+            ..
+        } if folds_to_zero(right) => strip_amount_identity(left),
+        _ => expr.peel(),
+    }
 }
 
 fn read_add_amount_bound(value: &Expr, map: &str, set_key: &Expr, asset_param: &str) -> bool {
@@ -5247,9 +5377,13 @@ fn threshold_is_provably_positive(model: &Model, threshold: &Expr) -> bool {
     }
     model.entries.iter().all(|entry| {
         entry.body.iter().all(|stmt| match stmt {
-            Stmt::Assign { target, value, .. } if root_ident(target) == Some(field) => {
-                is_positive_int(value) || entry_guards_positive(entry, value)
-            }
+            Stmt::Assign {
+                target, op, value, ..
+            } if root_ident(target) == Some(field) => match op {
+                AssignOp::Set => is_positive_int(value) || entry_guards_positive(entry, value),
+                AssignOp::Add => true,
+                AssignOp::Sub => false,
+            },
             _ => true,
         })
     })
@@ -5282,7 +5416,11 @@ fn threshold_is_guarded_positive(model: &Model, threshold: &Expr) -> bool {
                     } else {
                         return;
                     };
-                    if entry_guards_positive(entry, candidate) {
+                    let reassigned = matches!(
+                        candidate,
+                        Expr::Ident(id) if entry_writes_field(entry, id.text.as_str())
+                    );
+                    if entry_guards_positive(entry, candidate) && !reassigned {
                         found.insert(candidate.span());
                     }
                 });

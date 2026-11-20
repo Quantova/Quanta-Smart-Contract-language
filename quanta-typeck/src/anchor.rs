@@ -416,10 +416,10 @@ fn writes_other_than_time(model: &Model, field: &str) -> bool {
                 } => {
                     if let Expr::Field { base, name, .. } = callee.as_ref() {
                         if matches!(base.as_ref(), Expr::Ident(id) if id.text == field) {
+                            let reads = matches!(name.text.as_str(), "get" | "contains");
                             let timed =
                                 name.text == "set" && args.get(1).is_some_and(is_time_or_constant);
-                            let clears = name.text == "remove";
-                            if !timed && !clears {
+                            if !reads && !timed {
                                 other = true;
                             }
                         }
@@ -848,20 +848,51 @@ fn genesis_arms_nonzero(model: &Model, field: &str) -> bool {
         for stmt in &genesis.body {
             if let Stmt::Assign { target, value, .. } = stmt {
                 if matches!(target, Expr::Ident(id) if id.text == field) {
-                    match value {
-                        Expr::Now { .. } | Expr::Date { .. } => return true,
-                        Expr::Int(lit) => {
-                            if lit.text.replace('_', "").parse::<u128>() != Ok(0) {
-                                return true;
-                            }
+                    if expr_mentions_clock(value) {
+                        return true;
+                    }
+                    if let Some(n) = fold_const_u128(value) {
+                        if n != 0 {
+                            return true;
                         }
-                        _ => {}
                     }
                 }
             }
         }
     }
     false
+}
+
+fn expr_mentions_clock(expr: &Expr) -> bool {
+    match expr.peel() {
+        Expr::Now { .. } | Expr::Date { .. } => true,
+        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            expr_mentions_clock(expr)
+        }
+        Expr::Binary { left, right, .. } => expr_mentions_clock(left) || expr_mentions_clock(right),
+        _ => false,
+    }
+}
+
+fn fold_const_u128(expr: &Expr) -> Option<u128> {
+    match expr.peel() {
+        Expr::Int(lit) => lit.text.replace('_', "").parse::<u128>().ok(),
+        Expr::Binary {
+            op, left, right, ..
+        } => {
+            let l = fold_const_u128(left)?;
+            let r = fold_const_u128(right)?;
+            match op {
+                BinOp::Add => Some(l.saturating_add(r)),
+                BinOp::Sub => Some(l.saturating_sub(r)),
+                BinOp::Mul => Some(l.saturating_mul(r)),
+                BinOp::Div if r != 0 => Some(l / r),
+                BinOp::Rem if r != 0 => Some(l % r),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 fn field_starts_nonzero(model: &Model, field: &str) -> bool {
