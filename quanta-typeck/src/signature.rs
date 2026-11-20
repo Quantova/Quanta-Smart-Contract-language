@@ -177,6 +177,17 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
             entry.name.span,
         ));
     }
+    if let Some(span) = self_service_payout_exceeds_backing(model, entry) {
+        return Err(TypeError::new(
+            format!(
+                "this entry `{}` pays out more value than it removes from the caller's own \
+                 ledger row, so the surplus is drawn from other holders' deposits; a \
+                 self-service payout may only send the amount it debits from the caller",
+                entry.name.text
+            ),
+            span,
+        ));
+    }
     Ok(())
 }
 
@@ -664,6 +675,213 @@ fn every_payout_consumes_its_own_backing(model: &Model, entry: &EntryDecl) -> bo
         }
     }
     true
+}
+
+fn map_is_deposit_backed_pool(model: &Model, map: &str, pool: Option<&str>) -> bool {
+    for e in &model.entries {
+        let asset_params: HashSet<&str> = e
+            .params
+            .iter()
+            .filter(|p| crate::model::is_asset_param(p))
+            .map(|p| p.name.text.as_str())
+            .collect();
+        if asset_params.is_empty() {
+            continue;
+        }
+        let mut credited_from: HashSet<String> = HashSet::new();
+        let mut merged_in: HashSet<String> = HashSet::new();
+        for stmt in &e.body {
+            stmt_exprs(stmt, &mut |x| {
+                if let Expr::Call { callee, args, .. } = x {
+                    if let Expr::Field { base, name, .. } = callee.as_ref() {
+                        if name.text == "credit"
+                            && matches!(base.as_ref(), Expr::Ident(m) if m.text == map)
+                        {
+                            if let Some(v) = args.get(1) {
+                                if let Some(p) = asset_amount_backer(v.peel(), &asset_params) {
+                                    credited_from.insert(p.to_string());
+                                }
+                            }
+                        }
+                        if name.text == "merge"
+                            && matches!(base.as_ref(), Expr::Ident(b) if pool.is_none_or(|p| b.text == p))
+                        {
+                            if let Some(Expr::Ident(f)) = args.first().map(|a| a.peel()) {
+                                if asset_params.contains(f.text.as_str()) {
+                                    merged_in.insert(f.text.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        if credited_from.iter().any(|f| merged_in.contains(f)) {
+            return true;
+        }
+    }
+    false
+}
+
+fn payout_within_debit(amount: &Expr, debit: &Expr) -> bool {
+    if payout_is_bounded_by(amount, debit) {
+        return true;
+    }
+    if let Expr::Ident(p) = amount.peel() {
+        if debit_covers_the_parameter(debit, &p.text) {
+            return true;
+        }
+    }
+    false
+}
+
+fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Option<Span> {
+    let mut debits: Vec<(String, Expr)> = Vec::new();
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if name.text == "debit" && matches!(args.first(), Some(Expr::Caller { .. })) {
+                        if let (Expr::Ident(m), Some(amount)) = (base.as_ref(), args.get(1)) {
+                            debits.push((m.text.clone(), amount.clone()));
+                        }
+                    }
+                }
+            }
+        });
+    }
+    if has_protected_signed_authority(model, entry) {
+        return None;
+    }
+    let inflows: Vec<Expr> = entry
+        .params
+        .iter()
+        .filter(|p| crate::model::is_asset_param(p))
+        .map(|p| Expr::Field {
+            base: Box::new(Expr::Ident(p.name.clone())),
+            name: quanta_ast::Ident {
+                text: "amount".to_string(),
+                span: p.name.span,
+            },
+            span: p.name.span,
+        })
+        .collect();
+    let mut lets: HashMap<String, Expr> = HashMap::new();
+    for stmt in &entry.body {
+        if let Stmt::Let { name, value, .. } = stmt {
+            let resolved = resolve_locals(value, &lets, 0);
+            lets.insert(name.text.clone(), resolved);
+        }
+    }
+    let mut splits: Vec<(String, Expr, Span)> = Vec::new();
+    let mut mergebacks: Vec<(String, Expr)> = Vec::new();
+    let mut sa_direct: Vec<(Expr, Span)> = Vec::new();
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, span } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if name.text == "split" {
+                        if let (Expr::Ident(pool), Some(raw)) = (base.as_ref(), args.first()) {
+                            splits.push((pool.text.clone(), resolve_locals(raw, &lets, 0), *span));
+                        }
+                    }
+                    if name.text == "merge" {
+                        if let (Expr::Ident(pool), Some(arg)) = (base.as_ref(), args.first()) {
+                            let r = resolve_locals(arg, &lets, 0);
+                            if let Expr::Call {
+                                callee: ic,
+                                args: ia,
+                                ..
+                            } = r.peel()
+                            {
+                                if let Expr::Field {
+                                    base: ib,
+                                    name: inm,
+                                    ..
+                                } = ic.as_ref()
+                                {
+                                    if inm.text == "split"
+                                        && matches!(ib.as_ref(), Expr::Ident(p) if p.text == pool.text)
+                                    {
+                                        if let Some(amt) = ia.first() {
+                                            mergebacks.push((pool.text.clone(), amt.clone()));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send_asset") {
+                    if let Some(value) = args.get(2) {
+                        let rv = resolve_locals(value, &lets, 0);
+                        let is_split = matches!(rv.peel(), Expr::Call { callee, .. }
+                            if matches!(callee.as_ref(), Expr::Field { name, .. } if name.text == "split"));
+                        if !is_split {
+                            sa_direct.push((rv, *span));
+                        }
+                    }
+                }
+            }
+        });
+    }
+    for (pool, amt) in &mergebacks {
+        if let Some(pos) = splits
+            .iter()
+            .position(|(p, a, _)| p == pool && expr_eq(a.peel(), amt.peel()))
+        {
+            splits.remove(pos);
+        }
+    }
+    let resolved_debits: Vec<(String, Expr)> = debits
+        .iter()
+        .map(|(m, d)| (m.clone(), resolve_locals(d, &lets, 0)))
+        .collect();
+    let mut used = vec![false; resolved_debits.len()];
+    let entitlement_bounded = outflow_is_bounded_by_an_entitlement(model, entry);
+    let mut consume = |pool: Option<&str>, amount: &Expr| -> bool {
+        let pool_backed = match pool {
+            Some(_) => model
+                .state
+                .keys()
+                .any(|m| map_is_deposit_backed_pool(model, m, pool)),
+            None => resolved_debits
+                .iter()
+                .any(|(m, _)| map_is_deposit_backed_pool(model, m, None)),
+        };
+        if !pool_backed {
+            return true;
+        }
+        if inflows
+            .iter()
+            .any(|b| payout_is_bounded_by(amount, b.peel()))
+            || reserve_bounding_payout(model, entry, amount.peel(), &inflows, None).is_some()
+            || entitlement_bounded
+        {
+            return true;
+        }
+        for i in 0..resolved_debits.len() {
+            if !used[i]
+                && map_is_deposit_backed_pool(model, &resolved_debits[i].0, pool)
+                && payout_within_debit(amount, resolved_debits[i].1.peel())
+            {
+                used[i] = true;
+                return true;
+            }
+        }
+        false
+    };
+    for (pool, amount, span) in &splits {
+        if !consume(Some(pool.as_str()), amount) {
+            return Some(*span);
+        }
+    }
+    for (amount, span) in &sa_direct {
+        if !consume(None, amount) {
+            return Some(*span);
+        }
+    }
+    None
 }
 
 fn reserve_bounding_payout(
