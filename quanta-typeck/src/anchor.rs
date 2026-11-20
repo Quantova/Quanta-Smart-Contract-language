@@ -100,8 +100,8 @@ impl GateScan<'_, '_> {
                 right,
                 span,
             } => {
-                let now_left = mentions_now(left);
-                let now_right = mentions_now(right);
+                let now_left = mentions_now_local(left, &self.locals, 0);
+                let now_right = mentions_now_local(right, &self.locals, 0);
                 if now_left == now_right {
                     return Ok(());
                 }
@@ -310,17 +310,6 @@ fn constant_only(expr: &Expr) -> bool {
             constant_only(expr)
         }
         Expr::Binary { left, right, .. } => constant_only(left) && constant_only(right),
-        _ => false,
-    }
-}
-
-fn mentions_now(expr: &Expr) -> bool {
-    match expr {
-        Expr::Now { .. } => true,
-        Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
-            mentions_now(expr)
-        }
-        Expr::Binary { left, right, .. } => mentions_now(left) || mentions_now(right),
         _ => false,
     }
 }

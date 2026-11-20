@@ -519,6 +519,10 @@ fn ledger_funding_tokens(model: &Model, map: &str) -> HashSet<String> {
                         | (Expr::Ident(t), Expr::InAsset { .. }) => {
                             out.insert(t.text.clone());
                         }
+                        (Expr::InAsset { .. }, Expr::Native { .. })
+                        | (Expr::Native { .. }, Expr::InAsset { .. }) => {
+                            out.insert("native".to_string());
+                        }
                         _ => {}
                     }
                 }
@@ -1150,6 +1154,47 @@ fn payout_is_proportional_to_debit(
         return false;
     }
     entry_guards_total_at_least_debit(entry, total, debit)
+        && entry_consumes_total_by_debit(entry, id.text.as_str(), debit)
+}
+
+fn entry_consumes_total_by_debit(entry: &EntryDecl, total: &str, debit: &Expr) -> bool {
+    for stmt in &entry.body {
+        if let Stmt::Assign {
+            target: Expr::Ident(id),
+            op,
+            value,
+            ..
+        } = stmt
+        {
+            if id.text != total {
+                continue;
+            }
+            match op {
+                AssignOp::Sub => {
+                    if expr_eq(strip_value_noops(value), debit) {
+                        return true;
+                    }
+                }
+                AssignOp::Set => {
+                    if let Expr::Binary {
+                        op: BinOp::Sub,
+                        left,
+                        right,
+                        ..
+                    } = value.peel()
+                    {
+                        if matches!(left.peel(), Expr::Ident(l) if l.text == total)
+                            && expr_eq(strip_value_noops(right), debit)
+                        {
+                            return true;
+                        }
+                    }
+                }
+                AssignOp::Add => {}
+            }
+        }
+    }
+    false
 }
 
 fn row_is_authority_mintable(model: &Model, m: &str) -> bool {
@@ -1856,6 +1901,12 @@ fn ledger_move_is_paid_for_by_the_caller(model: &Model, entry: &EntryDecl) -> bo
         .filter(|p| crate::model::is_asset_param(p))
         .map(|p| p.name.text.as_str())
         .collect();
+    if assets
+        .iter()
+        .any(|a| asset_merged_into(model, entry, a).is_none())
+    {
+        return false;
+    }
     let backed_scalars = asset_backed_scalars(model, entry);
     let mut scalar_backer: HashMap<String, String> = HashMap::new();
     for stmt in &entry.body {
@@ -3961,7 +4012,10 @@ fn native_payout_backed_by_custom_ledger(model: &Model, entry: &EntryDecl) -> bo
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
                     if name.text == "debit" && matches!(args.first(), Some(Expr::Caller { .. })) {
                         if let Expr::Ident(map) = base.as_ref() {
-                            if !ledger_funding_tokens(model, map.text.as_str()).is_empty() {
+                            if ledger_funding_tokens(model, map.text.as_str())
+                                .iter()
+                                .any(|t| t != "native")
+                            {
                                 if let Some(amt) = args.get(1) {
                                     let resolved = resolve_locals(amt, &aliases, 0);
                                     custom_amounts.push(strip_value_noops(&resolved).clone());
@@ -4524,8 +4578,11 @@ const AUTHORITY_STEP_BUDGET: u64 = 100_000;
 struct Prot {
     stack: HashSet<String>,
     memo: HashMap<String, bool>,
+    strict_memo: HashMap<String, bool>,
     steps: u64,
     time_anchor: bool,
+    target_field: Option<String>,
+    strict: bool,
 }
 
 const COMPILE_STEP_BUDGET: u64 = 2_000_000;
@@ -4556,8 +4613,11 @@ fn protected_as(model: &Model, field: &str, time_anchor: bool) -> bool {
     let mut prot = Prot {
         stack: HashSet::new(),
         memo: HashMap::new(),
+        strict_memo: HashMap::new(),
         steps: 0,
         time_anchor,
+        target_field: None,
+        strict: false,
     };
     let protected = anchor_protected(model, field, &mut prot).0;
     model.protecting.borrow_mut().remove(&key);
@@ -4599,13 +4659,17 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
     if prot.steps > AUTHORITY_STEP_BUDGET {
         return (false, false);
     }
-    if let Some(&resolved) = prot.memo.get(field) {
+    if let Some(&resolved) = mode_memo(prot).get(field) {
         return (resolved, false);
     }
     if prot.stack.contains(field) {
+        if prot.strict {
+            return (field_rooted_at_genesis(model, field), false);
+        }
         return (true, true);
     }
     prot.stack.insert(field.to_string());
+    let saved_target = prot.target_field.replace(field.to_string());
     let mut protected = true;
     let mut tainted = false;
     for entry in &model.entries {
@@ -4624,7 +4688,7 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
             {
                 continue;
             }
-            if writes_field_only_into_an_empty_slot(model, entry, field) {
+            if !prot.strict && writes_field_only_into_an_empty_slot(model, entry, field) {
                 continue;
             }
             if credits_only_what_was_paid_in(model, entry, field) {
@@ -4645,14 +4709,38 @@ fn anchor_protected(model: &Model, field: &str, prot: &mut Prot) -> (bool, bool)
         }
     }
     prot.stack.remove(field);
+    prot.target_field = saved_target;
     if !protected {
-        prot.memo.insert(field.to_string(), false);
+        mode_memo(prot).insert(field.to_string(), false);
         return (false, false);
     }
     if !tainted {
-        prot.memo.insert(field.to_string(), true);
+        mode_memo(prot).insert(field.to_string(), true);
     }
     (true, tainted)
+}
+
+fn mode_memo(prot: &mut Prot) -> &mut HashMap<String, bool> {
+    if prot.strict {
+        &mut prot.strict_memo
+    } else {
+        &mut prot.memo
+    }
+}
+
+fn field_rooted_at_genesis(model: &Model, field: &str) -> bool {
+    for item in &model.contract.items {
+        if let quanta_ast::Item::Genesis(g) = item {
+            for stmt in &g.body {
+                if let Stmt::Assign { target, .. } = stmt {
+                    if root_ident(target) == Some(field) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 fn copies_an_unprotected_field(
@@ -4912,10 +5000,22 @@ fn gate_necessary_protected(model: &Model, expr: &Expr, prot: &mut Prot) -> (boo
             (lp && rp, lt || rt)
         }
         _ => match anchor_of(model, expr) {
-            Some(a) => anchor_protected(model, a, prot),
+            Some(a) => anchor_protected_for_gate(model, a, prot),
             None => (false, false),
         },
     }
+}
+
+fn anchor_protected_for_gate(model: &Model, anchor: &str, prot: &mut Prot) -> (bool, bool) {
+    let cross = prot.strict || prot.target_field.as_deref() != Some(anchor);
+    if !cross {
+        return anchor_protected(model, anchor, prot);
+    }
+    let saved = prot.strict;
+    prot.strict = true;
+    let result = anchor_protected(model, anchor, prot);
+    prot.strict = saved;
+    result
 }
 
 fn gate_necessary_denied_protected(model: &Model, expr: &Expr, prot: &mut Prot) -> (bool, bool) {
@@ -4941,7 +5041,7 @@ fn gate_necessary_denied_protected(model: &Model, expr: &Expr, prot: &mut Prot) 
             (lp || rp, lt || rt)
         }
         _ => match anchor_of_denied(model, expr) {
-            Some(a) => anchor_protected(model, a, prot),
+            Some(a) => anchor_protected_for_gate(model, a, prot),
             None => (false, false),
         },
     }
