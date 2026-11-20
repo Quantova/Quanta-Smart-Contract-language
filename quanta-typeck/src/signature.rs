@@ -750,9 +750,6 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
             }
         });
     }
-    if has_protected_signed_authority(model, entry) {
-        return None;
-    }
     let inflows: Vec<Expr> = entry
         .params
         .iter()
@@ -837,8 +834,9 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
         .iter()
         .map(|(m, d)| (m.clone(), resolve_locals(d, &lets, 0)))
         .collect();
+    let collateral_bounded =
+        !accumulating_state(entry).is_empty() && outflow_is_bounded_by_an_entitlement(model, entry);
     let mut used = vec![false; resolved_debits.len()];
-    let entitlement_bounded = outflow_is_bounded_by_an_entitlement(model, entry);
     let mut consume = |pool: Option<&str>, amount: &Expr| -> bool {
         let pool_backed = match pool {
             Some(_) => model
@@ -856,15 +854,12 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
             .iter()
             .any(|b| payout_is_bounded_by(amount, b.peel()))
             || reserve_bounding_payout(model, entry, amount.peel(), &inflows, None).is_some()
-            || entitlement_bounded
+            || collateral_bounded
         {
             return true;
         }
         for i in 0..resolved_debits.len() {
-            if !used[i]
-                && map_is_deposit_backed_pool(model, &resolved_debits[i].0, pool)
-                && payout_within_debit(amount, resolved_debits[i].1.peel())
-            {
+            if !used[i] && payout_within_debit(amount, resolved_debits[i].1.peel()) {
                 used[i] = true;
                 return true;
             }
