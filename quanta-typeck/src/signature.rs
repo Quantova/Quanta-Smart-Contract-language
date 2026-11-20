@@ -1112,6 +1112,24 @@ fn map_is_deposit_backed_pool(model: &Model, map: &str, pool: Option<&str>) -> b
     false
 }
 
+fn payout_is_proportional_to_debit(payout: &Expr, debit: &Expr) -> bool {
+    if let Expr::Binary {
+        op: BinOp::Div,
+        left,
+        ..
+    } = payout.peel()
+    {
+        let mut references_debit = false;
+        walk(left, &mut |e| {
+            if expr_eq(e, debit) {
+                references_debit = true;
+            }
+        });
+        return references_debit;
+    }
+    false
+}
+
 fn payout_within_debit(amount: &Expr, debit: &Expr) -> bool {
     if payout_is_bounded_by(amount, debit) {
         return true;
@@ -1231,7 +1249,7 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
     }
     let mut splits: Vec<(String, Expr, Span)> = Vec::new();
     let mut mergebacks: Vec<(String, Expr)> = Vec::new();
-    let mut sa_direct: Vec<(Expr, Span)> = Vec::new();
+    let mut sa_direct: Vec<(Expr, Option<String>, Span)> = Vec::new();
     for stmt in &entry.body {
         stmt_exprs(stmt, &mut |e| {
             if let Expr::Call { callee, args, span } = e {
@@ -1274,7 +1292,11 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
                         let is_split = matches!(rv.peel(), Expr::Call { callee, .. }
                             if matches!(callee.as_ref(), Expr::Field { name, .. } if name.text == "split"));
                         if !is_split {
-                            sa_direct.push((rv, *span));
+                            let tok = match args.first().map(|t| t.peel()) {
+                                Some(Expr::Ident(t)) => Some(t.text.clone()),
+                                _ => None,
+                            };
+                            sa_direct.push((rv, tok, *span));
                         }
                     }
                 }
@@ -1292,7 +1314,7 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
     let entitlement_bounded = outflow_is_bounded_by_an_entitlement(model, entry);
     let mut debit_used = vec![false; debits.len()];
     let mut inflow_used = vec![false; inflows.len()];
-    let mut consume = |pool: Option<&str>, amount: &Expr| -> bool {
+    let mut consume = |pool: Option<&str>, amount: &Expr, payout_token: Option<&str>| -> bool {
         if !pool_is_deposit_backed(model, pool) {
             return true;
         }
@@ -1314,7 +1336,7 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
             });
             hit
         };
-        if reserve_bounding_payout(model, entry, amount.peel(), &inflows, None).is_some()
+        if reserve_bounding_payout(model, entry, amount.peel(), &inflows, payout_token).is_some()
             || (entitlement_bounded
                 && (priced_off_inflow
                     || entry_accrual_row(entry, amount).is_some_and(|row| {
@@ -1341,18 +1363,25 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
                     return true;
                 }
             } else if !is_deposit_ledger && !folds_to_zero(&debits[i].1) {
-                return true;
+                let debit_amt = debits[i].1.peel();
+                if payout_within_debit(amount, debit_amt) {
+                    debit_used[i] = true;
+                    return true;
+                }
+                if payout_is_proportional_to_debit(amount, debit_amt) {
+                    return true;
+                }
             }
         }
         false
     };
     for (pool, amount, span) in &splits {
-        if !consume(Some(pool.as_str()), amount) {
+        if !consume(Some(pool.as_str()), amount, None) {
             return Some(*span);
         }
     }
-    for (amount, span) in &sa_direct {
-        if !consume(None, amount) {
+    for (amount, tok, span) in &sa_direct {
+        if !consume(None, amount, tok.as_deref()) {
             return Some(*span);
         }
     }
