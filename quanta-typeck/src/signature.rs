@@ -166,6 +166,17 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
             entry.name.span,
         ));
     }
+    if native_payout_backed_by_custom_ledger(model, entry) {
+        return Err(TypeError::new(
+            format!(
+                "this entry `{}` pays out native value on the strength of a ledger funded by a \
+                 custom asset, so attacker-issued units can drain the native pool; a credit \
+                 ledger may only authorize a payout of the same asset that funded it",
+                entry.name.text
+            ),
+            entry.name.span,
+        ));
+    }
     Ok(())
 }
 
@@ -2917,6 +2928,67 @@ fn caller_paid_from_foreign_row(model: &Model, entry: &EntryDecl) -> bool {
         }
     }
     false
+}
+
+fn split_arg(expr: &Expr) -> Option<&Expr> {
+    if let Expr::Call { callee, args, .. } = expr {
+        if let Expr::Field { name, .. } = callee.as_ref() {
+            if name.text == "split" {
+                return args.first();
+            }
+        }
+    }
+    None
+}
+
+fn native_payout_backed_by_custom_ledger(model: &Model, entry: &EntryDecl) -> bool {
+    let mut custom_amounts: Vec<Expr> = Vec::new();
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if name.text == "debit" && matches!(args.first(), Some(Expr::Caller { .. })) {
+                        if let Expr::Ident(map) = base.as_ref() {
+                            if !ledger_funding_tokens(model, map.text.as_str()).is_empty() {
+                                if let Some(amt) = args.get(1) {
+                                    custom_amounts.push(amt.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    if custom_amounts.is_empty() {
+        return false;
+    }
+    let mut lets: HashMap<String, Expr> = HashMap::new();
+    let mut hit = false;
+    for stmt in &entry.body {
+        if let Stmt::Let { name, value, .. } = stmt {
+            let resolved = resolve_locals(value, &lets, 0);
+            lets.insert(name.text.clone(), resolved);
+        }
+        stmt_exprs(stmt, &mut |e| {
+            if hit {
+                return;
+            }
+            if let Expr::Call { callee, args, .. } = e {
+                if matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send") {
+                    if let Some(val) = args.get(1) {
+                        let resolved = resolve_locals(val, &lets, 0);
+                        if let Some(amt) = split_arg(&resolved) {
+                            if custom_amounts.iter().any(|d| expr_eq(d, amt)) {
+                                hit = true;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    hit
 }
 
 fn entitlement_map_is_authority_written(model: &Model, map: &str) -> bool {
