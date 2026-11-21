@@ -70,6 +70,7 @@ pub struct FieldDecl {
     pub ty: Type,
     pub default: Option<Expr>,
     pub meta: bool,
+    pub public: bool,
     pub span: Span,
 }
 

@@ -58,7 +58,17 @@ impl Parser {
 
     fn field_decl(&mut self) -> Result<FieldDecl, ParseError> {
         let start = self.peek_span();
-        let meta = self.eat(&TokenKind::Meta);
+        let mut meta = false;
+        let mut public = false;
+        loop {
+            if self.eat(&TokenKind::Meta) {
+                meta = true;
+            } else if self.eat(&TokenKind::Public) {
+                public = true;
+            } else {
+                break;
+            }
+        }
         let name = self.expect_ident()?;
         self.expect(&TokenKind::Colon)?;
         let ty = self.ty()?;
@@ -74,6 +84,7 @@ impl Parser {
             ty,
             default,
             meta,
+            public,
         })
     }
 
