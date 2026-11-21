@@ -100,8 +100,8 @@ impl GateScan<'_, '_> {
                 right,
                 span,
             } => {
-                let now_left = mentions_now_local(left, &self.locals, 0);
-                let now_right = mentions_now_local(right, &self.locals, 0);
+                let now_left = mentions_now_local(left, &self.locals);
+                let now_right = mentions_now_local(right, &self.locals);
                 if now_left == now_right {
                     return Ok(());
                 }
@@ -314,32 +314,31 @@ fn constant_only(expr: &Expr) -> bool {
     }
 }
 
-fn mentions_now_local<'a>(
+fn mentions_now_local<'a>(expr: &'a Expr, locals: &HashMap<&'a str, &'a Expr>) -> bool {
+    let mut visited: HashSet<&'a str> = HashSet::new();
+    mentions_now_follow(expr, locals, &mut visited)
+}
+
+fn mentions_now_follow<'a>(
     expr: &'a Expr,
     locals: &HashMap<&'a str, &'a Expr>,
-    depth: usize,
+    visited: &mut HashSet<&'a str>,
 ) -> bool {
-    if depth > MAX_LOCAL_DEPTH {
-        return false;
-    }
     match expr {
         Expr::Now { .. } => true,
-        Expr::Ident(id) => locals
-            .get(id.text.as_str())
-            .is_some_and(|e| mentions_now_local(e, locals, depth + 1)),
+        Expr::Ident(id) => now_through_alias(id.text.as_str(), locals, visited),
         Expr::Unary { expr, .. } | Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
-            mentions_now_local(expr, locals, depth)
+            mentions_now_follow(expr, locals, visited)
         }
         Expr::Binary { left, right, .. } => {
-            mentions_now_local(left, locals, depth) || mentions_now_local(right, locals, depth)
+            mentions_now_follow(left, locals, visited)
+                || mentions_now_follow(right, locals, visited)
         }
         Expr::Call { callee, args, .. } => {
             if let Expr::Field { base, name, .. } = callee.as_ref() {
                 if name.text == "get" && matches!(args.first(), Some(Expr::Caller { .. })) {
                     if let Expr::Ident(m) = base.as_ref() {
-                        return locals
-                            .get(m.text.as_str())
-                            .is_some_and(|e| mentions_now_local(e, locals, depth + 1));
+                        return now_through_alias(m.text.as_str(), locals, visited);
                     }
                 }
             }
@@ -347,6 +346,21 @@ fn mentions_now_local<'a>(
         }
         _ => false,
     }
+}
+
+fn now_through_alias<'a>(
+    name: &'a str,
+    locals: &HashMap<&'a str, &'a Expr>,
+    visited: &mut HashSet<&'a str>,
+) -> bool {
+    if !visited.insert(name) {
+        return false;
+    }
+    let reached = locals
+        .get(name)
+        .is_some_and(|e| mentions_now_follow(e, locals, visited));
+    visited.remove(name);
+    reached
 }
 
 fn time_compared_fields<'a>(
@@ -362,7 +376,7 @@ fn time_compared_fields<'a>(
         } => {
             if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge) {
                 for (side, other) in [(left, right), (right, left)] {
-                    if mentions_now_local(side, locals, 0) {
+                    if mentions_now_local(side, locals) {
                         let mut reads: Vec<&Expr> = Vec::new();
                         collect_anchor_reads(model, params, locals, other, &mut reads, 0);
                         collect_anchor_reads(model, params, locals, side, &mut reads, 0);

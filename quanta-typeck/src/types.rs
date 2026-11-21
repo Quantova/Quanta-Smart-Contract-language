@@ -1314,6 +1314,11 @@ fn bounded_addend(value: &Expr, asset_params: &[&str]) -> bool {
             Expr::Ident(id) => asset_params.contains(&id.text.as_str()),
             _ => false,
         },
+        Expr::Call { callee, args, .. } => {
+            args.len() == 1
+                && matches!(callee.as_ref(), Expr::Field { base, name, .. }
+                    if name.text == "get" && matches!(base.as_ref(), Expr::Ident(_)))
+        }
         _ => false,
     }
 }
