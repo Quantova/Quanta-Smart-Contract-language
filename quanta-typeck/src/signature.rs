@@ -1888,6 +1888,78 @@ fn map_feeds_self_service_send(model: &Model, m: &str) -> bool {
     false
 }
 
+fn proportional_denominators(model: &Model) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for entry in &model.entries {
+        for stmt in &entry.body {
+            stmt_exprs(stmt, &mut |e| {
+                if let Expr::Binary {
+                    op: BinOp::Div,
+                    right,
+                    ..
+                } = e
+                {
+                    if let Expr::Ident(s) = right.peel() {
+                        if model.state.contains_key(s.text.as_str()) {
+                            out.insert(s.text.clone());
+                        }
+                    }
+                }
+            });
+        }
+    }
+    out
+}
+
+fn entry_grows_denominator_by(entry: &EntryDecl, denoms: &HashSet<String>, amt: &Expr) -> bool {
+    for stmt in &entry.body {
+        if let Stmt::Assign {
+            target: Expr::Ident(id),
+            op,
+            value,
+            ..
+        } = stmt
+        {
+            if !denoms.contains(id.text.as_str()) {
+                continue;
+            }
+            match op {
+                AssignOp::Add => {
+                    if expr_eq(strip_value_noops(value), strip_value_noops(amt)) {
+                        return true;
+                    }
+                }
+                AssignOp::Set => {
+                    if let Expr::Binary {
+                        op: BinOp::Add,
+                        left,
+                        right,
+                        ..
+                    } = value.peel()
+                    {
+                        if matches!(left.peel(), Expr::Ident(l) if l.text == id.text)
+                            && expr_eq(strip_value_noops(right), strip_value_noops(amt))
+                        {
+                            return true;
+                        }
+                        if matches!(right.peel(), Expr::Ident(l) if l.text == id.text)
+                            && expr_eq(strip_value_noops(left), strip_value_noops(amt))
+                        {
+                            return true;
+                        }
+                    } else if entry_guards_total_zero(entry, id.text.as_str())
+                        && expr_eq(strip_value_noops(value), strip_value_noops(amt))
+                    {
+                        return true;
+                    }
+                }
+                AssignOp::Sub => {}
+            }
+        }
+    }
+    false
+}
+
 fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Option<Span> {
     let has_auth =
         has_protected_signed_authority(model, entry) || entry_guarded_by_owner(model, entry);
@@ -1993,24 +2065,26 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
             splits.remove(pos);
         }
     }
+    let denoms = proportional_denominators(model);
     let mut credit_outflows: Vec<(Expr, Span)> = Vec::new();
-    if !splits.is_empty() || !sa_direct.is_empty() {
-        for stmt in &entry.body {
-            if let Stmt::Expr {
-                expr: Expr::Call { callee, args, span },
-                ..
-            } = stmt
-            {
-                if let Expr::Field { base, name, .. } = callee.as_ref() {
-                    if matches!(name.text.as_str(), "credit" | "insert")
-                        && matches!(args.first(), Some(Expr::Caller { .. }))
-                    {
-                        if let Expr::Ident(m) = base.as_ref() {
-                            if !map_is_deposit_backed_pool(model, m.text.as_str(), None)
-                                && map_feeds_self_service_send(model, m.text.as_str())
-                            {
-                                if let Some(amt) = args.get(1) {
-                                    credit_outflows.push((resolve_locals(amt, &lets, 0), *span));
+    for stmt in &entry.body {
+        if let Stmt::Expr {
+            expr: Expr::Call { callee, args, span },
+            ..
+        } = stmt
+        {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if matches!(name.text.as_str(), "credit" | "insert")
+                    && matches!(args.first(), Some(Expr::Caller { .. }))
+                {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if !map_is_deposit_backed_pool(model, m.text.as_str(), None)
+                            && map_feeds_self_service_send(model, m.text.as_str())
+                        {
+                            if let Some(amt) = args.get(1) {
+                                let resolved = resolve_locals(amt, &lets, 0);
+                                if !entry_grows_denominator_by(entry, &denoms, &resolved) {
+                                    credit_outflows.push((resolved, *span));
                                 }
                             }
                         }
@@ -2061,10 +2135,10 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
             }
             let m = &debits[i].0;
             let funding = ledger_funding_tokens(model, m);
-            let token_ok = funding.is_empty()
-                || match payout_token {
-                    Some(t) => funding.contains(t),
-                    None => funding.contains("native"),
+            let token_ok = funding.len() <= 1
+                && match payout_token {
+                    Some(t) => funding.is_empty() || funding.contains(t),
+                    None => true,
                 };
             if !token_ok {
                 continue;
