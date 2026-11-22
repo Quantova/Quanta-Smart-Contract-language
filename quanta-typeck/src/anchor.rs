@@ -415,6 +415,40 @@ fn is_time_or_constant(value: &Expr) -> bool {
     }
 }
 
+fn is_forward_dated_from_now(value: &Expr) -> bool {
+    match value {
+        Expr::Now { .. } => true,
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => is_forward_dated_from_now(expr),
+        Expr::Binary {
+            op: BinOp::Add,
+            left,
+            right,
+            ..
+        } => {
+            (matches!(left.as_ref(), Expr::Now { .. }) && is_nonneg_offset(right))
+                || (matches!(right.as_ref(), Expr::Now { .. }) && is_nonneg_offset(left))
+        }
+        _ => false,
+    }
+}
+
+fn is_nonneg_offset(expr: &Expr) -> bool {
+    match expr {
+        Expr::Int(_) | Expr::Ident(_) | Expr::Field { .. } => true,
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => is_nonneg_offset(expr),
+        Expr::Call { callee, .. } => {
+            matches!(callee.as_ref(), Expr::Field { name, .. } if name.text == "get")
+        }
+        Expr::Binary {
+            op: BinOp::Add | BinOp::Mul,
+            left,
+            right,
+            ..
+        } => is_nonneg_offset(left) && is_nonneg_offset(right),
+        _ => false,
+    }
+}
+
 fn writes_other_than_time(model: &Model, field: &str) -> bool {
     let mut other = false;
     for entry in &model.entries {
@@ -439,8 +473,10 @@ fn writes_other_than_time(model: &Model, field: &str) -> bool {
                     if let Expr::Field { base, name, .. } = callee.as_ref() {
                         if matches!(base.as_ref(), Expr::Ident(id) if id.text == field) {
                             let reads = matches!(name.text.as_str(), "get" | "contains");
-                            let timed =
-                                name.text == "set" && args.get(1).is_some_and(is_time_or_constant);
+                            let timed = name.text == "set"
+                                && args.get(1).is_some_and(|v| {
+                                    is_time_or_constant(v) || is_forward_dated_from_now(v)
+                                });
                             if !reads && !timed {
                                 other = true;
                             }
@@ -846,10 +882,10 @@ fn collect_anchor_reads<'a>(
             if params.contains(name) {
                 return;
             }
-            if let Some(value) = locals.get(name) {
-                collect_anchor_reads(model, params, locals, value, out, depth + 1);
-            } else if model.state.contains_key(name) {
+            if model.state.contains_key(name) {
                 out.push(expr);
+            } else if let Some(value) = locals.get(name) {
+                collect_anchor_reads(model, params, locals, value, out, depth + 1);
             }
         }
         Expr::Call { callee, .. } => {

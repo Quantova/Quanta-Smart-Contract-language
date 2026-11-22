@@ -168,12 +168,33 @@ fn refuse_word64_as_digest(name: &str, ty: &Type) -> Result<(), TypeError> {
     Ok(())
 }
 
+const UNSUPPORTED_INT_TYPES: &[&str] = &["i8", "i16", "i32", "i64", "i128"];
+
+fn reject_signed_int(ty: &Type) -> Result<(), TypeError> {
+    if UNSUPPORTED_INT_TYPES.contains(&ty.name.text.as_str()) {
+        return Err(TypeError::new(
+            format!(
+                "the signed integer type `{}` is not supported; use an unsigned integer",
+                ty.name.text
+            ),
+            ty.span,
+        ));
+    }
+    for arg in &ty.args {
+        if let GenericArg::Type(inner) = arg {
+            reject_signed_int(inner)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn check(model: &Model) -> Result<(), TypeError> {
     let defaults = Env::new(model, HashMap::new());
     for item in &model.contract.items {
         if let Item::State(block) = item {
             for field in &block.fields {
                 storable(&field.ty)?;
+                reject_signed_int(&field.ty)?;
                 refuse_word64_as_digest(&field.name.text, &field.ty)?;
                 let Some(value) = &field.default else {
                     continue;
@@ -200,6 +221,7 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
         if let Item::Event(event) = item {
             for param in &event.params {
                 event_field_type(&param.ty)?;
+                reject_signed_int(&param.ty)?;
                 refuse_word64_as_digest(&param.name.text, &param.ty)?;
             }
         }
@@ -210,6 +232,7 @@ pub fn check(model: &Model) -> Result<(), TypeError> {
     for entry in &model.entries {
         for param in &entry.params {
             guardian_bound(&param.ty)?;
+            reject_signed_int(&param.ty)?;
             refuse_word64_as_digest(&param.name.text, &param.ty)?;
         }
     }
@@ -379,6 +402,493 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
     }
     check_arithmetic(entry, &env.params)?;
     check_underflow(entry, &env.params)?;
+    check_budget_advance(model, entry)?;
+    Ok(())
+}
+
+fn entry_sends_value(entry: &EntryDecl) -> bool {
+    entry.body.iter().any(|stmt| {
+        if let Stmt::Expr {
+            expr: Expr::Call { callee, .. },
+            ..
+        } = stmt
+        {
+            matches!(callee.as_ref(), Expr::Ident(id) if id.text == "send" || id.text == "send_asset")
+        } else {
+            false
+        }
+    })
+}
+
+#[derive(Clone, PartialEq)]
+enum Red {
+    Zero,
+    Const(i128),
+    Bare(String),
+    Other,
+}
+
+fn reduce(model: &Model, e: &Expr) -> Red {
+    match e.peel() {
+        Expr::Int(i) => match i.text.parse::<i128>() {
+            Ok(0) => Red::Zero,
+            Ok(v) => Red::Const(v),
+            Err(_) => Red::Other,
+        },
+        Expr::Ident(id) if model.state.contains_key(id.text.as_str()) => Red::Bare(id.text.clone()),
+        Expr::Binary {
+            op, left, right, ..
+        } => match op {
+            BinOp::Add => combine_add(reduce(model, left), reduce(model, right)),
+            BinOp::Sub => {
+                if crate::signature::expr_eq(left.peel(), right.peel()) {
+                    return Red::Zero;
+                }
+                combine_sub(reduce(model, left), reduce(model, right))
+            }
+            BinOp::Mul => combine_mul(reduce(model, left), reduce(model, right)),
+            BinOp::Div => reduce_div(model, left, right),
+            BinOp::Rem => reduce_rem(reduce(model, left), reduce(model, right)),
+            _ => Red::Other,
+        },
+        _ => Red::Other,
+    }
+}
+
+fn combine_add(a: Red, b: Red) -> Red {
+    match (a, b) {
+        (Red::Zero, b) => b,
+        (a, Red::Zero) => a,
+        (Red::Const(x), Red::Const(y)) => Red::Const(x.wrapping_add(y)),
+        _ => Red::Other,
+    }
+}
+
+fn combine_sub(a: Red, b: Red) -> Red {
+    match (a, b) {
+        (a, Red::Zero) => a,
+        (Red::Const(x), Red::Const(y)) => Red::Const(x.wrapping_sub(y)),
+        _ => Red::Other,
+    }
+}
+
+fn combine_mul(a: Red, b: Red) -> Red {
+    match (a, b) {
+        (Red::Zero, _) | (_, Red::Zero) => Red::Zero,
+        (Red::Const(1), b) => b,
+        (a, Red::Const(1)) => a,
+        (Red::Const(x), Red::Const(y)) => Red::Const(x.wrapping_mul(y)),
+        _ => Red::Other,
+    }
+}
+
+fn reduce_div(model: &Model, left: &Expr, right: &Expr) -> Red {
+    match reduce(model, right) {
+        Red::Const(1) => reduce(model, left),
+        Red::Const(k) if k != 0 => {
+            if let Expr::Binary {
+                op: BinOp::Mul,
+                left: a,
+                right: b,
+                ..
+            } = left.peel()
+            {
+                if reduce(model, a) == Red::Const(k) {
+                    return reduce(model, b);
+                }
+                if reduce(model, b) == Red::Const(k) {
+                    return reduce(model, a);
+                }
+            }
+            match reduce(model, left) {
+                Red::Const(x) => Red::Const(x / k),
+                _ => Red::Other,
+            }
+        }
+        _ => Red::Other,
+    }
+}
+
+fn reduce_rem(a: Red, b: Red) -> Red {
+    match b {
+        Red::Const(1) => Red::Zero,
+        Red::Const(k) if k != 0 => match a {
+            Red::Const(x) => Red::Const(x % k),
+            _ => Red::Other,
+        },
+        _ => Red::Other,
+    }
+}
+
+fn reduce_bare(model: &Model, e: &Expr) -> Option<String> {
+    match reduce(model, e) {
+        Red::Bare(name) => Some(name),
+        _ => None,
+    }
+}
+
+fn contains_expr(hay: &Expr, needle: &Expr) -> bool {
+    if crate::signature::expr_eq(hay.peel(), needle.peel()) {
+        return true;
+    }
+    match hay.peel() {
+        Expr::Unary { expr, .. } => contains_expr(expr, needle),
+        Expr::Binary { left, right, .. } => {
+            contains_expr(left, needle) || contains_expr(right, needle)
+        }
+        Expr::Field { base, .. } => contains_expr(base, needle),
+        Expr::Call { callee, args, .. } => {
+            contains_expr(callee, needle) || args.iter().any(|a| contains_expr(a, needle))
+        }
+        _ => false,
+    }
+}
+
+fn collect_amounts<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+    if let Expr::Call { callee, args, .. } = e.peel() {
+        match callee.peel() {
+            Expr::Field { name, .. } if name.text == "split" => {
+                if let Some(a) = args.first() {
+                    out.push(a);
+                }
+            }
+            Expr::Ident(id) if id.text == "send" || id.text == "send_asset" => {
+                for a in args.iter().skip(1) {
+                    out.push(a);
+                }
+            }
+            _ => {}
+        }
+        collect_amounts(callee, out);
+        for a in args {
+            collect_amounts(a, out);
+        }
+        return;
+    }
+    match e.peel() {
+        Expr::Unary { expr, .. } => collect_amounts(expr, out),
+        Expr::Binary { left, right, .. } => {
+            collect_amounts(left, out);
+            collect_amounts(right, out);
+        }
+        Expr::Field { base, .. } => collect_amounts(base, out),
+        _ => {}
+    }
+}
+
+fn sent_amounts(entry: &EntryDecl) -> Vec<&Expr> {
+    let mut out = Vec::new();
+    for stmt in &entry.body {
+        match stmt {
+            Stmt::Expr { expr, .. } | Stmt::Let { value: expr, .. } | Stmt::Guard { expr, .. } => {
+                collect_amounts(expr, &mut out)
+            }
+            Stmt::Assign { value, .. } => collect_amounts(value, &mut out),
+            Stmt::Emit { args, .. } => {
+                for a in args {
+                    collect_amounts(a, &mut out);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn cap_relations<'a>(expr: &'a Expr, out: &mut Vec<(&'a Expr, &'a Expr)>) {
+    match expr.peel() {
+        Expr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+            ..
+        } => {
+            cap_relations(left, out);
+            cap_relations(right, out);
+        }
+        Expr::Binary {
+            op: BinOp::Le | BinOp::Lt,
+            left,
+            right,
+            ..
+        } => out.push((left, right)),
+        Expr::Binary {
+            op: BinOp::Ge | BinOp::Gt,
+            left,
+            right,
+            ..
+        } => out.push((right, left)),
+        _ => {}
+    }
+}
+
+fn mentions_state(model: &Model, e: &Expr) -> bool {
+    match e.peel() {
+        Expr::Ident(id) => model.state.contains_key(id.text.as_str()),
+        Expr::Unary { expr, .. } => mentions_state(model, expr),
+        Expr::Binary { left, right, .. } => {
+            mentions_state(model, left) || mentions_state(model, right)
+        }
+        Expr::Field { base, .. } => mentions_state(model, base),
+        Expr::Call { callee, args, .. } => {
+            mentions_state(model, callee) || args.iter().any(|a| mentions_state(model, a))
+        }
+        _ => false,
+    }
+}
+
+fn cap_attempts_remaining(model: &Model, small: &Expr, large: &Expr) -> bool {
+    fn large_subtracts_state(model: &Model, e: &Expr) -> bool {
+        match e.peel() {
+            Expr::Binary {
+                op: BinOp::Sub,
+                left,
+                right,
+                ..
+            } => {
+                mentions_state(model, right)
+                    || large_subtracts_state(model, left)
+                    || large_subtracts_state(model, right)
+            }
+            Expr::Binary {
+                op: BinOp::Add | BinOp::Mul | BinOp::Div | BinOp::Rem,
+                left,
+                right,
+                ..
+            } => large_subtracts_state(model, left) || large_subtracts_state(model, right),
+            _ => false,
+        }
+    }
+    fn small_adds_state(model: &Model, e: &Expr) -> bool {
+        match e.peel() {
+            Expr::Binary {
+                op: BinOp::Add,
+                left,
+                right,
+                ..
+            } => {
+                mentions_state(model, left)
+                    || mentions_state(model, right)
+                    || small_adds_state(model, left)
+                    || small_adds_state(model, right)
+            }
+            _ => false,
+        }
+    }
+    large_subtracts_state(model, large) || small_adds_state(model, small)
+}
+
+enum Counter<'a> {
+    Scalar(String),
+    Map { map: String, key: &'a Expr },
+}
+
+fn is_map_get(e: &Expr, map: &str, key: &Expr) -> bool {
+    if let Expr::Call { callee, args, .. } = e.peel() {
+        if let Expr::Field { base, name, .. } = callee.peel() {
+            if name.text == "get" {
+                if let Expr::Ident(m) = base.peel() {
+                    return m.text == map
+                        && args
+                            .first()
+                            .is_some_and(|k| crate::signature::expr_eq(k.peel(), key.peel()));
+                }
+            }
+        }
+    }
+    false
+}
+
+fn recognize_counter<'a>(model: &Model, e: &'a Expr) -> Option<Counter<'a>> {
+    if let Some(name) = reduce_bare(model, e) {
+        return Some(Counter::Scalar(name));
+    }
+    if let Expr::Call { callee, args, .. } = e.peel() {
+        if let Expr::Field { base, name, .. } = callee.peel() {
+            if name.text == "get" {
+                if let Expr::Ident(m) = base.peel() {
+                    if model.state.contains_key(m.text.as_str()) {
+                        if let Some(key) = args.first() {
+                            return Some(Counter::Map {
+                                map: m.text.clone(),
+                                key,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn counter_name<'a>(counter: &'a Counter) -> &'a str {
+    match counter {
+        Counter::Scalar(name) => name,
+        Counter::Map { map, .. } => map,
+    }
+}
+
+fn entry_advances(entry: &EntryDecl, counter: &Counter, amount: &Expr) -> bool {
+    match counter {
+        Counter::Scalar(name) => entry_advances_counter_by(entry, name, amount),
+        Counter::Map { map, key } => entry_advances_map_by(entry, map, key, amount),
+    }
+}
+
+fn entry_advances_map_by(entry: &EntryDecl, map: &str, key: &Expr, amount: &Expr) -> bool {
+    for stmt in &entry.body {
+        let Stmt::Expr {
+            expr: Expr::Call { callee, args, .. },
+            ..
+        } = stmt
+        else {
+            continue;
+        };
+        let Expr::Field { base, name, .. } = callee.peel() else {
+            continue;
+        };
+        let Expr::Ident(m) = base.peel() else {
+            continue;
+        };
+        if m.text != map || args.len() < 2 || !crate::signature::expr_eq(args[0].peel(), key.peel())
+        {
+            continue;
+        }
+        match name.text.as_str() {
+            "credit" => {
+                if crate::signature::expr_eq(args[1].peel(), amount.peel()) {
+                    return true;
+                }
+            }
+            "set" => {
+                if let Expr::Binary {
+                    op: BinOp::Add,
+                    left,
+                    right,
+                    ..
+                } = args[1].peel()
+                {
+                    if (is_map_get(left, map, key)
+                        && crate::signature::expr_eq(right.peel(), amount.peel()))
+                        || (is_map_get(right, map, key)
+                            && crate::signature::expr_eq(left.peel(), amount.peel()))
+                    {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+fn proves_cumulative_bound(model: &Model, entry: &EntryDecl, small: &Expr, large: &Expr) -> bool {
+    if let Expr::Binary {
+        op: BinOp::Sub,
+        right: sub,
+        ..
+    } = large.peel()
+    {
+        if let Some(counter) = recognize_counter(model, sub) {
+            if !mentions(small, counter_name(&counter)) && entry_advances(entry, &counter, small) {
+                return true;
+            }
+        }
+    }
+    if let Expr::Binary {
+        op: BinOp::Add,
+        left: p,
+        right: q,
+        ..
+    } = small.peel()
+    {
+        for (cexpr, aexpr) in [(p.as_ref(), q.as_ref()), (q.as_ref(), p.as_ref())] {
+            if let Some(counter) = recognize_counter(model, cexpr) {
+                if !mentions(large, counter_name(&counter))
+                    && entry_advances(entry, &counter, aexpr)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn entry_advances_counter_by(entry: &EntryDecl, counter: &str, amount: &Expr) -> bool {
+    for stmt in &entry.body {
+        if let Stmt::Assign {
+            target: Expr::Ident(id),
+            op,
+            value,
+            ..
+        } = stmt
+        {
+            if id.text != counter {
+                continue;
+            }
+            match op {
+                AssignOp::Add => {
+                    if crate::signature::expr_eq(value.peel(), amount.peel()) {
+                        return true;
+                    }
+                }
+                AssignOp::Set => {
+                    if let Expr::Binary {
+                        op: BinOp::Add,
+                        left,
+                        right,
+                        ..
+                    } = value.peel()
+                    {
+                        let (l, r) = (left.peel(), right.peel());
+                        let is_c = |e: &Expr| matches!(e, Expr::Ident(x) if x.text == counter);
+                        if (is_c(l) && crate::signature::expr_eq(r, amount.peel()))
+                            || (is_c(r) && crate::signature::expr_eq(l, amount.peel()))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                AssignOp::Sub => {}
+            }
+        }
+    }
+    false
+}
+
+fn check_budget_advance(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
+    if !entry_sends_value(entry) {
+        return Ok(());
+    }
+    let amounts = sent_amounts(entry);
+    for clause in &entry.clauses {
+        if let Clause::Limits { expr, span } = clause {
+            let mut rels = Vec::new();
+            cap_relations(expr, &mut rels);
+            for (small, large) in rels {
+                if !amounts.iter().any(|a| contains_expr(small, a)) {
+                    continue;
+                }
+                if !cap_attempts_remaining(model, small, large) {
+                    continue;
+                }
+                if !proves_cumulative_bound(model, entry, small, large) {
+                    return Err(TypeError::new(
+                        "this `limits` clause caps a value this entry pays out, but the cap is \
+                         not proven to bound cumulative spend against a counter the entry advances \
+                         by the amount it moves, so it resets every call and can be exceeded across \
+                         calls; cap the amount with `<cap> - <counter>` (or `<counter> + <amount> \
+                         <= <cap>`) where `<counter>` is a state slot this entry advances by that \
+                         amount"
+                            .to_string(),
+                        *span,
+                    ));
+                }
+            }
+        }
+    }
     Ok(())
 }
 

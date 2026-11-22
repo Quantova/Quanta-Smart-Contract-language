@@ -1534,6 +1534,96 @@ fn payout_is_proportional_to_debit(
         && total_backed_by_an_inflow(model, id.text.as_str())
         && share_denominator_is_conservative(model, entry, id.text.as_str(), debit)
         && pool_grows_in_lockstep_with_total(model, left, id.text.as_str())
+        && total_shrinks_only_in_lockstep(model, left, id.text.as_str())
+}
+
+fn total_decrement<'a>(stmt: &'a Stmt, total: &str) -> Option<&'a Expr> {
+    if let Stmt::Assign {
+        target: Expr::Ident(id),
+        op,
+        value,
+        ..
+    } = stmt
+    {
+        if id.text != total {
+            return None;
+        }
+        match op {
+            AssignOp::Sub => return Some(value),
+            AssignOp::Set => {
+                if let Expr::Binary {
+                    op: BinOp::Sub,
+                    left,
+                    right,
+                    ..
+                } = value.peel()
+                {
+                    if matches!(left.peel(), Expr::Ident(t) if t.text == total) {
+                        return Some(right);
+                    }
+                }
+            }
+            AssignOp::Add => {}
+        }
+    }
+    None
+}
+
+fn entry_redeems_pool_proportionally(entry: &EntryDecl, pool: &str, total: &str, z: &Expr) -> bool {
+    let mut hit = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if hit {
+                return;
+            }
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if name.text == "split"
+                        && matches!(base.as_ref(), Expr::Ident(p) if p.text == pool)
+                    {
+                        if let Some(Expr::Binary {
+                            op: BinOp::Div,
+                            left,
+                            right,
+                            ..
+                        }) = args.first().map(|a| a.peel())
+                        {
+                            if matches!(right.peel(), Expr::Ident(t) if t.text == total) {
+                                walk(left, &mut |x| {
+                                    if expr_eq(x, z.peel()) {
+                                        hit = true;
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    hit
+}
+
+fn total_shrinks_only_in_lockstep(model: &Model, numerator: &Expr, total: &str) -> bool {
+    let Some(pool) = find_pool_asset(model, numerator) else {
+        return true;
+    };
+    for entry in &model.entries {
+        for stmt in &entry.body {
+            if let Some(z) = total_decrement(stmt, total) {
+                if has_protected_signed_authority(model, entry)
+                    || entry_guarded_by_owner(model, entry)
+                {
+                    continue;
+                }
+                if entry_redeems_pool_proportionally(entry, pool, total, z) {
+                    continue;
+                }
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn find_pool_asset<'a>(model: &Model, numerator: &'a Expr) -> Option<&'a str> {
@@ -2496,6 +2586,70 @@ fn governance_credit_proven(
     }
 }
 
+fn amount_guard_bounded_by(entry: &EntryDecl, amount: &Expr, inflow: &Expr) -> bool {
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, .. } = stmt {
+            let mut parts: Vec<&Expr> = Vec::new();
+            split_and(expr, &mut parts);
+            for p in parts {
+                if let Expr::Binary {
+                    op, left, right, ..
+                } = p.peel()
+                {
+                    let (hi, lo) = match op {
+                        BinOp::Gt | BinOp::Ge => (left.peel(), right.peel()),
+                        BinOp::Lt | BinOp::Le => (right.peel(), left.peel()),
+                        _ => continue,
+                    };
+                    if expr_eq(hi, inflow.peel()) && expr_eq(lo, amount.peel()) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+fn row_reinflated_after(entry: &EntryDecl, map: &str, debit_idx: usize) -> bool {
+    for (i, stmt) in entry.body.iter().enumerate() {
+        if i <= debit_idx {
+            continue;
+        }
+        let mut hit = false;
+        stmt_exprs(stmt, &mut |e| {
+            if let Expr::Call { callee, args, .. } = e {
+                if let Expr::Field { base, name, .. } = callee.as_ref() {
+                    if matches!(name.text.as_str(), "set" | "credit" | "insert")
+                        && matches!(base.as_ref(), Expr::Ident(m) if m.text == map)
+                        && matches!(args.first(), Some(Expr::Caller { .. }))
+                    {
+                        hit = true;
+                    }
+                }
+            }
+        });
+        if hit {
+            return true;
+        }
+    }
+    false
+}
+
+fn value_reads_map_row(value: &Expr, map: &str) -> bool {
+    let mut reads = false;
+    walk(value, &mut |e| {
+        if let Expr::Call { callee, .. } = e {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if name.text == "get" && matches!(base.as_ref(), Expr::Ident(m) if m.text == map) {
+                    reads = true;
+                }
+            }
+        }
+    });
+    reads
+}
+
 fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Option<Span> {
     let has_auth =
         has_protected_signed_authority(model, entry) || entry_guarded_by_owner(model, entry);
@@ -2529,6 +2683,7 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
                     if name.text == "debit" && matches!(args.first(), Some(Expr::Caller { .. })) {
                         if let (Expr::Ident(m), Some(amount)) = (base.as_ref(), args.get(1)) {
                             let valid = !row_inflated_before(entry, &m.text, idx)
+                                && !row_reinflated_after(entry, &m.text, idx)
                                 && !amount_reads_written_state(amount, &written);
                             debits.push((m.text.clone(), resolve_locals(amount, &lets, 0), valid));
                         }
@@ -2610,14 +2765,15 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
         } = stmt
         {
             if let Expr::Field { base, name, .. } = callee.as_ref() {
-                if matches!(name.text.as_str(), "credit" | "insert") {
+                if matches!(name.text.as_str(), "credit" | "insert" | "set") {
                     if let Expr::Ident(m) = base.as_ref() {
-                        if !map_is_deposit_backed_pool(model, m.text.as_str(), None)
-                            && map_feeds_self_service_send(model, m.text.as_str())
-                        {
+                        if map_feeds_self_service_send(model, m.text.as_str()) {
                             if let Some(amt) = args.get(1) {
                                 let resolved = resolve_locals(amt, &lets, 0);
-                                if !entry_grows_denominator_by(entry, &denoms, &resolved)
+                                let set_increment = name.text == "set"
+                                    && value_reads_map_row(&resolved, m.text.as_str());
+                                if !set_increment
+                                    && !entry_grows_denominator_by(entry, &denoms, &resolved)
                                     && !governance_credit_proven(
                                         model,
                                         entry,
@@ -2646,6 +2802,12 @@ fn self_service_payout_exceeds_backing(model: &Model, entry: &EntryDecl) -> Opti
         }
         for j in 0..inflows.len() {
             if !inflow_used[j] && payout_is_bounded_by(amount, inflows[j].peel()) {
+                inflow_used[j] = true;
+                return true;
+            }
+        }
+        for j in 0..inflows.len() {
+            if !inflow_used[j] && amount_guard_bounded_by(entry, amount, inflows[j].peel()) {
                 inflow_used[j] = true;
                 return true;
             }
@@ -3191,19 +3353,72 @@ fn unconditional_self_claim(model: &Model, entry: &EntryDecl) -> Option<TypeErro
         });
     }
     let (map, key) = claimed?;
-    let reads_the_slot = |e: &Expr| {
+    let is_slot_call = |e: &Expr, methods: &[&str]| -> bool {
+        if let Expr::Call { callee, args, .. } = e.peel() {
+            if let Expr::Field { base, name, .. } = callee.as_ref() {
+                if methods.contains(&name.text.as_str()) {
+                    if let Expr::Ident(m) = base.as_ref() {
+                        if m.text == map && model.state.contains_key(m.text.as_str()) {
+                            return matches!(args.first(), Some(Expr::Ident(k)) if k.text == key);
+                        }
+                    }
+                }
+            }
+        }
+        false
+    };
+    let is_slot_contains = |e: &Expr| -> bool { is_slot_call(e, &["contains", "has"]) };
+    let is_slot_get = |e: &Expr| -> bool { is_slot_call(e, &["get"]) };
+    let get_cmp_zero = |e: &Expr, eq: bool| -> bool {
+        if let Expr::Binary {
+            op, left, right, ..
+        } = e.peel()
+        {
+            let wanted = if eq { BinOp::Eq } else { BinOp::Ne };
+            if *op == wanted {
+                return (is_slot_get(left) && is_zero_int(right))
+                    || (is_slot_get(right) && is_zero_int(left));
+            }
+        }
+        false
+    };
+    let requires_slot_empty = |e: &Expr| -> bool {
+        matches!(e.peel(), Expr::Unary { op: UnaryOp::Not, expr, .. } if is_slot_contains(expr))
+            || get_cmp_zero(e, true)
+    };
+    let denies_protective = |e: &Expr| -> bool { is_slot_contains(e) || get_cmp_zero(e, false) };
+    let is_contains_eq_false = |e: &Expr| -> bool {
+        matches!(e.peel(), Expr::Binary { op: BinOp::Eq, left, right, .. }
+            if (is_slot_contains(left) && matches!(right.peel(), Expr::Ident(b) if b.text == "false"))
+                || (is_slot_contains(right) && matches!(left.peel(), Expr::Ident(b) if b.text == "false")))
+    };
+    let is_get_eq_caller = |e: &Expr| -> bool {
+        matches!(e.peel(), Expr::Binary { op: BinOp::Eq, left, right, .. }
+            if (is_slot_get(left) && matches!(right.peel(), Expr::Caller { .. }))
+                || (is_slot_get(right) && matches!(left.peel(), Expr::Caller { .. })))
+    };
+    let proves_empty_or_owner = |e: &Expr| -> bool {
+        matches!(e.peel(), Expr::Unary { op: UnaryOp::Not, expr, .. } if is_slot_contains(expr))
+            || is_contains_eq_false(e)
+            || get_cmp_zero(e, true)
+            || is_get_eq_caller(e)
+    };
+    let reads_slot = |e: &Expr, written: bool| -> bool {
         let mut hit = false;
         walk(e, &mut |x| {
             if let Expr::Call { callee, args, .. } = x {
                 if let Expr::Field { base, name, .. } = callee.as_ref() {
                     if let Expr::Ident(m) = base.as_ref() {
-                        if matches!(name.text.as_str(), "get" | "contains" | "has")
-                            && model.state.contains_key(m.text.as_str())
-                        {
+                        if matches!(name.text.as_str(), "get" | "contains" | "has") {
                             if let Some(k @ Expr::Ident(kid)) = args.first() {
-                                if kid.text == key
-                                    && entry_writes_field_under_key(entry, m.text.as_str(), k)
-                                {
+                                let hits = if written {
+                                    m.text == map
+                                } else {
+                                    m.text != map
+                                        && model.state.contains_key(m.text.as_str())
+                                        && entry_writes_field_under_key(entry, m.text.as_str(), k)
+                                };
+                                if hits && kid.text == key {
                                     hit = true;
                                 }
                             }
@@ -3214,24 +3429,49 @@ fn unconditional_self_claim(model: &Model, entry: &EntryDecl) -> Option<TypeErro
         });
         hit
     };
+    let guard_clears = |e: &Expr| -> bool {
+        if proves_empty_or_owner(e) {
+            return true;
+        }
+        if reads_slot(e, true) {
+            return false;
+        }
+        reads_slot(e, false)
+    };
     let mut conditioned = false;
     for stmt in &entry.body {
-        let Stmt::Guard { expr, .. } = stmt else {
-            continue;
-        };
-        let mut parts = Vec::new();
-        split_and(expr, &mut parts);
-        if parts
-            .iter()
-            .any(|part| holds_in_every_branch(part, &reads_the_slot))
-        {
-            conditioned = true;
+        if let Stmt::Guard { expr, .. } = stmt {
+            let mut parts = Vec::new();
+            split_and(expr, &mut parts);
+            if parts
+                .iter()
+                .any(|part| holds_in_every_branch(part, &guard_clears))
+            {
+                conditioned = true;
+            }
+        }
+    }
+    for clause in &entry.clauses {
+        match clause {
+            Clause::Limits { expr, .. } => {
+                let mut parts = Vec::new();
+                split_and(expr, &mut parts);
+                if parts
+                    .iter()
+                    .any(|part| holds_in_every_branch(part, &requires_slot_empty))
+                {
+                    conditioned = true;
+                }
+            }
+            Clause::Denies { expr, .. } => {
+                if denies_protective(expr) {
+                    conditioned = true;
+                }
+            }
+            _ => {}
         }
     }
     if conditioned {
-        return None;
-    }
-    if !map_is_read_as_caller_authority(model, &map) {
         return None;
     }
     Some(TypeError::new(
@@ -3339,30 +3579,6 @@ fn unbacked_membership_error(entry: &EntryDecl) -> TypeError {
         ),
         entry.name.span,
     )
-}
-
-fn map_is_read_as_caller_authority(model: &Model, field: &str) -> bool {
-    for entry in &model.entries {
-        let mut guards: Vec<&Expr> = Vec::new();
-        for clause in &entry.clauses {
-            match clause {
-                Clause::Limits { expr, .. } | Clause::Denies { expr, .. } => guards.push(expr),
-                _ => {}
-            }
-        }
-        for stmt in &entry.body {
-            if let Stmt::Guard { expr, .. } = stmt {
-                guards.push(expr);
-            }
-        }
-        for expr in guards {
-            if anchor_of(model, expr) == Some(field) || anchor_of_denied(model, expr) == Some(field)
-            {
-                return true;
-            }
-        }
-    }
-    false
 }
 
 fn map_is_ever_paid_out(model: &Model, field: &str) -> bool {
@@ -3747,14 +3963,7 @@ pub(crate) fn entry_has_write_authority(model: &Model, entry: &EntryDecl) -> boo
     if !signed.is_empty() || entry.params.iter().any(is_quorum_param) {
         return true;
     }
-    if entry_binds_caller(model, entry, &signed) {
-        return true;
-    }
-    entry
-        .params
-        .iter()
-        .filter(|p| crate::model::is_asset_param(p))
-        .any(|p| entry_requires_a_positive_amount(entry, p.name.text.as_str()))
+    entry_binds_caller(model, entry, &signed)
 }
 
 fn anchor_writable_without_authority(model: &Model, field: &str) -> bool {
@@ -5625,12 +5834,46 @@ fn forged_signed_authority_error(field: &str, span: Span) -> TypeError {
     )
 }
 
+fn is_addr_valued_scalar(model: &Model, ident: &str) -> bool {
+    model
+        .state
+        .get(ident)
+        .is_some_and(|f| f.ty.name.text == "Q_Address")
+}
+
+fn entry_reassigns_authority_scalar(model: &Model, entry: &EntryDecl) -> bool {
+    let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
+    let empty: HashSet<&str> = HashSet::new();
+    let derived = param_derived_locals(entry, &params, &empty);
+    let parked = tainted_state_fields(entry, &params, &empty, &derived);
+    let handed = |value: &Expr| {
+        root_ident(value)
+            .is_some_and(|r| params.contains(r) || derived.contains(r) || parked.contains(r))
+    };
+    for stmt in &entry.body {
+        if let Stmt::Assign {
+            target,
+            value,
+            op: AssignOp::Set,
+            ..
+        } = stmt
+        {
+            if let Expr::Ident(id) = target {
+                if is_addr_valued_scalar(model, id.text.as_str()) && handed(value) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn forged_caller_anchor(
     model: &Model,
     entry: &EntryDecl,
     signed: &HashSet<&str>,
 ) -> Option<TypeError> {
-    if !entry_moves_value(model, entry)
+    if (!entry_moves_value(model, entry) && !entry_reassigns_authority_scalar(model, entry))
         || !signed.is_empty()
         || entry.params.iter().any(is_quorum_param)
     {
@@ -8463,10 +8706,10 @@ mod tests {
     }
 
     #[test]
-    fn claiming_ownership_for_the_caller_is_not_a_takeover() {
+    fn an_unguarded_self_claim_is_rejected_as_a_takeover() {
         let src = "contract C { state { holder: Map<u64, Q_Address>; } \
                    entry claim(id: u64) writes(holder) { holder.set(id, caller); } }";
-        accepts(src);
+        assert!(error_for(src).contains("already held"));
     }
 
     #[test]

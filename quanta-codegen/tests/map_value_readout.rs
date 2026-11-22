@@ -27,6 +27,7 @@ const SRC: &str = "contract Resolver { \
     } \
     genesis { admin = deployer; } \
     entry claim(name: Q_Address) writes(owner_of) { \
+        guard !owner_of.contains(name); \
         owner_of.set(name, caller); \
     } \
     entry resolve(name: Q_Address) reads(owner_of) { \

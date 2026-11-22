@@ -62,6 +62,7 @@ fn run(
 fn a_set_whose_value_reads_another_id_slot_writes_its_own_key() {
     let src = "contract C { state { owner_of: Map<Q_Id, Q_Address>; } \
                entry reassign(a: Q_Id, b: Q_Id) reads(owner_of) writes(owner_of) { \
+                   guard !owner_of.contains(b); \
                    owner_of.set(b, caller); \
                    owner_of.set(a, owner_of.get(b)); \
                } }";

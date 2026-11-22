@@ -78,7 +78,9 @@ fn a_wide_token_id_key_is_refused_rather_than_truncated() {
 fn a_signed_integer_is_refused_rather_than_lowered_at_the_wrong_size() {
     let src = "contract W { state { total: i128; } genesis { total = 0; } \
                entry add(amount: i128) writes(total) { total = checked(total + amount); } }";
-    assert!(compile_error(src).contains("i128"));
+    let program = quanta_parser::parse(src).expect("parses");
+    let err = quanta_typeck::check(&program).expect_err("signed ints are rejected at check");
+    assert!(err.message.contains("i128"));
 }
 
 #[test]

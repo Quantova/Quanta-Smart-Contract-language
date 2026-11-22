@@ -2810,6 +2810,26 @@ fn quorum_spec(param: &Param) -> Option<(u64, u64, String)> {
     if param.ty.name.text != "Quorum" {
         return None;
     }
+    let mofn_count = param
+        .ty
+        .args
+        .iter()
+        .filter(|a| matches!(a, GenericArg::MofN { .. }))
+        .count();
+    let mut sets: Vec<&str> = param
+        .ty
+        .args
+        .iter()
+        .filter_map(|a| match a {
+            GenericArg::Type(t) => Some(t.name.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    sets.sort_unstable();
+    sets.dedup();
+    if mofn_count != 1 || sets.len() != 1 {
+        return None;
+    }
     let mut threshold_of = None;
     let mut set = None;
     for arg in &param.ty.args {

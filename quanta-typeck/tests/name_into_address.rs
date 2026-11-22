@@ -30,6 +30,6 @@ fn a_name_may_not_be_written_into_an_authority_address() {
 fn a_name_still_keys_a_map() {
     accepted(
         "contract B { state { owner_of: Map<Q_Address, Q_Address>; } \
-         entry claim(label: Q_Name) writes(owner_of) { owner_of.set(label, caller); } }",
+         entry claim(label: Q_Name) writes(owner_of) { guard !owner_of.contains(label); owner_of.set(label, caller); } }",
     );
 }

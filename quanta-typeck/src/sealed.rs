@@ -3,7 +3,7 @@
 
 use crate::error::TypeError;
 use crate::model::{is_asset_param, is_asset_type, is_quorum_param, Model};
-use quanta_ast::{Clause, EntryDecl, Expr, Stmt};
+use quanta_ast::{BinOp, Clause, EntryDecl, Expr, Stmt};
 
 pub fn check(model: &Model) -> Result<(), TypeError> {
     for entry in &model.entries {
@@ -205,7 +205,7 @@ fn order_field_gates(entry: &EntryDecl, param: &str) -> bool {
 }
 
 fn prices_against_payment(entry: &EntryDecl, left: &Expr, right: &Expr, param: &str) -> bool {
-    let is_param = |e: &Expr| matches!(e, Expr::Ident(id) if id.text == param);
+    let is_param = |e: &Expr| param_through_noops(e, param);
     let is_payment = |e: &Expr| match e {
         Expr::Field { base, name, .. } if name.text == "amount" => match base.as_ref() {
             Expr::Ident(id) => entry
@@ -217,6 +217,33 @@ fn prices_against_payment(entry: &EntryDecl, left: &Expr, right: &Expr, param: &
         _ => false,
     };
     (is_param(left) && is_payment(right)) || (is_payment(left) && is_param(right))
+}
+
+fn param_through_noops(e: &Expr, param: &str) -> bool {
+    let is_one = |x: &Expr| matches!(x, Expr::Int(i) if i.text == "1");
+    let is_zero = |x: &Expr| matches!(x, Expr::Int(i) if i.text == "0");
+    match e {
+        Expr::Ident(id) => id.text == param,
+        Expr::Checked { expr, .. } | Expr::Wrapping { expr, .. } => {
+            param_through_noops(expr, param)
+        }
+        Expr::Binary {
+            op, left, right, ..
+        } => match op {
+            BinOp::Mul => {
+                (is_one(right) && param_through_noops(left, param))
+                    || (is_one(left) && param_through_noops(right, param))
+            }
+            BinOp::Div => is_one(right) && param_through_noops(left, param),
+            BinOp::Add => {
+                (is_zero(right) && param_through_noops(left, param))
+                    || (is_zero(left) && param_through_noops(right, param))
+            }
+            BinOp::Sub => is_zero(right) && param_through_noops(left, param),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn root_ident(expr: &Expr) -> Option<&str> {

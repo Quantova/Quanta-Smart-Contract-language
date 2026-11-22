@@ -317,6 +317,114 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
                     party.span,
                 ));
             }
+            if !model
+                .state
+                .get(party.text.as_str())
+                .is_some_and(|f| f.ty.name.text == "Q_Address")
+            {
+                return Err(TypeError::new(
+                    format!(
+                        "parameter `{}` is signed by `{}`, which must be a `Q_Address` state field",
+                        param.name.text, party.text
+                    ),
+                    party.span,
+                ));
+            }
+        }
+    }
+    for param in &entry.params {
+        if param.ty.name.text != "Quorum" {
+            continue;
+        }
+        let mofn = param
+            .ty
+            .args
+            .iter()
+            .filter(|a| matches!(a, GenericArg::MofN { .. }))
+            .count();
+        let mut sets: Vec<&str> = param
+            .ty
+            .args
+            .iter()
+            .filter_map(|a| match a {
+                GenericArg::Type(t) => Some(t.name.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        sets.sort_unstable();
+        sets.dedup();
+        let ints = param
+            .ty
+            .args
+            .iter()
+            .filter(|a| matches!(a, GenericArg::Int(_)))
+            .count();
+        if mofn != 1 || sets.len() != 1 || ints != 0 {
+            return Err(TypeError::new(
+                format!(
+                    "quorum parameter `{}` names one M of N threshold and one guardian set",
+                    param.name.text
+                ),
+                param.name.span,
+            ));
+        }
+        let mut threshold: Option<(u64, u64)> = None;
+        let mut guarding: Option<(&str, Span)> = None;
+        for arg in &param.ty.args {
+            match arg {
+                GenericArg::MofN { m, n, .. } => {
+                    if let (Ok(k), Ok(total)) = (m.text.parse::<u64>(), n.text.parse::<u64>()) {
+                        threshold = Some((k, total));
+                    }
+                }
+                GenericArg::Type(t) => guarding = Some((t.name.text.as_str(), t.name.span)),
+                _ => {}
+            }
+        }
+        let Some((set, set_span)) = guarding else {
+            return Err(TypeError::new(
+                format!(
+                    "quorum parameter `{}` names no guarding set",
+                    param.name.text
+                ),
+                param.name.span,
+            ));
+        };
+        let field = model.state.get(set);
+        if !field.is_some_and(|f| f.ty.name.text == "GuardianSet") {
+            return Err(TypeError::new(
+                format!(
+                    "quorum parameter `{}` is authorized by `{}`, which is not a GuardianSet state field",
+                    param.name.text, set
+                ),
+                set_span,
+            ));
+        }
+        let members = field.and_then(|f| {
+            f.ty.args.iter().find_map(|a| match a {
+                GenericArg::Int(i) => i.text.parse::<u64>().ok(),
+                _ => None,
+            })
+        });
+        if let (Some((k, total)), Some(m)) = (threshold, members) {
+            if total != m {
+                return Err(TypeError::new(
+                    format!(
+                        "quorum parameter `{}` counts {total} of `{}`, which has {m} members",
+                        param.name.text, set
+                    ),
+                    param.name.span,
+                ));
+            }
+            if k == 0 || k > total {
+                return Err(TypeError::new(
+                    format!(
+                        "quorum parameter `{}` has a threshold of {k} of {total}, which must be from 1 to {total}",
+                        param.name.text
+                    ),
+                    param.name.span,
+                ));
+            }
         }
     }
     for clause in &entry.clauses {

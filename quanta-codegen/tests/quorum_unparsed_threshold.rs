@@ -10,7 +10,7 @@ fn try_compile(spec: &str) -> Result<CompiledContract, String> {
          entry act(approvals: Quorum<{spec}>) writes(counter) {{ counter = checked(counter + 1); }} }}"
     );
     let program = quanta_parser::parse(&src).expect("parse");
-    quanta_typeck::check(&program).expect("typecheck");
+    quanta_typeck::check(&program).map_err(|e| e.message.clone())?;
     compile_contract(&program.contracts[0]).map_err(|e| e.to_string())
 }
 
