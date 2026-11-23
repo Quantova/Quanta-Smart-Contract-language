@@ -321,6 +321,122 @@ fn guard_dead_after_full_debit(entry: &EntryDecl) -> Option<Span> {
     None
 }
 
+fn entry_has_value_outflow(entry: &EntryDecl) -> bool {
+    let mut found = false;
+    for stmt in &entry.body {
+        stmt_exprs(stmt, &mut |e| {
+            if found {
+                return;
+            }
+            if let Expr::Call { callee, .. } = e {
+                match callee.as_ref() {
+                    Expr::Ident(id)
+                        if matches!(id.text.as_str(), "send" | "send_asset" | "mint_asset") =>
+                    {
+                        found = true;
+                    }
+                    Expr::Field { name, .. } if name.text == "split" => {
+                        found = true;
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
+    found
+}
+
+fn positive_balance_guard_key<'a>(op: &BinOp, left: &'a Expr, right: &'a Expr) -> Option<&'a Expr> {
+    if let Some((_, k)) = map_get_row(left) {
+        if row_zero_makes_guard_false(op, right, true) {
+            return Some(k);
+        }
+    }
+    if let Some((_, k)) = map_get_row(right) {
+        if row_zero_makes_guard_false(op, left, false) {
+            return Some(k);
+        }
+    }
+    None
+}
+
+fn resolve_through_lets<'a>(e: &'a Expr, lets: &HashMap<&'a str, &'a Expr>) -> &'a Expr {
+    let mut cur = e.peel();
+    let mut hops = 0;
+    while let Expr::Ident(id) = cur {
+        match lets.get(id.text.as_str()) {
+            Some(v) if hops < 16 => {
+                hops += 1;
+                cur = v.peel();
+            }
+            _ => break,
+        }
+    }
+    cur
+}
+
+fn resolves_to_caller_or_param<'a>(
+    e: &'a Expr,
+    lets: &HashMap<&'a str, &'a Expr>,
+    params: &HashSet<&str>,
+) -> bool {
+    match resolve_through_lets(e, lets) {
+        Expr::Caller { .. } => true,
+        Expr::Ident(id) => params.contains(id.text.as_str()),
+        _ => false,
+    }
+}
+
+fn guard_keyed_on_stale_reassigned_scalar(entry: &EntryDecl) -> Option<Span> {
+    if !entry_has_value_outflow(entry) {
+        return None;
+    }
+    let mut assigned_rhs: HashMap<&str, &Expr> = HashMap::new();
+    let mut lets: HashMap<&str, &Expr> = HashMap::new();
+    for stmt in &entry.body {
+        match stmt {
+            Stmt::Assign {
+                target: Expr::Ident(id),
+                value,
+                ..
+            } => {
+                assigned_rhs.insert(id.text.as_str(), value);
+            }
+            Stmt::Let { name, value, .. } => {
+                lets.insert(name.text.as_str(), value);
+            }
+            _ => {}
+        }
+    }
+    if assigned_rhs.is_empty() {
+        return None;
+    }
+    let params: HashSet<&str> = entry.params.iter().map(|p| p.name.text.as_str()).collect();
+    for stmt in &entry.body {
+        if let Stmt::Guard { expr, span } = stmt {
+            let mut parts: Vec<&Expr> = Vec::new();
+            split_and(expr, &mut parts);
+            for p in parts {
+                if let Expr::Binary {
+                    op, left, right, ..
+                } = p.peel()
+                {
+                    if let Some(k) = positive_balance_guard_key(op, left, right) {
+                        if let Expr::Ident(base) = resolve_through_lets(k, &lets) {
+                            if let Some(rhs) = assigned_rhs.get(base.text.as_str()) {
+                                if !resolves_to_caller_or_param(rhs, &lets, &params) {
+                                    return Some(*span);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 fn has_uncensused_exit(model: &Model, entry: &EntryDecl) -> bool {
     let mut gap = false;
     for stmt in &entry.body {
@@ -374,6 +490,19 @@ fn check_entry(model: &Model, entry: &EntryDecl) -> Result<(), TypeError> {
                  a preceding full debit of that same row has already forced to zero, so every call \
                  reverts and any funds the contract holds stay locked; place the balance guard before \
                  the debit",
+                entry.name.text
+            ),
+            span,
+        ));
+    }
+    if let Some(span) = guard_keyed_on_stale_reassigned_scalar(entry) {
+        return Err(TypeError::new(
+            format!(
+                "this entry `{}` can never protect the funds it moves: the balance guard reads a map \
+                 row keyed by a state scalar that the entry reassigns from another field rather than \
+                 from the caller, so the guard checks a stale row while a different row is debited and \
+                 sent; every call either reverts and locks the funds or pays out unguarded; key the \
+                 balance guard on the same account whose row is debited",
                 entry.name.text
             ),
             span,
